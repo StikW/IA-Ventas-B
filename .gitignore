@@ -1,0 +1,87 @@
+# ===========================
+# Dependencias
+# ===========================
+node_modules/
+
+# ===========================
+# Variables de entorno
+# ===========================
+.env
+.env.*
+!.env.example
+
+# ===========================
+# Logs
+# ===========================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===========================
+# Compilación / Build
+# ===========================
+dist/
+build/
+coverage/
+
+# ===========================
+# Caché
+# ===========================
+.cache/
+.npm/
+.eslintcache
+.parcel-cache/
+
+# ===========================
+# Archivos temporales
+# ===========================
+tmp/
+temp/
+*.tmp
+
+# ===========================
+# Bases de datos locales
+# ===========================
+*.sqlite
+*.sqlite3
+*.db
+
+# ===========================
+# Archivos del sistema
+# ===========================
+.DS_Store
+Thumbs.db
+
+# ===========================
+# IDEs
+# ===========================
+.vscode/
+.idea/
+
+# ===========================
+# Docker
+# ===========================
+docker-compose.override.yml
+
+# ===========================
+# Certificados y claves
+# ===========================
+*.pem
+*.key
+*.crt
+
+# ===========================
+# Pruebas
+# ===========================
+.nyc_output/
+
+# ===========================
+# Archivos de proceso
+# ===========================
+pids/
+*.pid
+*.seed
+*.pid.lock
