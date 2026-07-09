@@ -3,6 +3,7 @@ import {
   BuilderBotDevice,
   BuilderBotQrResponse,
   BuilderBotSessionStatus,
+  CreateBuilderBotDeviceInput,
   IBuilderBotCloudService,
   SendTextMessageInput,
 } from '../domain/IBuilderBotCloudService';
@@ -21,8 +22,8 @@ export class BuilderBotCloudAdapter implements IBuilderBotCloudService {
     return resolveBuilderBotApiMode() === 'cloud-v2' ? this.cloudV2 : this.waApi;
   }
 
-  createDevice(name: string): Promise<BuilderBotDevice> {
-    return this.delegate().createDevice(name);
+  createDevice(input: CreateBuilderBotDeviceInput): Promise<BuilderBotDevice> {
+    return this.delegate().createDevice(input);
   }
 
   getDevice(deviceId: string): Promise<BuilderBotDevice> {
@@ -35,6 +36,14 @@ export class BuilderBotCloudAdapter implements IBuilderBotCloudService {
 
   getQrCode(deviceId: string): Promise<BuilderBotQrResponse> {
     return this.delegate().getQrCode(deviceId);
+  }
+
+  ensureDeployReady(deviceId: string): Promise<BuilderBotSessionStatus> {
+    return this.delegate().ensureDeployReady(deviceId);
+  }
+
+  getQrImageBuffer(deviceId: string): Promise<Buffer> {
+    return this.delegate().getQrImageBuffer(deviceId);
   }
 
   requestPairingCode(deviceId: string, phone: string): Promise<{ pairingCode?: string }> {
@@ -51,5 +60,9 @@ export class BuilderBotCloudAdapter implements IBuilderBotCloudService {
 
   deleteDevice(deviceId: string): Promise<void> {
     return this.delegate().deleteDevice(deviceId);
+  }
+
+  deleteProject(projectId: string): Promise<void> {
+    return this.delegate().deleteProject(projectId);
   }
 }

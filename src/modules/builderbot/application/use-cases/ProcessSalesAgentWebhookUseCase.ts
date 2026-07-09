@@ -10,6 +10,14 @@ export interface IncomingWebhookMessage {
   messageType?: string;
 }
 
+export interface IncomingWebhookImage {
+  from: string;
+  messageId?: string;
+  messageType?: string;
+  mediaUrl?: string;
+  caption?: string;
+}
+
 @injectable()
 export class ProcessSalesAgentWebhookUseCase
   implements
@@ -18,6 +26,7 @@ export class ProcessSalesAgentWebhookUseCase
         tenantId: string;
         deviceId: string;
         messages: IncomingWebhookMessage[];
+        images: IncomingWebhookImage[];
       },
       { processed: number; replied: number }
     >
@@ -28,12 +37,15 @@ export class ProcessSalesAgentWebhookUseCase
     tenantId: string;
     deviceId: string;
     messages: IncomingWebhookMessage[];
+    images: IncomingWebhookImage[];
   }): Promise<{ processed: number; replied: number }> {
     let replied = 0;
+    let processed = 0;
 
     for (const message of input.messages) {
       if (!message.from || !message.text?.trim()) continue;
       if (message.messageType && message.messageType !== 'text') continue;
+      processed += 1;
 
       try {
         const result = await this.salesAgent.handleIncomingMessage({
@@ -58,6 +70,34 @@ export class ProcessSalesAgentWebhookUseCase
       }
     }
 
-    return { processed: input.messages.length, replied };
+    for (const image of input.images) {
+      if (!image.from) continue;
+      processed += 1;
+
+      try {
+        const result = await this.salesAgent.handleIncomingImage({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: image.from,
+          imageUrl: image.mediaUrl,
+          caption: image.caption,
+          messageId: image.messageId,
+        });
+
+        if (result.replied) replied += 1;
+      } catch (err) {
+        logger.error(
+          {
+            err,
+            tenantId: input.tenantId,
+            customerPhone: image.from,
+            messageId: image.messageId,
+          },
+          'Error procesando imagen del agente de ventas'
+        );
+      }
+    }
+
+    return { processed, replied };
   }
 }

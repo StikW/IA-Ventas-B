@@ -17,6 +17,17 @@ function readText(message: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+function readMediaUrl(message: Record<string, unknown>): string | undefined {
+  const image = asRecord(message.image);
+  if (image?.url) return String(image.url);
+  if (image?.link) return String(image.link);
+  if (message.mediaUrl) return String(message.mediaUrl);
+  if (message.media_url) return String(message.media_url);
+  const media = asRecord(message.media);
+  if (media?.url) return String(media.url);
+  return undefined;
+}
+
 @injectable()
 export class BuilderBotWebhookParser {
   parse(payload: unknown): BuilderBotWebhookEvent[] {
@@ -57,6 +68,8 @@ export class BuilderBotWebhookParser {
         messageId: message.id ? String(message.id) : undefined,
         messageType: message.type ? String(message.type) : undefined,
         text: readText(message),
+        mediaUrl: readMediaUrl(message),
+        caption: message.caption ? String(message.caption) : undefined,
         timestamp: message.timestamp ? String(message.timestamp) : undefined,
       }));
   }
@@ -110,6 +123,8 @@ export class BuilderBotWebhookParser {
         messageId: message.id ? String(message.id) : root.messageId ? String(root.messageId) : undefined,
         messageType: message.type ? String(message.type) : undefined,
         text: readText(message) ?? (root.text ? String(root.text) : undefined),
+        mediaUrl: readMediaUrl(message),
+        caption: message.caption ? String(message.caption) : undefined,
         status: root.status ? String(root.status) : undefined,
         deviceId: root.deviceId ? String(root.deviceId) : root.device ? String(root.device) : undefined,
         sessionStatus: root.sessionStatus ? String(root.sessionStatus) : undefined,

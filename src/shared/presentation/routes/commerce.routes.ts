@@ -28,6 +28,10 @@ const createOrderSchema = z.object({
   syncWooCommerce: z.boolean().optional(),
 });
 
+const updateOrderStatusSchema = z.object({
+  status: z.enum(['PENDING', 'AWAITING_PAYMENT', 'PAID', 'CONFIRMED', 'CANCELLED']),
+});
+
 export function createWooCommerceRoutes(): Router {
   const router = Router();
   router.use(authMiddleware);
@@ -48,6 +52,14 @@ export function createOrderRoutes(): Router {
   router.get('/', authMiddleware, requireRole('NEGOCIO'), tenantMiddleware, orderController.list.bind(orderController));
   router.get('/metrics/tenant', authMiddleware, requireRole('NEGOCIO'), tenantMiddleware, orderController.metrics.bind(orderController));
   router.get('/:id', authMiddleware, requireRole('NEGOCIO'), tenantMiddleware, orderController.getById.bind(orderController));
+  router.patch(
+    '/:id/status',
+    authMiddleware,
+    requireRole('NEGOCIO'),
+    tenantMiddleware,
+    validateBody(updateOrderStatusSchema),
+    orderController.updateStatus.bind(orderController)
+  );
   router.post('/', authMiddleware, requireRole('NEGOCIO'), tenantMiddleware, validateBody(createOrderSchema), orderController.create.bind(orderController));
 
   return router;

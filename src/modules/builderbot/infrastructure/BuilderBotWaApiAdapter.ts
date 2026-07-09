@@ -5,6 +5,7 @@ import {
   BuilderBotDevice,
   BuilderBotQrResponse,
   BuilderBotSessionStatus,
+  CreateBuilderBotDeviceInput,
   IBuilderBotCloudService,
   SendTextMessageInput,
 } from '../domain/IBuilderBotCloudService';
@@ -58,7 +59,8 @@ export class BuilderBotWaApiAdapter implements IBuilderBotCloudService {
     };
   }
 
-  async createDevice(name: string): Promise<BuilderBotDevice> {
+  async createDevice(input: CreateBuilderBotDeviceInput): Promise<BuilderBotDevice> {
+    const name = input.name ?? input.projectId;
     const raw = await this.request<Record<string, unknown>>('/devices', {
       method: 'POST',
       body: JSON.stringify({ name }),
@@ -125,5 +127,23 @@ export class BuilderBotWaApiAdapter implements IBuilderBotCloudService {
 
   async deleteDevice(deviceId: string): Promise<void> {
     await this.request(`/devices/${deviceId}`, { method: 'DELETE' });
+  }
+
+  async deleteProject(_projectId: string): Promise<void> {
+    // wa-api no tiene concepto de proyecto BBC; deleteDevice es suficiente
+  }
+
+  async ensureDeployReady(deviceId: string): Promise<BuilderBotSessionStatus> {
+    return this.getSessionStatus(deviceId);
+  }
+
+  async getQrImageBuffer(deviceId: string): Promise<Buffer> {
+    const qr = await this.getQrCode(deviceId);
+    if (qr.qrBase64) return Buffer.from(qr.qrBase64, 'base64');
+    if (qr.qrImageUrl?.startsWith('data:image')) {
+      const base64 = qr.qrImageUrl.split(',')[1] ?? '';
+      if (base64) return Buffer.from(base64, 'base64');
+    }
+    throw new DomainError('BuilderBot no devolvió un QR válido', 'BUILDERBOT_QR_EMPTY');
   }
 }

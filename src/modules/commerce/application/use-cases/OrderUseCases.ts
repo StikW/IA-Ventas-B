@@ -8,6 +8,8 @@ import { OrderItem, OrderStatus } from '../../domain/entities/Order.types';
 import { IOrderRepository } from '../../domain/repositories/IOrderRepository';
 import { IDocumentRepository } from '../../../knowledge/domain/repositories/IDocumentRepository';
 import { IWooCommerceConfigRepository, IWooCommerceService } from '../../../woocommerce/domain/IWooCommerceService';
+import { OrderNotificationService } from '../services/OrderNotificationService';
+import { DomainError } from '../../../../shared/domain/errors/DomainError';
 
 function resolveTenantId(actor: TenantContext): string {
   if (actor.tenantId) return actor.tenantId;
@@ -86,6 +88,66 @@ export class CreateOrderUseCase {
         metadata: { total, customerPhone: input.customerPhone },
       });
     }
+
+    return order.toJSON();
+  }
+}
+
+@injectable()
+export class UpdateOrderStatusUseCase {
+  constructor(
+    @inject('IOrderRepository') private readonly orderRepo: IOrderRepository,
+    @inject('IWooCommerceConfigRepository') private readonly wcConfigRepo: IWooCommerceConfigRepository,
+    @inject('IWooCommerceService') private readonly wcService: IWooCommerceService,
+    @inject(OrderNotificationService) private readonly notifications: OrderNotificationService,
+    @inject(AuditService) private readonly audit: AuditService
+  ) {}
+
+  async execute(input: {
+    actor: TenantContext;
+    orderId: string;
+    status: OrderStatus;
+  }) {
+    const tenantId = resolveTenantId(input.actor);
+    const order = await this.orderRepo.findById(tenantId, input.orderId);
+    if (!order) throw new NotFoundError('Pedido no encontrado');
+
+    const previousStatus = order.status;
+    if (previousStatus === input.status) {
+      return order.toJSON();
+    }
+
+    if (input.status === OrderStatus.PAID && previousStatus !== OrderStatus.AWAITING_PAYMENT) {
+      throw new DomainError(
+        'Solo se puede marcar como pagado un pedido en AWAITING_PAYMENT',
+        'INVALID_ORDER_STATUS_TRANSITION'
+      );
+    }
+
+    order.updateStatus(input.status);
+
+    if (input.status === OrderStatus.PAID) {
+      const wcConfig = await this.wcConfigRepo.findByTenantId(tenantId);
+      const wcOrderId = order.toJSON().woocommerceOrderId;
+      if (wcConfig?.connected && wcOrderId) {
+        await this.wcService.updateOrder(wcConfig, Number(wcOrderId), {
+          setPaid: true,
+          status: 'processing',
+        });
+      }
+      await this.notifications.notifyPaymentApproved(order);
+    }
+
+    await this.orderRepo.update(order);
+
+    await this.audit.log({
+      tenantId,
+      userId: input.actor.userId,
+      action: 'ORDER_STATUS_UPDATED',
+      resource: 'order',
+      resourceId: order.id,
+      metadata: { from: previousStatus, to: input.status },
+    });
 
     return order.toJSON();
   }

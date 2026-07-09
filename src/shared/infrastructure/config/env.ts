@@ -1,7 +1,10 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
+import { PRODUCTION_APP_ORIGIN } from './appDomain';
 
 dotenv.config();
+
+const isProduction = process.env.NODE_ENV === 'production';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -15,7 +18,7 @@ const envSchema = z.object({
   DYNAMODB_REGION: z.string().default('us-east-1'),
   DYNAMODB_TABLE_NAME: z.string().default('PlatformTable'),
   DYNAMODB_AUDIT_TABLE_NAME: z.string().default('AuditLogTable'),
-  CORS_ORIGIN: z.string().default('http://localhost:4200'),
+  CORS_ORIGIN: z.string().default(isProduction ? PRODUCTION_APP_ORIGIN : 'http://localhost:4200'),
   SEED_ADMIN_EMAIL: z.string().email().optional(),
   SEED_ADMIN_PASSWORD: z.string().min(8).optional(),
   // Storage local (desarrollo)
@@ -39,7 +42,7 @@ const envSchema = z.object({
   BUILDERBOT_API_KEY: z.string().optional(),
   BUILDERBOT_WEBHOOK_SECRET: z.string().optional(),
   BUILDERBOT_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
-  APP_PUBLIC_URL: z.string().url().default('http://localhost:3000'),
+  APP_PUBLIC_URL: z.string().url().default(isProduction ? PRODUCTION_APP_ORIGIN : 'http://localhost:3000'),
 });
 
 const parsed = envSchema.safeParse(process.env);

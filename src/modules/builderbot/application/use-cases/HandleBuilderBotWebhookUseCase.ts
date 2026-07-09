@@ -110,6 +110,20 @@ export class HandleBuilderBotWebhookUseCase
           messageId: event.messageId,
           messageType: event.messageType,
         })),
+      incomingImages: events
+        .filter(
+          (event) =>
+            event.type === 'message.incoming' &&
+            !!event.from &&
+            (!!event.mediaUrl || ['image', 'document'].includes(String(event.messageType ?? '').toLowerCase()))
+        )
+        .map((event) => ({
+          from: event.from!,
+          messageId: event.messageId,
+          messageType: event.messageType,
+          mediaUrl: event.mediaUrl,
+          caption: event.caption,
+        })),
     };
   }
 

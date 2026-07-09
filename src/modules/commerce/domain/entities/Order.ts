@@ -18,6 +18,11 @@ export class Order extends Entity<OrderProps> {
     return this.props.status;
   }
 
+  updateStatus(status: OrderStatus): void {
+    this.props.status = status;
+    this.props.updatedAt = new Date().toISOString();
+  }
+
   toJSON() {
     return {
       id: this.id,

@@ -6,10 +6,28 @@ export interface ChatMessage {
   at: string;
 }
 
+export type SalesPhase = 'browsing' | 'awaiting_payment' | 'order_created';
+
+export interface PendingCartItem {
+  productId: number;
+  sku: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+export interface SalesContext {
+  phase: SalesPhase;
+  cartItems?: PendingCartItem[];
+  customerName?: string;
+  lastOrderId?: string;
+}
+
 export interface ChatSession {
   tenantId: string;
   customerPhone: string;
   messages: ChatMessage[];
+  salesContext?: SalesContext;
   updatedAt: string;
 }
 

@@ -3,6 +3,7 @@ import { container } from 'tsyringe';
 import {
   ConnectBuilderBotPhoneUseCase,
   GetBuilderBotConfigUseCase,
+  GetBuilderBotQrImageUseCase,
   GetBuilderBotQrUseCase,
   LinkBuilderBotBotUseCase,
   ProvisionWhatsAppUseCase,
@@ -25,6 +26,18 @@ export class BuilderBotController {
       const useCase = container.resolve(GetBuilderBotQrUseCase);
       const result = await useCase.execute({ actor: req.user! });
       res.json({ data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async getQrImage(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const useCase = container.resolve(GetBuilderBotQrImageUseCase);
+      const buffer = await useCase.execute({ actor: req.user! });
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(buffer);
     } catch (err) {
       next(err);
     }

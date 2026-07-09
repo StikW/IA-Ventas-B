@@ -1,8 +1,11 @@
 import { inject, injectable } from 'tsyringe';
 import { TenantContext, UseCase } from '../../../../shared/application/UseCase';
-import { ConflictError, ForbiddenError, NotFoundError } from '../../../../shared/domain/errors/DomainError';
+import { ConflictError, DomainError, ForbiddenError, NotFoundError } from '../../../../shared/domain/errors/DomainError';
 import { env, hasBuilderBot } from '../../../../shared/infrastructure/config/env';
+import { buildBuilderBotProjectId } from '../../infrastructure/builderBotProjectId';
 import { resolveBuilderBotApiMode } from '../../infrastructure/builderBotApiMode';
+import { createBuilderBotCloudProject } from '../../infrastructure/BuilderBotMcpHttpClient';
+import { buildBuilderBotConnectUrl } from '../../infrastructure/builderBotConnectUrl';
 import { UserRole } from '../../../identity/domain/entities/User.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
 import {
@@ -34,7 +37,22 @@ export class ProvisionBuilderBotForTenantUseCase
     const existing = await this.repo.findByTenantId(input.tenantId);
     if (existing) return existing;
 
-    const device = await this.builderBot.createDevice(`${input.businessName} (${input.businessSlug})`);
+    const mode = resolveBuilderBotApiMode();
+    let projectId: string;
+    let connectUrl: string | undefined;
+
+    if (mode === 'cloud-v2') {
+      const project = await createBuilderBotCloudProject(input.businessName);
+      projectId = project.projectId;
+      connectUrl = buildBuilderBotConnectUrl(projectId);
+    } else {
+      projectId = buildBuilderBotProjectId(input.businessSlug);
+    }
+
+    const device = await this.builderBot.createDevice({
+      projectId,
+      name: input.businessName,
+    });
     const now = new Date().toISOString();
     const webhookUrl = `${env.APP_PUBLIC_URL.replace(/\/$/, '')}${env.API_PREFIX}/webhooks/builderbot/${input.tenantId}`;
 
@@ -51,6 +69,8 @@ export class ProvisionBuilderBotForTenantUseCase
       phone: device.phone,
       sessionStatus: device.status ?? 'disconnected',
       webhookUrl,
+      projectId: mode === 'cloud-v2' ? projectId : undefined,
+      connectUrl,
       createdAt: now,
       updatedAt: now,
     };
@@ -76,7 +96,7 @@ export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContex
         configured: false,
         enabled: hasBuilderBot,
         message: hasBuilderBot
-          ? 'WhatsApp aún no provisionado. Pulsa «Activar WhatsApp» para crear el device.'
+          ? 'WhatsApp aún no provisionado. Pulsa «Activar WhatsApp» para crear el deploy en BuilderBot Cloud.'
           : 'BuilderBot no configurado en el servidor',
       };
     }
@@ -103,6 +123,12 @@ export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContex
       sessionStatus,
       platformApiKeyPrefix: config.platformApiKeyPrefix,
       webhookUrl: config.webhookUrl,
+      projectId: config.projectId ?? config.deviceId,
+      connectUrl:
+        config.connectUrl ??
+        (resolveBuilderBotApiMode() === 'cloud-v2'
+          ? buildBuilderBotConnectUrl(config.projectId ?? config.deviceId)
+          : undefined),
       updatedAt: config.updatedAt,
     };
   }
@@ -120,8 +146,33 @@ export class GetBuilderBotQrUseCase implements UseCase<{ actor: TenantContext },
     const config = await this.repo.findByTenantId(tenantId);
     if (!config) throw new NotFoundError('WhatsApp no provisionado para este negocio');
 
-    const qr = await this.builderBot.getQrCode(config.deviceId);
+    const projectId = config.projectId ?? config.deviceId;
+    await this.builderBot.ensureDeployReady(projectId);
+
+    const qr = await this.builderBot.getQrCode(projectId);
     return qr;
+  }
+}
+
+@injectable()
+export class GetBuilderBotQrImageUseCase implements UseCase<{ actor: TenantContext }, Buffer> {
+  constructor(
+    @inject('IBuilderBotCloudService') private readonly builderBot: IBuilderBotCloudService,
+    @inject('IBuilderBotConfigRepository') private readonly repo: IBuilderBotConfigRepository
+  ) {}
+
+  async execute(input: { actor: TenantContext }): Promise<Buffer> {
+    const tenantId = resolveTenantId(input.actor);
+    const config = await this.repo.findByTenantId(tenantId);
+    if (!config) throw new NotFoundError('WhatsApp no provisionado para este negocio');
+
+    const projectId = config.projectId ?? config.deviceId;
+    const status = await this.builderBot.ensureDeployReady(projectId);
+    if (status === 'connected') {
+      throw new DomainError('WhatsApp ya está conectado', 'BUILDERBOT_ALREADY_CONNECTED');
+    }
+
+    return this.builderBot.getQrImageBuffer(projectId);
   }
 }
 
@@ -233,6 +284,9 @@ export class LinkBuilderBotBotUseCase
       phone,
       sessionStatus,
       webhookUrl,
+      projectId: resolveBuilderBotApiMode() === 'cloud-v2' ? botId : undefined,
+      connectUrl:
+        resolveBuilderBotApiMode() === 'cloud-v2' ? buildBuilderBotConnectUrl(botId) : undefined,
       createdAt: now,
       updatedAt: now,
     };
@@ -254,12 +308,6 @@ export class ProvisionWhatsAppUseCase implements UseCase<{ actor: TenantContext 
     const tenantId = resolveTenantId(input.actor);
     const existing = await this.repo.findByTenantId(tenantId);
     if (existing) return existing;
-
-    if (resolveBuilderBotApiMode() === 'cloud-v2') {
-      throw new ForbiddenError(
-        'El modo cloud-v2 no soporta provisionamiento automático. Usa BUILDERBOT_API_MODE=wa-api con API key de console.builderbot.app.'
-      );
-    }
 
     const business = await this.businessRepo.findById(tenantId);
     if (!business) throw new NotFoundError('Negocio no encontrado');

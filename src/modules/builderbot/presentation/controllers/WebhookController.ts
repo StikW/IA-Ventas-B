@@ -56,11 +56,29 @@ export class WebhookController {
             tenantId: result.tenantId,
             deviceId: result.deviceId,
             messages: result.incomingMessages,
+            images: [],
           })
           .catch((err) => {
             logger.error(
               { err, tenantId: result.tenantId, messageCount: result.incomingMessages.length },
               'Error en procesamiento asíncrono del agente de ventas'
+            );
+          });
+      }
+
+      if (result.incomingImages.length > 0) {
+        const agentUseCase = container.resolve(ProcessSalesAgentWebhookUseCase);
+        void agentUseCase
+          .execute({
+            tenantId: result.tenantId,
+            deviceId: result.deviceId,
+            messages: [],
+            images: result.incomingImages,
+          })
+          .catch((err) => {
+            logger.error(
+              { err, tenantId: result.tenantId, imageCount: result.incomingImages.length },
+              'Error procesando imagen del agente de ventas'
             );
           });
       }

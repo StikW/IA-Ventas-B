@@ -4,6 +4,7 @@ import {
   WooCommerceConfigData,
   WooCommerceOrderPayload,
   WooCommerceOrderResult,
+  WooCommerceOrderUpdatePayload,
   WooCommerceProduct,
 } from '../domain/IWooCommerceService';
 import { DomainError } from '../../../shared/domain/errors/DomainError';
@@ -52,6 +53,18 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     return products.map((p) => this.mapProduct(p));
   }
 
+  async searchProducts(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]> {
+    const q = query.trim();
+    if (!q) return [];
+
+    const products = await this.request<Array<Record<string, unknown>>>(
+      config,
+      `/products?search=${encodeURIComponent(q)}&per_page=20&status=publish`
+    );
+
+    return products.map((p) => this.mapProduct(p));
+  }
+
   async getProductBySku(config: WooCommerceConfigData, sku: string): Promise<WooCommerceProduct | null> {
     const products = await this.request<Array<Record<string, unknown>>>(
       config,
@@ -67,6 +80,23 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
       body: JSON.stringify(order),
     });
 
+    return this.mapOrderResult(result);
+  }
+
+  async updateOrder(
+    config: WooCommerceConfigData,
+    orderId: number,
+    update: WooCommerceOrderUpdatePayload
+  ): Promise<WooCommerceOrderResult> {
+    const result = await this.request<Record<string, unknown>>(config, `/orders/${orderId}`, {
+      method: 'PUT',
+      body: JSON.stringify(update),
+    });
+
+    return this.mapOrderResult(result);
+  }
+
+  private mapOrderResult(result: Record<string, unknown>): WooCommerceOrderResult {
     return {
       id: result.id as number,
       number: String(result.number),

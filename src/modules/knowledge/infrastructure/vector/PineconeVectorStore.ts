@@ -28,6 +28,7 @@ export class PineconeVectorStore implements IVectorStore {
           documentId: v.metadata.documentId,
           chunkIndex: v.metadata.chunkIndex,
           source: v.metadata.source,
+          content: v.metadata.content.slice(0, 3500),
           contentPreview: v.metadata.contentPreview,
         },
       }))

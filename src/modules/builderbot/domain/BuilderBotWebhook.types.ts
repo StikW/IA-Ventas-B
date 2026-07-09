@@ -10,6 +10,8 @@ export interface BuilderBotWebhookEvent {
   messageId?: string;
   messageType?: string;
   text?: string;
+  mediaUrl?: string;
+  caption?: string;
   status?: string;
   deviceId?: string;
   sessionStatus?: string;
@@ -27,5 +29,12 @@ export interface BuilderBotWebhookResult {
     text: string;
     messageId?: string;
     messageType?: string;
+  }>;
+  incomingImages: Array<{
+    from: string;
+    messageId?: string;
+    messageType?: string;
+    mediaUrl?: string;
+    caption?: string;
   }>;
 }

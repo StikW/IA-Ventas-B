@@ -16,7 +16,7 @@ export function resolveBuilderBotApiUrl(mode: BuilderBotApiMode): string {
     return env.BUILDERBOT_API_URL.replace(/\/$/, '');
   }
   return mode === 'cloud-v2'
-    ? 'https://app.builderbot.cloud/api/v2'
+    ? 'https://app.builderbot.cloud/api/v1/manager'
     : 'https://wa-api.builderbot.app/v1';
 }
 

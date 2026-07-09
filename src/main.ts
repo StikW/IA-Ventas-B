@@ -9,7 +9,7 @@ registerDependencies();
 
 if (hasBuilderBot && env.BUILDERBOT_API_KEY?.startsWith('bbc-') && resolveBuilderBotApiMode() === 'wa-api') {
   logger.warn(
-    'BUILDERBOT_API_KEY parece ser de app.builderbot.cloud (bbc-). Para auto-provision + QR usa una key de https://console.builderbot.app/apikeys'
+    'BUILDERBOT_API_KEY es de app.builderbot.cloud (bbc-). Configura BUILDERBOT_API_MODE=cloud-v2 y BUILDERBOT_API_URL=https://app.builderbot.cloud/api/v1/manager'
   );
 }
 

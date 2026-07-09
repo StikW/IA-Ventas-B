@@ -1,22 +1,104 @@
+import OpenAI from 'openai';
 import { inject, injectable } from 'tsyringe';
 import { hasBuilderBot, hasOpenAI } from '../../../../shared/infrastructure/config/env';
 import { AuditService } from '../../../../shared/infrastructure/audit/AuditService';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
 import { IBuilderBotCloudService } from '../../../builderbot/domain/IBuilderBotCloudService';
-import { RagSearchService } from '../../../knowledge/application/services/RagSearchService';
+import { CreateOrderUseCase } from '../../../commerce/application/use-cases/OrderUseCases';
+import { OrderItem } from '../../../commerce/domain/entities/Order.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
-import { IWooCommerceConfigRepository, IWooCommerceService, WooCommerceProduct } from '../../../woocommerce/domain/IWooCommerceService';
-import { ChatMessage, IChatSessionRepository } from '../../domain/IChatSessionRepository';
+import { ChatMessage, IChatSessionRepository, SalesContext } from '../../domain/IChatSessionRepository';
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
+import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
 
 const AGENT_ACTOR = 'system:sales-agent';
+
+const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'buscar_en_documentos',
+      description: 'Busca información de productos en documentos vectorizados del negocio. Incluye sugerencias relacionadas.',
+      parameters: {
+        type: 'object',
+        properties: { consulta: { type: 'string', description: 'Qué busca el cliente' } },
+        required: ['consulta'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'buscar_productos_tienda',
+      description: 'Busca productos en WooCommerce por nombre o descripción.',
+      parameters: {
+        type: 'object',
+        properties: { consulta: { type: 'string' } },
+        required: ['consulta'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'verificar_stock',
+      description: 'Verifica disponibilidad de un producto por SKU y cantidad.',
+      parameters: {
+        type: 'object',
+        properties: {
+          sku: { type: 'string' },
+          cantidad: { type: 'number' },
+        },
+        required: ['sku', 'cantidad'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'preparar_pago',
+      description:
+        'Valida stock y deja el pedido listo para recibir comprobante de pago. Usar cuando el cliente confirma qué quiere comprar.',
+      parameters: {
+        type: 'object',
+        properties: {
+          nombre_cliente: { type: 'string' },
+          productos: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                productId: { type: 'number' },
+                sku: { type: 'string' },
+                name: { type: 'string' },
+                quantity: { type: 'number' },
+                unitPrice: { type: 'number' },
+              },
+              required: ['productId', 'sku', 'name', 'quantity', 'unitPrice'],
+            },
+          },
+        },
+        required: ['nombre_cliente', 'productos'],
+      },
+    },
+  },
+];
 
 export interface SalesAgentMessageInput {
   tenantId: string;
   deviceId: string;
   customerPhone: string;
   text: string;
+  messageId?: string;
+}
+
+export interface SalesAgentImageInput {
+  tenantId: string;
+  deviceId: string;
+  customerPhone: string;
+  imageUrl?: string;
+  caption?: string;
   messageId?: string;
 }
 
@@ -33,97 +115,175 @@ export class SalesAgentService {
     @inject('IConfigRepository') private readonly configRepo: IConfigRepository,
     @inject('IBuilderBotCloudService') private readonly builderBot: IBuilderBotCloudService,
     @inject('IChatSessionRepository') private readonly chatRepo: IChatSessionRepository,
-    @inject('IWooCommerceConfigRepository') private readonly wcConfigRepo: IWooCommerceConfigRepository,
-    @inject('IWooCommerceService') private readonly wcService: IWooCommerceService,
-    @inject(RagSearchService) private readonly ragSearch: RagSearchService,
     @inject(OpenAIChatAdapter) private readonly chat: OpenAIChatAdapter,
+    @inject(SalesAgentToolsHandler) private readonly tools: SalesAgentToolsHandler,
+    @inject(CreateOrderUseCase) private readonly createOrder: CreateOrderUseCase,
     @inject(AuditService) private readonly audit: AuditService
   ) {}
 
   async handleIncomingMessage(input: SalesAgentMessageInput): Promise<SalesAgentMessageResult> {
-    if (!hasOpenAI) {
-      return { replied: false, reason: 'OPENAI_NOT_CONFIGURED' };
-    }
-    if (!hasBuilderBot) {
-      return { replied: false, reason: 'BUILDERBOT_NOT_CONFIGURED' };
-    }
+    if (!hasOpenAI) return { replied: false, reason: 'OPENAI_NOT_CONFIGURED' };
+    if (!hasBuilderBot) return { replied: false, reason: 'BUILDERBOT_NOT_CONFIGURED' };
 
     const text = input.text.trim();
-    if (!text) {
-      return { replied: false, reason: 'EMPTY_MESSAGE' };
-    }
+    if (!text) return { replied: false, reason: 'EMPTY_MESSAGE' };
 
     const business = await this.businessRepo.findById(input.tenantId);
     const businessName = business?.name ?? 'el negocio';
     const tenantConfig = await this.configRepo.findByTenantId(input.tenantId);
-
-    const [rag, catalogContext, session] = await Promise.all([
-      this.ragSearch.search({ tenantId: input.tenantId, query: text, topK: 5, minScore: 0.45 }),
-      this.buildCatalogContext(input.tenantId),
-      this.chatRepo.find(input.tenantId, input.customerPhone),
-    ]);
-
-    const ragContext = rag.results.length
-      ? rag.results.map((r: { source: string; content: string }, i: number) => `[${i + 1}] (${r.source}) ${r.content}`).join('\n\n')
-      : 'Sin documentos relevantes para esta consulta.';
+    const session = await this.chatRepo.find(input.tenantId, input.customerPhone);
+    const history = session?.messages ?? [];
+    const salesContext: SalesContext = session?.salesContext ?? { phase: 'browsing' };
 
     const systemPrompt = this.buildSystemPrompt({
       businessName,
       businessProfile: tenantConfig?.business,
-      ragContext,
-      catalogContext,
+      salesPhase: salesContext.phase,
     });
 
-    const history = session?.messages ?? [];
-    const reply = await this.chat.complete({
+    let mutableContext = { ...salesContext };
+
+    const reply = await this.chat.completeWithTools({
       systemPrompt,
       history,
       userMessage: text,
+      tools: SALES_TOOLS,
+      onToolCall: async (name, args) => this.executeTool(name, args, input, mutableContext),
     });
 
     const now = new Date().toISOString();
-    const updatedMessages: ChatMessage[] = [
-      ...history,
-      { role: 'user', content: text, at: now },
-      { role: 'assistant', content: reply, at: now },
-    ];
+    await this.persistAndReply({
+      tenantId: input.tenantId,
+      deviceId: input.deviceId,
+      customerPhone: input.customerPhone,
+      messageId: input.messageId,
+      history,
+      userText: text,
+      reply,
+      salesContext: mutableContext,
+      now,
+      ragHits: 0,
+    });
 
-    await this.chatRepo.save({
+    return { replied: true, reply };
+  }
+
+  async handleIncomingImage(input: SalesAgentImageInput): Promise<SalesAgentMessageResult> {
+    if (!hasOpenAI) return { replied: false, reason: 'OPENAI_NOT_CONFIGURED' };
+    if (!hasBuilderBot) return { replied: false, reason: 'BUILDERBOT_NOT_CONFIGURED' };
+
+    const session = await this.chatRepo.find(input.tenantId, input.customerPhone);
+    const salesContext = session?.salesContext ?? { phase: 'browsing' };
+    const history = session?.messages ?? [];
+
+    if (salesContext.phase !== 'awaiting_payment' || !salesContext.cartItems?.length) {
+      const reply =
+        'Recibí tu imagen. Si deseas comprar, primero dime qué productos necesitas y te indicaré cómo realizar el pago.';
+      await this.sendAndSave(input, history, '[Imagen enviada]', reply, salesContext);
+      return { replied: true, reply };
+    }
+
+    const customerName = salesContext.customerName ?? input.customerPhone;
+    const items = salesContext.cartItems as OrderItem[];
+
+    const stockCheck = await this.tools.validateCartStock(input.tenantId, items);
+    if (!stockCheck.ok) {
+      const reply = `No pudimos crear el pedido: ${stockCheck.message}`;
+      await this.sendAndSave(input, history, '[Comprobante de pago]', reply, { phase: 'browsing' });
+      return { replied: true, reply };
+    }
+
+    const order = await this.createOrder.execute({
       tenantId: input.tenantId,
       customerPhone: input.customerPhone,
-      messages: updatedMessages,
-      updatedAt: now,
+      customerName,
+      items,
+      notes: 'Pedido creado desde WhatsApp tras comprobante de pago',
+      syncWooCommerce: true,
     });
 
-    await this.builderBot.sendTextMessage({
-      deviceId: input.deviceId,
-      phone: input.customerPhone,
-      message: reply,
-    });
+    const invoice = order.woocommerceOrderNumber ?? order.id;
+    const reply = [
+      '¡Gracias! Recibimos tu comprobante de pago.',
+      `Tu pedido fue registrado con número de factura *#${invoice}*.`,
+      'Un asesor validará el pago manualmente. Cuando sea aprobado, te avisaremos por este chat para que puedas reclamar tu producto.',
+    ].join('\n');
+
+    const updatedContext: SalesContext = {
+      phase: 'order_created',
+      lastOrderId: order.id,
+    };
+
+    await this.sendAndSave(input, history, '[Comprobante de pago recibido]', reply, updatedContext);
 
     await this.audit.log({
       tenantId: input.tenantId,
       userId: AGENT_ACTOR,
-      action: 'BUILDERBOT_MESSAGE_SENT',
-      resource: 'whatsapp_message',
-      resourceId: input.messageId,
-      metadata: {
-        customerPhone: input.customerPhone,
-        replyPreview: reply.slice(0, 120),
-        ragHits: rag.results.length,
-      },
+      action: 'ORDER_CREATED_FROM_WHATSAPP',
+      resource: 'order',
+      resourceId: order.id,
+      metadata: { customerPhone: input.customerPhone, invoice },
     });
 
-    logger.info(
-      {
-        tenantId: input.tenantId,
-        customerPhone: input.customerPhone,
-        ragHits: rag.results.length,
-      },
-      'Agente de ventas respondió por WhatsApp'
-    );
-
     return { replied: true, reply };
+  }
+
+  private async executeTool(
+    name: string,
+    args: Record<string, unknown>,
+    input: SalesAgentMessageInput,
+    salesContext: SalesContext
+  ): Promise<string> {
+    switch (name) {
+      case 'buscar_en_documentos':
+        return this.tools.searchDocuments(input.tenantId, String(args.consulta ?? ''));
+      case 'buscar_productos_tienda':
+        return this.tools.searchStoreProducts(input.tenantId, String(args.consulta ?? ''));
+      case 'verificar_stock': {
+        const result = await this.tools.checkStock(
+          input.tenantId,
+          String(args.sku ?? ''),
+          Number(args.cantidad ?? 1)
+        );
+        return result.message;
+      }
+      case 'preparar_pago': {
+        const items = this.parseOrderItems(args.productos);
+        if (!items.length) return 'Debes indicar al menos un producto válido.';
+
+        const stockCheck = await this.tools.validateCartStock(input.tenantId, items);
+        if (!stockCheck.ok) return stockCheck.message;
+
+        const customerName = String(args.nombre_cliente ?? input.customerPhone).trim();
+        Object.assign(salesContext, this.tools.buildAwaitingPaymentContext(salesContext, items, customerName));
+
+        const tenantConfig = await this.configRepo.findByTenantId(input.tenantId);
+        const bankInfo = tenantConfig?.business?.bankAccountInfo ?? 'Consulta al negocio los datos de pago.';
+        return [
+          'Stock validado correctamente.',
+          `Datos para transferencia:\n${bankInfo}`,
+          'Indica al cliente que envíe una captura o foto del comprobante de pago por este chat.',
+        ].join('\n');
+      }
+      default:
+        return `Herramienta desconocida: ${name}`;
+    }
+  }
+
+  private parseOrderItems(raw: unknown): OrderItem[] {
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((item) => {
+        const row = item as Record<string, unknown>;
+        return {
+          productId: Number(row.productId),
+          sku: String(row.sku ?? ''),
+          name: String(row.name ?? ''),
+          quantity: Number(row.quantity ?? 1),
+          unitPrice: Number(row.unitPrice ?? 0),
+        };
+      })
+      .filter((item) => item.productId > 0 && item.sku && item.name && item.quantity > 0);
   }
 
   private buildSystemPrompt(input: {
@@ -134,8 +294,7 @@ export class SalesAgentService {
       businessHours?: string;
       bankAccountInfo?: string;
     };
-    ragContext: string;
-    catalogContext: string;
+    salesPhase: SalesContext['phase'];
   }): string {
     const profileLines = [
       input.businessProfile?.description ? `Descripción: ${input.businessProfile.description}` : null,
@@ -146,34 +305,105 @@ export class SalesAgentService {
       .filter(Boolean)
       .join('\n');
 
+    const phaseHint =
+      input.salesPhase === 'awaiting_payment'
+        ? 'FASE ACTUAL: esperando comprobante de pago. Recuérdale al cliente enviar la captura.'
+        : input.salesPhase === 'order_created'
+          ? 'FASE ACTUAL: pedido ya registrado. Ayuda con seguimiento si pregunta.'
+          : 'FASE ACTUAL: exploración y venta.';
+
     return [
       `Eres el asistente de ventas por WhatsApp de "${input.businessName}".`,
-      'Responde siempre en español, de forma amable, clara y concisa (máximo 3 párrafos cortos).',
-      'Usa SOLO la información del contexto de documentos y catálogo. No inventes productos, precios ni stock.',
-      'Si no tienes información suficiente, dilo con honestidad y ofrece alternativas (ej. pedir más detalle o contactar al negocio).',
-      'Si el cliente quiere comprar, pídele que confirme producto, cantidad y datos de contacto.',
+      'Responde en español, amable y conciso (máximo 3 párrafos).',
+      'FLUJO DE VENTA:',
+      '1) Saluda y ayuda al cliente.',
+      '2) Si busca productos, usa buscar_en_documentos y buscar_productos_tienda. Muestra opciones reales con SKU y precio.',
+      '3) Si pide algo específico, usa verificar_stock antes de confirmar disponibilidad.',
+      '4) Cuando confirme compra (producto, cantidad, nombre), usa preparar_pago.',
+      '5) Tras preparar_pago, pide comprobante de pago (captura/foto). El pedido se crea automáticamente al recibir la imagen.',
+      'No inventes productos ni precios. Usa las herramientas.',
+      phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',
-      `\nContexto de documentos (RAG):\n${input.ragContext}`,
-      input.catalogContext ? `\nCatálogo WooCommerce:\n${input.catalogContext}` : '',
     ]
       .filter(Boolean)
       .join('\n');
   }
 
-  private async buildCatalogContext(tenantId: string): Promise<string> {
-    try {
-      const config = await this.wcConfigRepo.findByTenantId(tenantId);
-      if (!config?.connected) return '';
+  private async persistAndReply(params: {
+    tenantId: string;
+    deviceId: string;
+    customerPhone: string;
+    messageId?: string;
+    history: ChatMessage[];
+    userText: string;
+    reply: string;
+    salesContext: SalesContext;
+    now: string;
+    ragHits: number;
+  }): Promise<void> {
+    const updatedMessages: ChatMessage[] = [
+      ...params.history,
+      { role: 'user', content: params.userText, at: params.now },
+      { role: 'assistant', content: params.reply, at: params.now },
+    ];
 
-      const products = await this.wcService.listProducts(config, 1);
-      if (!products.length) return '';
+    await this.chatRepo.save({
+      tenantId: params.tenantId,
+      customerPhone: params.customerPhone,
+      messages: updatedMessages,
+      salesContext: params.salesContext,
+      updatedAt: params.now,
+    });
 
-      return products
-        .slice(0, 12)
-        .map((p: WooCommerceProduct) => `- ${p.name} | SKU: ${p.sku || 'N/A'} | Precio: ${p.price} | Stock: ${p.stockStatus}`)
-        .join('\n');
-    } catch {
-      return '';
-    }
+    await this.builderBot.sendTextMessage({
+      deviceId: params.deviceId,
+      phone: params.customerPhone,
+      message: params.reply,
+    });
+
+    await this.audit.log({
+      tenantId: params.tenantId,
+      userId: AGENT_ACTOR,
+      action: 'BUILDERBOT_MESSAGE_SENT',
+      resource: 'whatsapp_message',
+      resourceId: params.messageId,
+      metadata: {
+        customerPhone: params.customerPhone,
+        replyPreview: params.reply.slice(0, 120),
+        ragHits: params.ragHits,
+        salesPhase: params.salesContext.phase,
+      },
+    });
+
+    logger.info(
+      {
+        tenantId: params.tenantId,
+        customerPhone: params.customerPhone,
+        salesPhase: params.salesContext.phase,
+      },
+      'Agente de ventas respondió por WhatsApp'
+    );
+  }
+
+  private async sendAndSave(
+    input: SalesAgentImageInput,
+    history: ChatMessage[],
+    userText: string,
+    reply: string,
+    salesContext: SalesContext
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    await this.persistAndReply({
+      tenantId: input.tenantId,
+      deviceId: input.deviceId,
+      customerPhone: input.customerPhone,
+      messageId: input.messageId,
+      history,
+      userText,
+      reply,
+      salesContext,
+      now,
+      ragHits: 0,
+    });
   }
 }

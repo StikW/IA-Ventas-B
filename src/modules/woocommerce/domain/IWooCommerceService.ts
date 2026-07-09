@@ -27,6 +27,11 @@ export interface WooCommerceOrderPayload {
   lineItems: Array<{ productId: number; quantity: number }>;
 }
 
+export interface WooCommerceOrderUpdatePayload {
+  setPaid?: boolean;
+  status?: string;
+}
+
 export interface WooCommerceOrderResult {
   id: number;
   number: string;
@@ -37,8 +42,10 @@ export interface WooCommerceOrderResult {
 export interface IWooCommerceService {
   testConnection(config: WooCommerceConfigData): Promise<boolean>;
   listProducts(config: WooCommerceConfigData, page?: number): Promise<WooCommerceProduct[]>;
+  searchProducts(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]>;
   getProductBySku(config: WooCommerceConfigData, sku: string): Promise<WooCommerceProduct | null>;
   createOrder(config: WooCommerceConfigData, order: WooCommerceOrderPayload): Promise<WooCommerceOrderResult>;
+  updateOrder(config: WooCommerceConfigData, orderId: number, update: WooCommerceOrderUpdatePayload): Promise<WooCommerceOrderResult>;
 }
 
 export interface IWooCommerceConfigRepository {

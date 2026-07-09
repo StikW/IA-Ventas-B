@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { container } from 'tsyringe';
-import { CreateOrderUseCase, GetOrderUseCase, GetTenantMetricsUseCase, ListOrdersUseCase } from '../../application/use-cases/OrderUseCases';
+import { CreateOrderUseCase, GetOrderUseCase, GetTenantMetricsUseCase, ListOrdersUseCase, UpdateOrderStatusUseCase } from '../../application/use-cases/OrderUseCases';
 import { GetWooCommerceStockUseCase, ListWooCommerceProductsUseCase } from '../../../woocommerce/application/use-cases/WooCommerceUseCases';
 
 export class OrderController {
@@ -52,6 +52,20 @@ export class OrderController {
     try {
       const useCase = container.resolve(GetTenantMetricsUseCase);
       const result = await useCase.execute({ actor: req.user! });
+      res.json({ data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async updateStatus(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const useCase = container.resolve(UpdateOrderStatusUseCase);
+      const result = await useCase.execute({
+        actor: req.user!,
+        orderId: String(req.params.id),
+        status: req.body.status,
+      });
       res.json({ data: result });
     } catch (err) {
       next(err);

@@ -38,6 +38,8 @@ export interface CreateBusinessResult {
   owner: ReturnType<User['toJSON']>;
   builderBot?: {
     deviceId: string;
+    projectId?: string;
+    connectUrl?: string;
     sessionStatus: string;
   } | null;
   builderBotWarning?: string;
@@ -148,7 +150,12 @@ export class CreateBusinessUseCase implements UseCase<CreateBusinessInput, Creat
       business: business.toJSON(),
       owner: owner.toJSON(),
       builderBot: bbConfig
-        ? { deviceId: bbConfig.deviceId, sessionStatus: bbConfig.sessionStatus }
+        ? {
+            deviceId: bbConfig.deviceId,
+            projectId: bbConfig.projectId ?? bbConfig.deviceId,
+            connectUrl: bbConfig.connectUrl,
+            sessionStatus: bbConfig.sessionStatus,
+          }
         : null,
       builderBotWarning,
       platformApiKey: apiKeyResult.apiKey,

@@ -29,6 +29,7 @@ export class ChatSessionRepositoryDynamo implements IChatSessionRepository {
       tenantId,
       customerPhone,
       messages: (result.Item.messages as ChatMessage[]) ?? [],
+      salesContext: result.Item.salesContext as ChatSession['salesContext'],
       updatedAt: String(result.Item.updatedAt ?? ''),
     };
   }
@@ -46,6 +47,7 @@ export class ChatSessionRepositoryDynamo implements IChatSessionRepository {
           tenantId: session.tenantId,
           customerPhone: session.customerPhone,
           messages,
+          salesContext: session.salesContext,
           updatedAt: now,
         },
       })

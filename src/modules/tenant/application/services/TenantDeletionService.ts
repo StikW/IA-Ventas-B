@@ -3,6 +3,8 @@ import { NotFoundError } from '../../../../shared/domain/errors/DomainError';
 import { hasBuilderBot } from '../../../../shared/infrastructure/config/env';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
 import { IBuilderBotCloudService, IBuilderBotConfigRepository } from '../../../builderbot/domain/IBuilderBotCloudService';
+import { resolveBuilderBotApiMode } from '../../../builderbot/infrastructure/builderBotApiMode';
+import { isBuilderBotCloudProjectUuid } from '../../../builderbot/infrastructure/builderBotProjectId';
 import { IStorageService, IVectorStore } from '../../../knowledge/domain/ports/KnowledgePorts';
 import { IDocumentRepository } from '../../../knowledge/domain/repositories/IDocumentRepository';
 import { IOrderRepository } from '../../../commerce/domain/repositories/IOrderRepository';
@@ -17,7 +19,8 @@ export interface TenantDeletionSummary {
   users: number;
   storageFiles: number;
   vectorsCleared: boolean;
-  builderBotDeviceDeleted: boolean;
+  builderBotDeployDeleted: boolean;
+  builderBotProjectDeleted: boolean;
   dynamoRecords: number;
   auditLogs: number;
   warnings: string[];
@@ -49,16 +52,38 @@ export class TenantDeletionService {
     ]);
 
     const bbConfig = await this.builderBotConfigRepo.findByTenantId(tenantId);
-    let builderBotDeviceDeleted = false;
+    let builderBotDeployDeleted = false;
+    let builderBotProjectDeleted = false;
 
     if (bbConfig?.deviceId && hasBuilderBot) {
-      try {
-        await this.builderBot.deleteDevice(bbConfig.deviceId);
-        builderBotDeviceDeleted = true;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Error eliminando device BuilderBot';
-        warnings.push(message);
-        logger.warn({ err, tenantId, deviceId: bbConfig.deviceId }, 'No se pudo eliminar device BuilderBot');
+      const projectId = bbConfig.projectId ?? bbConfig.deviceId;
+      const mode = resolveBuilderBotApiMode();
+
+      if (mode === 'cloud-v2' && isBuilderBotCloudProjectUuid(projectId)) {
+        try {
+          await this.builderBot.deleteProject(projectId);
+          builderBotDeployDeleted = true;
+          builderBotProjectDeleted = true;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Error eliminando proyecto BuilderBot';
+          warnings.push(message);
+          logger.warn({ err, tenantId, projectId }, 'No se pudo eliminar proyecto BuilderBot Cloud');
+        }
+      } else {
+        try {
+          await this.builderBot.deleteDevice(bbConfig.deviceId);
+          builderBotDeployDeleted = true;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Error eliminando deploy BuilderBot';
+          warnings.push(message);
+          logger.warn({ err, tenantId, deviceId: bbConfig.deviceId }, 'No se pudo eliminar deploy BuilderBot');
+        }
+
+        if (mode === 'cloud-v2' && !isBuilderBotCloudProjectUuid(projectId)) {
+          warnings.push(
+            `Proyecto BuilderBot no eliminado: "${projectId}" no es un UUID. Re-provisiona o elimínalo manualmente en app.builderbot.cloud.`
+          );
+        }
       }
     }
 
@@ -91,7 +116,8 @@ export class TenantDeletionService {
         orders,
         users: cleanup.userIds.length,
         storageFiles,
-        builderBotDeviceDeleted,
+        builderBotDeployDeleted,
+        builderBotProjectDeleted,
         dynamoRecords: cleanup.dynamoRecords,
         auditLogs: cleanup.auditLogs,
         warnings,
@@ -107,7 +133,8 @@ export class TenantDeletionService {
       users: cleanup.userIds.length,
       storageFiles,
       vectorsCleared,
-      builderBotDeviceDeleted,
+      builderBotDeployDeleted,
+      builderBotProjectDeleted,
       dynamoRecords: cleanup.dynamoRecords,
       auditLogs: cleanup.auditLogs,
       warnings,
