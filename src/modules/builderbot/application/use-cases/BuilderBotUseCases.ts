@@ -83,7 +83,6 @@ export class ProvisionBuilderBotForTenantUseCase
 @injectable()
 export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContext }, object> {
   constructor(
-    @inject('IBuilderBotCloudService') private readonly builderBot: IBuilderBotCloudService,
     @inject('IBuilderBotConfigRepository') private readonly repo: IBuilderBotConfigRepository
   ) {}
 

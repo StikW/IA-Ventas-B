@@ -13,10 +13,8 @@ import { BuilderBotWaApiAdapter } from './BuilderBotWaApiAdapter';
 
 @injectable()
 export class BuilderBotCloudAdapter implements IBuilderBotCloudService {
-  constructor(
-    private readonly waApi = new BuilderBotWaApiAdapter(),
-    private readonly cloudV2 = new BuilderBotCloudV2Adapter()
-  ) {}
+  private readonly waApi = new BuilderBotWaApiAdapter();
+  private readonly cloudV2 = new BuilderBotCloudV2Adapter();
 
   private delegate(): IBuilderBotCloudService {
     return resolveBuilderBotApiMode() === 'cloud-v2' ? this.cloudV2 : this.waApi;
