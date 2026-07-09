@@ -97,22 +97,21 @@ export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContex
         enabled: hasBuilderBot,
         message: hasBuilderBot
           ? 'WhatsApp aún no provisionado. Pulsa «Activar WhatsApp» para crear el deploy en BuilderBot Cloud.'
-          : 'BuilderBot no configurado en el servidor',
+          : 'BuilderBot no configurado en el servidor. Agrega BUILDERBOT_API_KEY en el .env del servidor.',
       };
     }
 
-    let sessionStatus: BuilderBotSessionStatus = config.sessionStatus;
-    let phone = config.phone;
-
-    if (hasBuilderBot) {
-      try {
-        sessionStatus = await this.builderBot.getSessionStatus(config.deviceId);
-        const device = await this.builderBot.getDevice(config.deviceId);
-        phone = device.phone ?? phone;
-      } catch {
-        // mantener último estado conocido
-      }
+    if (!config.deviceId?.trim()) {
+      return {
+        configured: false,
+        enabled: hasBuilderBot,
+        message: 'Configuración de WhatsApp incompleta. Pulsa «Activar WhatsApp» de nuevo.',
+      };
     }
+
+    // Estado guardado en DB; refresh en vivo vía POST /builderbot/refresh-status
+    const sessionStatus: BuilderBotSessionStatus = config.sessionStatus ?? 'unknown';
+    const phone = config.phone;
 
     return {
       configured: true,

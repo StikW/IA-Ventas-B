@@ -16,8 +16,19 @@ import { BuilderBotWebhookParser } from '../../../modules/builderbot/application
 import { ChatSessionRepositoryDynamo } from '../../../modules/sales-agent/infrastructure/persistence/ChatSessionRepositoryDynamo';
 import { OpenAIChatAdapter } from '../../../modules/sales-agent/infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentService } from '../../../modules/sales-agent/application/services/SalesAgentService';
+import {
+  ConnectBuilderBotPhoneUseCase,
+  GetBuilderBotConfigUseCase,
+  GetBuilderBotQrImageUseCase,
+  GetBuilderBotQrUseCase,
+  LinkBuilderBotBotUseCase,
+  ProvisionBuilderBotForTenantUseCase,
+  ProvisionWhatsAppUseCase,
+  RefreshBuilderBotStatusUseCase,
+} from '../../../modules/builderbot/application/use-cases/BuilderBotUseCases';
 import { SalesAgentToolsHandler } from '../../../modules/sales-agent/application/services/SalesAgentToolsHandler';
 import { OrderNotificationService } from '../../../modules/commerce/application/services/OrderNotificationService';
+import { CreateOrderUseCase, UpdateOrderStatusUseCase } from '../../../modules/commerce/application/use-cases/OrderUseCases';
 import { PlatformTenantCleanupService } from '../../../modules/tenant/infrastructure/persistence/PlatformTenantCleanupService';
 import { TenantDeletionService } from '../../../modules/tenant/application/services/TenantDeletionService';
 import { LocalStorageService } from '../../../modules/knowledge/infrastructure/storage/LocalStorageService';
@@ -82,4 +93,15 @@ export function registerDependencies(): void {
   container.registerSingleton(DocumentParserFactory, DocumentParserFactory);
   container.registerSingleton(DocumentProcessorService, DocumentProcessorService);
   container.registerSingleton(RagSearchService, RagSearchService);
+
+  container.registerSingleton(GetBuilderBotConfigUseCase, GetBuilderBotConfigUseCase);
+  container.registerSingleton(GetBuilderBotQrUseCase, GetBuilderBotQrUseCase);
+  container.registerSingleton(GetBuilderBotQrImageUseCase, GetBuilderBotQrImageUseCase);
+  container.registerSingleton(RefreshBuilderBotStatusUseCase, RefreshBuilderBotStatusUseCase);
+  container.registerSingleton(ProvisionBuilderBotForTenantUseCase, ProvisionBuilderBotForTenantUseCase);
+  container.registerSingleton(ProvisionWhatsAppUseCase, ProvisionWhatsAppUseCase);
+  container.registerSingleton(ConnectBuilderBotPhoneUseCase, ConnectBuilderBotPhoneUseCase);
+  container.registerSingleton(LinkBuilderBotBotUseCase, LinkBuilderBotBotUseCase);
+  container.registerSingleton(CreateOrderUseCase, CreateOrderUseCase);
+  container.registerSingleton(UpdateOrderStatusUseCase, UpdateOrderStatusUseCase);
 }

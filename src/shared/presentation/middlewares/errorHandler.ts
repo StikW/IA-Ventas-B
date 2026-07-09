@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { DomainError, ValidationError } from '../../domain/errors/DomainError';
+import { env } from '../../infrastructure/config/env';
 import { logger } from '../../infrastructure/logger/logger';
 
 export function errorHandler(err: Error, req: Request, res: Response, _next: NextFunction): void {
@@ -34,11 +35,11 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
     return;
   }
 
-  logger.error({ err, correlationId }, 'Unhandled error');
+  logger.error({ err, correlationId, message: err.message, stack: err.stack }, 'Unhandled error');
   res.status(500).json({
     error: {
       code: 'INTERNAL_ERROR',
-      message: 'Error interno del servidor',
+      message: env.NODE_ENV === 'production' ? 'Error interno del servidor' : err.message,
     },
   });
 }

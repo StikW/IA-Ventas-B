@@ -8,6 +8,10 @@ export function resolveBuilderBotApiMode(): BuilderBotApiMode {
 
   const url = (env.BUILDERBOT_API_URL ?? '').toLowerCase();
   if (url.includes('app.builderbot.cloud')) return 'cloud-v2';
+
+  const apiKey = (env.BUILDERBOT_API_KEY ?? '').trim().toLowerCase();
+  if (apiKey.startsWith('bbc-')) return 'cloud-v2';
+
   return 'wa-api';
 }
 
