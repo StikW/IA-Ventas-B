@@ -4,6 +4,17 @@ import { PRODUCTION_APP_ORIGIN } from './appDomain';
 
 dotenv.config();
 
+/** Variables vacías en .env (BUILDERBOT_API_URL=) no deben tumbar el arranque. */
+function normalizeEnv(input: NodeJS.ProcessEnv): Record<string, string | undefined> {
+  const normalized: Record<string, string | undefined> = { ...input };
+  for (const [key, value] of Object.entries(normalized)) {
+    if (typeof value === 'string' && value.trim() === '') {
+      delete normalized[key];
+    }
+  }
+  return normalized;
+}
+
 const isProduction = process.env.NODE_ENV === 'production';
 
 const envSchema = z.object({
@@ -45,10 +56,11 @@ const envSchema = z.object({
   APP_PUBLIC_URL: z.string().url().default(isProduction ? PRODUCTION_APP_ORIGIN : 'http://localhost:3000'),
 });
 
-const parsed = envSchema.safeParse(process.env);
+const parsed = envSchema.safeParse(normalizeEnv(process.env));
 
 if (!parsed.success) {
-  console.error('Invalid environment variables:', parsed.error.flatten().fieldErrors);
+  console.error('❌ Variables de entorno inválidas:');
+  console.error(JSON.stringify(parsed.error.flatten().fieldErrors, null, 2));
   process.exit(1);
 }
 

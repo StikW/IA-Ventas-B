@@ -15,7 +15,7 @@ if (hasBuilderBot && env.BUILDERBOT_API_KEY?.startsWith('bbc-') && resolveBuilde
 
 const app = createApp();
 
-app.listen(env.PORT, () => {
+const server = app.listen(env.PORT, () => {
   logger.info(
     {
       port: env.PORT,
@@ -27,4 +27,22 @@ app.listen(env.PORT, () => {
     },
     'IA Ventas API started'
   );
+});
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    logger.error({ port: env.PORT }, 'Puerto en uso. Otro proceso ya escucha en este puerto.');
+  } else {
+    logger.error({ err }, 'No se pudo iniciar el servidor HTTP');
+  }
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.error({ reason }, 'Unhandled promise rejection');
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error({ err }, 'Uncaught exception');
+  process.exit(1);
 });
