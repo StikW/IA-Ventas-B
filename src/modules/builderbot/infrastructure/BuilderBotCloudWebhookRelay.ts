@@ -8,7 +8,11 @@ const RELAY_FLOW_NAME = 'IA Ventas — Agente';
 const RELAY_FLOW_KEYWORDS = ['EVENTS.WELCOME'];
 
 type FlowRecord = { id?: string; label?: string; name?: string; keywords?: string[] };
-type AnswerRecord = { id?: string; type?: string };
+type AnswerRecord = {
+  id?: string;
+  type?: string;
+  plugins?: { http?: { url?: string } | null };
+};
 
 @injectable()
 export class BuilderBotCloudWebhookRelay {
@@ -63,7 +67,7 @@ export class BuilderBotCloudWebhookRelay {
         from: '{from}',
         phone: '{from}',
         name: '{name}',
-        text: '{capture}',
+        text: '{body}',
       },
       rules: [],
       avoidResponse: true,
@@ -77,7 +81,23 @@ export class BuilderBotCloudWebhookRelay {
     });
 
     const plugins = { http: this.buildHttpPlugin(webhookUrl) };
-    const httpAnswer = (listed.answers ?? []).find((answer) => answer.type === 'add_http');
+    const answers = listed.answers ?? [];
+    const relayHttp = answers.find(
+      (answer) => answer.type === 'add_http' && answer.plugins?.http?.url === webhookUrl
+    );
+    const legacyHttp = answers.find((answer) => answer.type === 'add_http');
+    const httpAnswer = relayHttp ?? legacyHttp;
+
+    for (const answer of answers) {
+      const isRelayHttp = answer.id && httpAnswer?.id && answer.id === httpAnswer.id;
+      if (isRelayHttp) continue;
+      if (!answer.id) continue;
+      await callBuilderBotMcpTool('builderbot_delete_answer', {
+        projectId,
+        flowId,
+        answerId: answer.id,
+      });
+    }
 
     if (httpAnswer?.id) {
       await callBuilderBotMcpTool('builderbot_update_answer', {
