@@ -57,6 +57,12 @@ export class ProcessSalesAgentWebhookUseCase
         });
 
         if (result.replied) replied += 1;
+        else {
+          logger.warn(
+            { tenantId: input.tenantId, customerPhone: message.from, reason: result.reason },
+            'Agente no respondió al mensaje de WhatsApp'
+          );
+        }
       } catch (err) {
         logger.error(
           {

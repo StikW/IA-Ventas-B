@@ -4,6 +4,7 @@ import { hasBuilderBot, hasOpenAI } from '../../../../shared/infrastructure/conf
 import { AuditService } from '../../../../shared/infrastructure/audit/AuditService';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
 import { IBuilderBotCloudService } from '../../../builderbot/domain/IBuilderBotCloudService';
+import { normalizeBuilderBotPhone } from '../../../builderbot/infrastructure/builderBotPhone';
 import { CreateOrderUseCase } from '../../../commerce/application/use-cases/OrderUseCases';
 import { OrderItem } from '../../../commerce/domain/entities/Order.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
@@ -357,7 +358,7 @@ export class SalesAgentService {
 
     await this.builderBot.sendTextMessage({
       deviceId: params.deviceId,
-      phone: params.customerPhone,
+      phone: normalizeBuilderBotPhone(params.customerPhone),
       message: params.reply,
     });
 

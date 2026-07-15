@@ -3,6 +3,7 @@ import { UseCase } from '../../../../shared/application/UseCase';
 import { ForbiddenError, NotFoundError, UnauthorizedError } from '../../../../shared/domain/errors/DomainError';
 import { env } from '../../../../shared/infrastructure/config/env';
 import { AuditService } from '../../../../shared/infrastructure/audit/AuditService';
+import { isBuilderBotTemplateLiteral } from '../../infrastructure/builderBotPhone';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
 import { BusinessStatus } from '../../../tenant/domain/entities/Business.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
@@ -11,6 +12,12 @@ import { IBuilderBotConfigRepository } from '../../domain/IBuilderBotCloudServic
 import { BuilderBotWebhookParser } from '../services/BuilderBotWebhookParser';
 
 const WEBHOOK_ACTOR = 'system:builderbot-webhook';
+
+function payloadKeys(payload: unknown): string[] {
+  return payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? Object.keys(payload as Record<string, unknown>)
+    : [];
+}
 
 function auditActionFor(event: BuilderBotWebhookEvent): string {
   switch (event.type) {
@@ -79,9 +86,10 @@ export class HandleBuilderBotWebhookUseCase
     logger.info(
       {
         tenantId: input.tenantId,
-        deviceId: config.deviceId,
+        payloadKeys: payloadKeys(input.payload),
         eventsProcessed: events.length,
         eventTypes: events.map((event) => event.type),
+        incomingCount: events.filter((e) => e.type === 'message.incoming').length,
       },
       'BuilderBot webhook procesado'
     );
@@ -102,6 +110,8 @@ export class HandleBuilderBotWebhookUseCase
             event.type === 'message.incoming' &&
             !!event.from &&
             !!event.text?.trim() &&
+            !isBuilderBotTemplateLiteral(event.from) &&
+            !isBuilderBotTemplateLiteral(event.text) &&
             (!event.messageType || event.messageType === 'text')
         )
         .map((event) => ({

@@ -1,6 +1,8 @@
 import { injectable } from 'tsyringe';
 import { BuilderBotWebhookEvent, BuilderBotWebhookEventType } from '../../domain/BuilderBotWebhook.types';
 
+import { isBuilderBotTemplateLiteral } from '../../infrastructure/builderBotPhone';
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
@@ -25,6 +27,29 @@ function readMediaUrl(message: Record<string, unknown>): string | undefined {
   if (message.media_url) return String(message.media_url);
   const media = asRecord(message.media);
   if (media?.url) return String(media.url);
+  return undefined;
+}
+
+function readFrom(root: Record<string, unknown>): string | undefined {
+  if (root.from) return String(root.from);
+  if (root.phone) return String(root.phone);
+  const contact = asRecord(root.contact);
+  if (contact?.phone) return String(contact.phone);
+  const user = asRecord(root.user);
+  if (user?.phone) return String(user.phone);
+  return undefined;
+}
+
+function readIncomingText(root: Record<string, unknown>): string | undefined {
+  const direct = readText(root);
+  if (direct && !isBuilderBotTemplateLiteral(direct)) return direct;
+  if (typeof root.body === 'string' && !isBuilderBotTemplateLiteral(root.body)) return root.body;
+  if (typeof root.message === 'string' && !isBuilderBotTemplateLiteral(root.message)) return root.message;
+  const message = asRecord(root.message);
+  if (message) {
+    const nested = readText(message);
+    if (nested && !isBuilderBotTemplateLiteral(nested)) return nested;
+  }
   return undefined;
 }
 
@@ -115,31 +140,53 @@ export class BuilderBotWebhookParser {
     }
 
     const ctx = asRecord(root.ctx);
-    if (ctx && events.length === 0) {
-      events.push({
-        type: 'message.incoming',
-        from: ctx.from ? String(ctx.from) : undefined,
-        text: ctx.body ? String(ctx.body) : undefined,
-        messageType: 'text',
-      });
+    if (ctx) {
+      const from = ctx.from ? String(ctx.from) : undefined;
+      const text = ctx.body ? String(ctx.body) : undefined;
+      if (from && text && !isBuilderBotTemplateLiteral(from) && !isBuilderBotTemplateLiteral(text)) {
+        events.push({
+          type: 'message.incoming',
+          from,
+          text,
+          messageType: 'text',
+        });
+      }
     }
 
     const eventName = String(root.event ?? root.type ?? '').toLowerCase();
     if (events.length === 0 && (eventName.includes('message') || root.from || root.phone)) {
-      const message = asRecord(root.message) ?? root;
-      events.push({
-        type: eventName.includes('status') ? 'message.status' : 'message.incoming',
-        from: root.from ? String(root.from) : root.phone ? String(root.phone) : undefined,
-        messageId: message.id ? String(message.id) : root.messageId ? String(root.messageId) : undefined,
-        messageType: message.type ? String(message.type) : undefined,
-        text: readText(message) ?? (root.text ? String(root.text) : undefined),
-        mediaUrl: readMediaUrl(message),
-        caption: message.caption ? String(message.caption) : undefined,
-        status: root.status ? String(root.status) : undefined,
-        deviceId: root.deviceId ? String(root.deviceId) : root.device ? String(root.device) : undefined,
-        sessionStatus: root.sessionStatus ? String(root.sessionStatus) : undefined,
-        timestamp: root.timestamp ? String(root.timestamp) : undefined,
-      });
+      const from = readFrom(root);
+      const text = readIncomingText(root);
+      if (from && text && !isBuilderBotTemplateLiteral(from) && !isBuilderBotTemplateLiteral(text)) {
+        const message = asRecord(root.message) ?? root;
+        events.push({
+          type: eventName.includes('status') ? 'message.status' : 'message.incoming',
+          from,
+          messageId: message.id ? String(message.id) : root.messageId ? String(root.messageId) : undefined,
+          messageType: message.type ? String(message.type) : 'text',
+          text,
+          mediaUrl: readMediaUrl(message),
+          caption: message.caption ? String(message.caption) : undefined,
+          status: root.status ? String(root.status) : undefined,
+          deviceId: root.deviceId ? String(root.deviceId) : root.device ? String(root.device) : undefined,
+          sessionStatus: root.sessionStatus ? String(root.sessionStatus) : undefined,
+          timestamp: root.timestamp ? String(root.timestamp) : undefined,
+        });
+      }
+    }
+
+    const nested = asRecord(root.payload) ?? asRecord(root.response);
+    if (nested && events.length === 0) {
+      const from = readFrom(nested);
+      const text = readIncomingText(nested);
+      if (from && text && !isBuilderBotTemplateLiteral(from) && !isBuilderBotTemplateLiteral(text)) {
+        events.push({
+          type: 'message.incoming',
+          from,
+          text,
+          messageType: 'text',
+        });
+      }
     }
 
     return events;
