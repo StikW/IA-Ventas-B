@@ -58,6 +58,13 @@ export class BuilderBotCloudWebhookRelay {
       url: webhookUrl,
       method: 'POST',
       headers,
+      body: {
+        event: 'message.incoming',
+        from: '{from}',
+        phone: '{from}',
+        name: '{name}',
+        text: '{capture}',
+      },
       rules: [],
       avoidResponse: true,
     };

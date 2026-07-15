@@ -9,5 +9,8 @@ export function normalizeBuilderBotPhone(phone: string): string {
 }
 
 export function isBuilderBotTemplateLiteral(value?: string): boolean {
-  return !!value && /\{\{.*\}\}/.test(value);
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (/\{\{.*\}\}/.test(trimmed)) return true;
+  return /^\{[a-zA-Z]+\}$/.test(trimmed);
 }

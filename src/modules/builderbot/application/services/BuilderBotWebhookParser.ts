@@ -43,6 +43,8 @@ function readFrom(root: Record<string, unknown>): string | undefined {
 function readIncomingText(root: Record<string, unknown>): string | undefined {
   const direct = readText(root);
   if (direct && !isBuilderBotTemplateLiteral(direct)) return direct;
+  if (typeof root.text === 'string' && !isBuilderBotTemplateLiteral(root.text)) return root.text;
+  if (typeof root.capture === 'string' && !isBuilderBotTemplateLiteral(root.capture)) return root.capture;
   if (typeof root.body === 'string' && !isBuilderBotTemplateLiteral(root.body)) return root.body;
   if (typeof root.message === 'string' && !isBuilderBotTemplateLiteral(root.message)) return root.message;
   const message = asRecord(root.message);

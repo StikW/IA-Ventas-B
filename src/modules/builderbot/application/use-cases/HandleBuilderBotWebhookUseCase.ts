@@ -83,16 +83,26 @@ export class HandleBuilderBotWebhookUseCase
       )
     );
 
-    logger.info(
-      {
-        tenantId: input.tenantId,
-        payloadKeys: payloadKeys(input.payload),
-        eventsProcessed: events.length,
-        eventTypes: events.map((event) => event.type),
-        incomingCount: events.filter((e) => e.type === 'message.incoming').length,
-      },
-      'BuilderBot webhook procesado'
-    );
+    const incomingCount = events.filter((e) => e.type === 'message.incoming').length;
+    const logPayload = {
+      tenantId: input.tenantId,
+      payloadKeys: payloadKeys(input.payload),
+      eventsProcessed: events.length,
+      eventTypes: events.map((event) => event.type),
+      incomingCount,
+    };
+
+    if (incomingCount === 0 && events.some((event) => event.type === 'unknown')) {
+      logger.warn(
+        {
+          ...logPayload,
+          payloadSample: JSON.stringify(input.payload).slice(0, 500),
+        },
+        'BuilderBot webhook sin mensajes reconocidos'
+      );
+    } else {
+      logger.info(logPayload, 'BuilderBot webhook procesado');
+    }
 
     return {
       received: true,
