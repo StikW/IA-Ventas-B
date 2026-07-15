@@ -8,6 +8,7 @@ import {
   LinkBuilderBotBotUseCase,
   ProvisionWhatsAppUseCase,
   RefreshBuilderBotStatusUseCase,
+  SyncBuilderBotWebhookUseCase,
 } from '../../application/use-cases/BuilderBotUseCases';
 
 export class BuilderBotController {
@@ -78,6 +79,16 @@ export class BuilderBotController {
       const useCase = container.resolve(ProvisionWhatsAppUseCase);
       const result = await useCase.execute({ actor: req.user! });
       res.status(result ? 201 : 200).json({ data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async syncWebhook(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const useCase = container.resolve(SyncBuilderBotWebhookUseCase);
+      const result = await useCase.execute({ actor: req.user! });
+      res.json({ data: result });
     } catch (err) {
       next(err);
     }

@@ -17,6 +17,7 @@ export function createBuilderBotTenantRoutes(): Router {
   router.get('/qr/image', builderBotController.getQrImage.bind(builderBotController));
   router.post('/connect-phone', validateBody(connectPhoneSchema), builderBotController.connectPhone.bind(builderBotController));
   router.post('/refresh-status', builderBotController.refreshStatus.bind(builderBotController));
+  router.post('/sync-webhook', builderBotController.syncWebhook.bind(builderBotController));
 
   return router;
 }

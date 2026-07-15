@@ -295,6 +295,38 @@ export class LinkBuilderBotBotUseCase
 }
 
 @injectable()
+export class SyncBuilderBotWebhookUseCase
+  implements UseCase<{ actor: TenantContext }, { webhookUrl: string; syncedAt: string }>
+{
+  constructor(
+    @inject('IBuilderBotCloudService') private readonly builderBot: IBuilderBotCloudService,
+    @inject('IBuilderBotConfigRepository') private readonly repo: IBuilderBotConfigRepository
+  ) {}
+
+  async execute(input: { actor: TenantContext }): Promise<{ webhookUrl: string; syncedAt: string }> {
+    if (!hasBuilderBot) {
+      throw new ForbiddenError('BuilderBot no está configurado en el servidor');
+    }
+
+    const tenantId = resolveTenantId(input.actor);
+    const config = await this.repo.findByTenantId(tenantId);
+    if (!config) throw new NotFoundError('WhatsApp no provisionado para este negocio');
+
+    const webhookUrl = `${env.APP_PUBLIC_URL.replace(/\/$/, '')}${env.API_PREFIX}/webhooks/builderbot/${tenantId}`;
+    await this.builderBot.updateDevice(config.deviceId, { webhook: webhookUrl, webhookUrl });
+
+    const syncedAt = new Date().toISOString();
+    await this.repo.save({
+      ...config,
+      webhookUrl,
+      updatedAt: syncedAt,
+    });
+
+    return { webhookUrl, syncedAt };
+  }
+}
+
+@injectable()
 export class ProvisionWhatsAppUseCase implements UseCase<{ actor: TenantContext }, BuilderBotConfigData | null> {
   constructor(
     @inject(ProvisionBuilderBotForTenantUseCase) private readonly provision: ProvisionBuilderBotForTenantUseCase,

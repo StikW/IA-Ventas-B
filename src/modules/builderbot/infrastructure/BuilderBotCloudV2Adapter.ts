@@ -644,36 +644,33 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
 
 
 
+    let lastError: DomainError | null = null;
+
     try {
-
       await this.request(`/deploys/${encodeURIComponent(deviceId)}`, {
-
         method: 'PATCH',
-
         body: JSON.stringify(body),
-
       });
-
-    } catch {
-
-      try {
-
-        await this.request(`/deploys/${encodeURIComponent(deviceId)}/webhook`, {
-
-          method: 'POST',
-
-          body: JSON.stringify(body),
-
-        });
-
-      } catch {
-
-        // webhook se puede configurar manualmente en BuilderBot Cloud
-
-      }
-
+      return;
+    } catch (error) {
+      lastError = error instanceof DomainError ? error : null;
     }
 
+    try {
+      await this.request(`/deploys/${encodeURIComponent(deviceId)}/webhook`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      return;
+    } catch (error) {
+      if (error instanceof DomainError) lastError = error;
+    }
+
+    if (lastError) throw lastError;
+    throw new DomainError(
+      'No se pudo configurar el webhook en BuilderBot Cloud. Configúralo manualmente en el panel.',
+      'BUILDERBOT_WEBHOOK_SYNC_FAILED'
+    );
   }
 
 
