@@ -114,6 +114,16 @@ export class BuilderBotWebhookParser {
       events.push(...this.parseSession(data));
     }
 
+    const ctx = asRecord(root.ctx);
+    if (ctx && events.length === 0) {
+      events.push({
+        type: 'message.incoming',
+        from: ctx.from ? String(ctx.from) : undefined,
+        text: ctx.body ? String(ctx.body) : undefined,
+        messageType: 'text',
+      });
+    }
+
     const eventName = String(root.event ?? root.type ?? '').toLowerCase();
     if (events.length === 0 && (eventName.includes('message') || root.from || root.phone)) {
       const message = asRecord(root.message) ?? root;

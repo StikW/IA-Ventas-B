@@ -6,6 +6,7 @@ import { buildBuilderBotProjectId } from '../../infrastructure/builderBotProject
 import { resolveBuilderBotApiMode } from '../../infrastructure/builderBotApiMode';
 import { createBuilderBotCloudProject } from '../../infrastructure/BuilderBotMcpHttpClient';
 import { buildBuilderBotConnectUrl } from '../../infrastructure/builderBotConnectUrl';
+import { BuilderBotCloudWebhookRelay } from '../../infrastructure/BuilderBotCloudWebhookRelay';
 import { UserRole } from '../../../identity/domain/entities/User.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
 import {
@@ -22,13 +23,18 @@ function resolveTenantId(actor: TenantContext): string {
   return actor.tenantId;
 }
 
+function buildWebhookUrl(tenantId: string): string {
+  return `${env.APP_PUBLIC_URL.replace(/\/$/, '')}${env.API_PREFIX}/webhooks/builderbot/${tenantId}`;
+}
+
 @injectable()
 export class ProvisionBuilderBotForTenantUseCase
   implements UseCase<{ tenantId: string; businessName: string; businessSlug: string }, BuilderBotConfigData | null>
 {
   constructor(
     @inject('IBuilderBotCloudService') private readonly builderBot: IBuilderBotCloudService,
-    @inject('IBuilderBotConfigRepository') private readonly repo: IBuilderBotConfigRepository
+    @inject('IBuilderBotConfigRepository') private readonly repo: IBuilderBotConfigRepository,
+    @inject(BuilderBotCloudWebhookRelay) private readonly webhookRelay: BuilderBotCloudWebhookRelay
   ) {}
 
   async execute(input: { tenantId: string; businessName: string; businessSlug: string }): Promise<BuilderBotConfigData | null> {
@@ -54,12 +60,20 @@ export class ProvisionBuilderBotForTenantUseCase
       name: input.businessName,
     });
     const now = new Date().toISOString();
-    const webhookUrl = `${env.APP_PUBLIC_URL.replace(/\/$/, '')}${env.API_PREFIX}/webhooks/builderbot/${input.tenantId}`;
+    const webhookUrl = buildWebhookUrl(input.tenantId);
 
-    try {
-      await this.builderBot.updateDevice(device.deviceId, { webhook: webhookUrl });
-    } catch {
-      // webhook opcional según plan/API
+    if (mode === 'cloud-v2') {
+      try {
+        await this.webhookRelay.sync(projectId, webhookUrl);
+      } catch {
+        // se puede reintentar desde el panel con «Re-sincronizar webhook»
+      }
+    } else {
+      try {
+        await this.builderBot.updateDevice(device.deviceId, { webhook: webhookUrl });
+      } catch {
+        // webhook opcional según plan/API
+      }
     }
 
     const config: BuilderBotConfigData = {
@@ -111,6 +125,8 @@ export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContex
     // Estado guardado en DB; refresh en vivo vía POST /builderbot/refresh-status
     const sessionStatus: BuilderBotSessionStatus = config.sessionStatus ?? 'unknown';
     const phone = config.phone;
+    const webhookUrl = buildWebhookUrl(tenantId);
+    const webhookNeedsSync = config.webhookUrl !== webhookUrl;
 
     return {
       configured: true,
@@ -120,7 +136,9 @@ export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContex
       phone,
       sessionStatus,
       platformApiKeyPrefix: config.platformApiKeyPrefix,
-      webhookUrl: config.webhookUrl,
+      webhookUrl,
+      appPublicUrl: env.APP_PUBLIC_URL,
+      webhookNeedsSync,
       projectId: config.projectId ?? config.deviceId,
       connectUrl:
         config.connectUrl ??
@@ -238,7 +256,8 @@ export class LinkBuilderBotBotUseCase
   constructor(
     @inject('IBuilderBotCloudService') private readonly builderBot: IBuilderBotCloudService,
     @inject('IBuilderBotConfigRepository') private readonly repo: IBuilderBotConfigRepository,
-    @inject('IBusinessRepository') private readonly businessRepo: IBusinessRepository
+    @inject('IBusinessRepository') private readonly businessRepo: IBusinessRepository,
+    @inject(BuilderBotCloudWebhookRelay) private readonly webhookRelay: BuilderBotCloudWebhookRelay
   ) {}
 
   async execute(input: { actor: TenantContext; botId: string; deviceName?: string }): Promise<BuilderBotConfigData> {
@@ -267,12 +286,20 @@ export class LinkBuilderBotBotUseCase
     const business = await this.businessRepo.findById(tenantId);
     const deviceName = input.deviceName?.trim() || business?.name || 'Bot WhatsApp';
     const now = new Date().toISOString();
-    const webhookUrl = `${env.APP_PUBLIC_URL.replace(/\/$/, '')}${env.API_PREFIX}/webhooks/builderbot/${tenantId}`;
+    const webhookUrl = buildWebhookUrl(tenantId);
 
-    try {
-      await this.builderBot.updateDevice(botId, { webhook: webhookUrl, webhookUrl });
-    } catch {
-      // configurar webhook manualmente en BuilderBot Cloud si la API no lo soporta
+    if (resolveBuilderBotApiMode() === 'cloud-v2') {
+      try {
+        await this.webhookRelay.sync(botId, webhookUrl);
+      } catch {
+        // configurar webhook manualmente en BuilderBot Cloud si la API no lo soporta
+      }
+    } else {
+      try {
+        await this.builderBot.updateDevice(botId, { webhook: webhookUrl, webhookUrl });
+      } catch {
+        // configurar webhook manualmente en BuilderBot Cloud si la API no lo soporta
+      }
     }
 
     const config: BuilderBotConfigData = {
@@ -300,7 +327,8 @@ export class SyncBuilderBotWebhookUseCase
 {
   constructor(
     @inject('IBuilderBotCloudService') private readonly builderBot: IBuilderBotCloudService,
-    @inject('IBuilderBotConfigRepository') private readonly repo: IBuilderBotConfigRepository
+    @inject('IBuilderBotConfigRepository') private readonly repo: IBuilderBotConfigRepository,
+    @inject(BuilderBotCloudWebhookRelay) private readonly webhookRelay: BuilderBotCloudWebhookRelay
   ) {}
 
   async execute(input: { actor: TenantContext }): Promise<{ webhookUrl: string; syncedAt: string }> {
@@ -312,8 +340,15 @@ export class SyncBuilderBotWebhookUseCase
     const config = await this.repo.findByTenantId(tenantId);
     if (!config) throw new NotFoundError('WhatsApp no provisionado para este negocio');
 
-    const webhookUrl = `${env.APP_PUBLIC_URL.replace(/\/$/, '')}${env.API_PREFIX}/webhooks/builderbot/${tenantId}`;
-    await this.builderBot.updateDevice(config.deviceId, { webhook: webhookUrl, webhookUrl });
+    const webhookUrl = buildWebhookUrl(tenantId);
+    const projectId = config.projectId ?? config.deviceId;
+    const mode = resolveBuilderBotApiMode();
+
+    if (mode === 'cloud-v2') {
+      await this.webhookRelay.sync(projectId, webhookUrl);
+    } else {
+      await this.builderBot.updateDevice(config.deviceId, { webhook: webhookUrl, webhookUrl });
+    }
 
     const syncedAt = new Date().toISOString();
     await this.repo.save({

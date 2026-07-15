@@ -11,6 +11,7 @@ import { OrderRepositoryDynamo } from '../../../modules/commerce/infrastructure/
 import { WooCommerceConfigRepositoryDynamo } from '../../../modules/woocommerce/infrastructure/persistence/WooCommerceConfigRepositoryDynamo';
 import { WooCommerceRestAdapter } from '../../../modules/woocommerce/infrastructure/WooCommerceRestAdapter';
 import { BuilderBotCloudAdapter } from '../../../modules/builderbot/infrastructure/BuilderBotCloudAdapter';
+import { BuilderBotCloudWebhookRelay } from '../../../modules/builderbot/infrastructure/BuilderBotCloudWebhookRelay';
 import { BuilderBotConfigRepositoryDynamo } from '../../../modules/builderbot/infrastructure/persistence/BuilderBotConfigRepositoryDynamo';
 import { BuilderBotWebhookParser } from '../../../modules/builderbot/application/services/BuilderBotWebhookParser';
 import { ChatSessionRepositoryDynamo } from '../../../modules/sales-agent/infrastructure/persistence/ChatSessionRepositoryDynamo';
@@ -60,6 +61,7 @@ export function registerDependencies(): void {
   container.registerSingleton('IWooCommerceConfigRepository', WooCommerceConfigRepositoryDynamo);
   container.registerSingleton('IWooCommerceService', WooCommerceRestAdapter);
 
+  container.registerSingleton(BuilderBotCloudWebhookRelay, BuilderBotCloudWebhookRelay);
   container.registerSingleton('IBuilderBotCloudService', BuilderBotCloudAdapter);
   container.registerSingleton('IBuilderBotConfigRepository', BuilderBotConfigRepositoryDynamo);
   container.registerSingleton(BuilderBotWebhookParser, BuilderBotWebhookParser);
