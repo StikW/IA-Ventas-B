@@ -7,7 +7,7 @@ const RELAY_FLOW_LABEL = 'ia_ventas_webhook_relay';
 const RELAY_FLOW_NAME = 'IA Ventas — Agente';
 const RELAY_FLOW_KEYWORDS = ['EVENTS.WELCOME'];
 
-type FlowRecord = { id?: string; label?: string };
+type FlowRecord = { id?: string; label?: string; name?: string; keywords?: string[] };
 type AnswerRecord = { id?: string; type?: string };
 
 @injectable()
@@ -24,7 +24,7 @@ export class BuilderBotCloudWebhookRelay {
       (flow) =>
         flow.label === RELAY_FLOW_LABEL ||
         flow.name === RELAY_FLOW_NAME ||
-        (flow.name?.includes('IA Ventas') && (flow as { keywords?: string[] }).keywords?.includes('EVENTS.WELCOME'))
+        (flow.name?.includes('IA Ventas') && flow.keywords?.includes('EVENTS.WELCOME'))
     );
     if (existing?.id) return existing.id;
 
