@@ -25,3 +25,7 @@ export function resolveBuilderBotApiUrl(mode: BuilderBotApiMode): string {
 }
 
 export const BUILDERBOT_CLOUD_PANEL_URL = 'https://app.builderbot.cloud';
+
+export function resolveBuilderBotCloudMessagesUrl(projectId: string): string {
+  return `${BUILDERBOT_CLOUD_PANEL_URL}/api/v2/${encodeURIComponent(projectId)}/messages`;
+}

@@ -20,7 +20,7 @@ import {
 
 } from '../domain/IBuilderBotCloudService';
 
-import { resolveBuilderBotApiUrl } from './builderBotApiMode';
+import { resolveBuilderBotApiUrl, resolveBuilderBotCloudMessagesUrl } from './builderBotApiMode';
 import { deleteBuilderBotCloudProject, rebootBuilderBotCloudDeploy } from './BuilderBotMcpHttpClient';
 
 
@@ -676,57 +676,64 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
 
 
   async sendTextMessage(input: SendTextMessageInput): Promise<void> {
+    if (!hasBuilderBot) {
+      throw new DomainError('BuilderBot no está configurado en el servidor', 'BUILDERBOT_NOT_CONFIGURED');
+    }
 
-    const payload = {
+    const number = input.phone.replace(/\D/g, '');
+    const content = input.message.trim();
+    const projectId = input.deviceId;
 
-      projectId: input.deviceId,
-
-      phone: input.phone,
-
-      to: input.phone,
-
-      number: input.phone,
-
-      message: input.message.trim(),
-
-      text: input.message.trim(),
-
+    const v2Payload = {
+      messages: { content },
+      number,
+      checkIfExists: false,
     };
 
+    const v2Url = resolveBuilderBotCloudMessagesUrl(projectId);
+    const v2Response = await fetch(v2Url, {
+      method: 'POST',
+      headers: this.authHeaders(),
+      body: JSON.stringify(v2Payload),
+    });
 
+    if (v2Response.ok) return;
+
+    const v2ErrorBody = await v2Response.text();
+
+    const legacyPayload = {
+      projectId,
+      phone: input.phone,
+      to: input.phone,
+      number: input.phone,
+      message: content,
+      text: content,
+    };
 
     const paths = [
-
-      { path: `/deploys/${encodeURIComponent(input.deviceId)}/messages`, init: { method: 'POST', body: JSON.stringify(payload) } },
-
-      { path: '/messages', init: { method: 'POST', body: JSON.stringify(payload) } },
-
+      { path: `/deploys/${encodeURIComponent(projectId)}/messages`, init: { method: 'POST', body: JSON.stringify(legacyPayload) } },
+      { path: '/messages', init: { method: 'POST', body: JSON.stringify(legacyPayload) } },
     ];
 
-
-
     let lastError: DomainError | null = null;
+    if (v2Response.status !== 404) {
+      lastError = new DomainError(
+        `BuilderBot Cloud API error ${v2Response.status}: ${v2ErrorBody}`,
+        'BUILDERBOT_ERROR'
+      );
+    }
 
     for (const candidate of paths) {
-
       try {
-
         await this.request(candidate.path, candidate.init);
-
         return;
-
       } catch (error) {
-
         if (error instanceof DomainError) lastError = error;
-
         else throw error;
-
       }
-
     }
 
     throw lastError ?? new DomainError('No se pudo enviar el mensaje por BuilderBot Cloud', 'BUILDERBOT_ERROR');
-
   }
 
 
