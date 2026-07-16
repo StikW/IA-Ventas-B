@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "CommonJS",
+    "module": "Node16",
     "lib": ["ES2022"],
     "outDir": "./dist",
     "rootDir": "./src",
@@ -15,12 +15,7 @@
     "sourceMap": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
-    "moduleResolution": "node",
-    "baseUrl": "./src",
-    "paths": {
-      "@shared/*": ["shared/*"],
-      "@modules/*": ["modules/*"]
-    }
+    "moduleResolution": "node16"
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
