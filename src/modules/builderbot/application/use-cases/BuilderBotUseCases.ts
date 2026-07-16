@@ -27,6 +27,23 @@ function buildWebhookUrl(tenantId: string): string {
   return `${env.APP_PUBLIC_URL.replace(/\/$/, '')}${env.API_PREFIX}/webhooks/builderbot/${tenantId}`;
 }
 
+/** Misma lógica que POST /builderbot/sync-webhook (relay BBC o webhook wa-api). */
+async function syncTenantWebhook(
+  relay: BuilderBotCloudWebhookRelay,
+  builderBot: IBuilderBotCloudService,
+  tenantId: string,
+  projectId: string,
+  deviceId: string
+): Promise<string> {
+  const webhookUrl = buildWebhookUrl(tenantId);
+  if (resolveBuilderBotApiMode() === 'cloud-v2') {
+    await relay.sync(projectId, webhookUrl);
+  } else {
+    await builderBot.updateDevice(deviceId, { webhook: webhookUrl, webhookUrl });
+  }
+  return webhookUrl;
+}
+
 @injectable()
 export class ProvisionBuilderBotForTenantUseCase
   implements UseCase<{ tenantId: string; businessName: string; businessSlug: string }, BuilderBotConfigData | null>
@@ -60,21 +77,13 @@ export class ProvisionBuilderBotForTenantUseCase
       name: input.businessName,
     });
     const now = new Date().toISOString();
-    const webhookUrl = buildWebhookUrl(input.tenantId);
-
-    if (mode === 'cloud-v2') {
-      try {
-        await this.webhookRelay.sync(projectId, webhookUrl);
-      } catch {
-        // se puede reintentar desde el panel con «Re-sincronizar webhook»
-      }
-    } else {
-      try {
-        await this.builderBot.updateDevice(device.deviceId, { webhook: webhookUrl });
-      } catch {
-        // webhook opcional según plan/API
-      }
-    }
+    const webhookUrl = await syncTenantWebhook(
+      this.webhookRelay,
+      this.builderBot,
+      input.tenantId,
+      projectId,
+      device.deviceId
+    );
 
     const config: BuilderBotConfigData = {
       tenantId: input.tenantId,
@@ -286,21 +295,7 @@ export class LinkBuilderBotBotUseCase
     const business = await this.businessRepo.findById(tenantId);
     const deviceName = input.deviceName?.trim() || business?.name || 'Bot WhatsApp';
     const now = new Date().toISOString();
-    const webhookUrl = buildWebhookUrl(tenantId);
-
-    if (resolveBuilderBotApiMode() === 'cloud-v2') {
-      try {
-        await this.webhookRelay.sync(botId, webhookUrl);
-      } catch {
-        // configurar webhook manualmente en BuilderBot Cloud si la API no lo soporta
-      }
-    } else {
-      try {
-        await this.builderBot.updateDevice(botId, { webhook: webhookUrl, webhookUrl });
-      } catch {
-        // configurar webhook manualmente en BuilderBot Cloud si la API no lo soporta
-      }
-    }
+    const webhookUrl = await syncTenantWebhook(this.webhookRelay, this.builderBot, tenantId, botId, botId);
 
     const config: BuilderBotConfigData = {
       tenantId,
@@ -342,13 +337,14 @@ export class SyncBuilderBotWebhookUseCase
 
     const webhookUrl = buildWebhookUrl(tenantId);
     const projectId = config.projectId ?? config.deviceId;
-    const mode = resolveBuilderBotApiMode();
 
-    if (mode === 'cloud-v2') {
-      await this.webhookRelay.sync(projectId, webhookUrl);
-    } else {
-      await this.builderBot.updateDevice(config.deviceId, { webhook: webhookUrl, webhookUrl });
-    }
+    await syncTenantWebhook(
+      this.webhookRelay,
+      this.builderBot,
+      tenantId,
+      projectId,
+      config.deviceId
+    );
 
     const syncedAt = new Date().toISOString();
     await this.repo.save({
