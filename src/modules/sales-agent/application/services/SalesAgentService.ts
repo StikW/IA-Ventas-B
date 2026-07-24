@@ -18,6 +18,7 @@ import { ConversationFlowService, OutboundWhatsAppMessage } from './Conversation
 import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent } from '../../domain/whatsappFlow.constants';
+import { isCartClearIntent, isCartCorrectionIntent, isCartRemoveIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
 import { hasConcreteProductSpec } from '../../domain/productSelection.utils';
 
 const AGENT_ACTOR = 'system:sales-agent';
@@ -319,6 +320,35 @@ export class SalesAgentService {
         ragHits: 0,
       });
       return { replied: true, reply: finalizeReply.message, bbcResponse };
+    }
+
+    const cartModIntent =
+      isCartClearIntent(text) ||
+      (mutableContext.cartItems?.length &&
+        (isCartRemoveIntent(text) || isCartCorrectionIntent(text) || isCartSetQuantityIntent(text)));
+
+    if (cartModIntent) {
+      const mod = await this.tools.applyCartModification(input.tenantId, text, mutableContext.cartItems ?? []);
+      if (mod.handled) {
+        mutableContext.cartItems = mod.items;
+        mutableContext.flowStep = mod.items.length ? 'buying' : 'discovery';
+        const now = new Date().toISOString();
+        const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, mod.message);
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: cartPrompt.replyText,
+          salesContext: { ...mutableContext, ...cartPrompt.salesContext },
+          outbound: cartPrompt.outbound,
+          now,
+          ragHits: 0,
+        });
+        return { replied: true, reply: cartPrompt.replyText, bbcResponse };
+      }
     }
 
     if (

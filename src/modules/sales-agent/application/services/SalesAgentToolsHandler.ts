@@ -21,7 +21,19 @@ import {
   VARIANT_STRIP_PATTERN,
 } from '../../domain/productSelection.utils';
 import { buildCheckoutFormUrl } from '../../domain/checkoutLink.utils';
+import {
+  buildProductQueryFromTarget,
+  describeCartTarget,
+  isCartClearIntent,
+  isCartCorrectionIntent,
+  isCartRemoveIntent,
+  isCartSetQuantityIntent,
+  parseCartCorrection,
+  parseCartRemove,
+  parseCartSetQuantity,
+} from '../../domain/cartModification.utils';
 import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
+import { CartService } from './CartService';
 
 export interface StockCheckResult {
   available: boolean;
@@ -510,6 +522,129 @@ export class SalesAgentToolsHandler {
     };
   }
 
+  /** Vaciar carrito, quitar productos o corregir cantidades (determinista). */
+  async applyCartModification(
+    tenantId: string,
+    userText: string,
+    cartItems: PendingCartItem[]
+  ): Promise<{ handled: boolean; items: PendingCartItem[]; message: string }> {
+    const items = cartItems ?? [];
+
+    if (isCartClearIntent(userText)) {
+      return {
+        handled: true,
+        items: CartService.clear(),
+        message: 'Listo, vacié tu carrito. ¿Qué te gustaría pedir?',
+      };
+    }
+
+    if (!items.length) {
+      return { handled: false, items, message: '' };
+    }
+
+    if (isCartCorrectionIntent(userText)) {
+      const parts = parseCartCorrection(userText);
+      if (!parts) return { handled: false, items, message: '' };
+
+      let next = [...items];
+      const notes: string[] = [];
+
+      const removed = CartService.removeByTarget(next, parts.remove, parts.remove.quantity, true);
+      next = removed.items;
+      if (removed.removedQty > 0) {
+        notes.push(`Quité del carrito: ${removed.removedNames.join(', ')}.`);
+      } else {
+        notes.push(`No encontré "${describeCartTarget(parts.remove)}" en tu carrito.`);
+      }
+
+      const wantQuery = buildProductQueryFromTarget(parts.want);
+      const existing = CartService.findByTarget(next, parts.want);
+      if (existing) {
+        next = CartService.setQuantityByTarget(next, parts.want, parts.want.quantity);
+        notes.push(`Dejé ${parts.want.quantity} de ${existing.name}.`);
+      } else if (wantQuery.trim()) {
+        const resolved = await this.resolveSelectionFromTextInner(
+          tenantId,
+          wantQuery,
+          parts.want.quantity,
+          { cartItems: next }
+        );
+        if (resolved.ok && resolved.item) {
+          next = CartService.merge(next, [{ ...resolved.item, quantity: parts.want.quantity }]);
+          next = CartService.setQuantityByTarget(next, parts.want, parts.want.quantity);
+          notes.push(`Agregué ${parts.want.quantity} de ${resolved.item.name}.`);
+        } else {
+          notes.push(resolved.message);
+        }
+      }
+
+      return {
+        handled: true,
+        items: next,
+        message: notes.join(' ') || 'Actualicé tu carrito.',
+      };
+    }
+
+    if (isCartSetQuantityIntent(userText)) {
+      const req = parseCartSetQuantity(userText);
+      if (!req) return { handled: false, items, message: '' };
+
+      const existing = CartService.findByTarget(items, req.target);
+      if (!existing) {
+        return {
+          handled: true,
+          items,
+          message: `No encontré "${describeCartTarget(req.target)}" en tu carrito.`,
+        };
+      }
+
+      const next = CartService.setQuantityByTarget(items, req.target, req.quantity);
+      return {
+        handled: true,
+        items: next,
+        message: `Listo, dejé ${req.quantity} de ${existing.name}.`,
+      };
+    }
+
+    if (isCartRemoveIntent(userText)) {
+      const req = parseCartRemove(userText);
+      const hasTarget =
+        !!req.target.sku || !!req.target.variantHint || req.target.productTokens.length > 0;
+
+      if (!hasTarget) {
+        return {
+          handled: true,
+          items,
+          message: 'Indica qué producto quieres quitar (nombre, variante o SKU). Ej: "quitar 2 balines #3" o "eliminar anillo talla 6".',
+        };
+      }
+
+      const removed = CartService.removeByTarget(
+        items,
+        req.target,
+        req.removeAll ? 99 : req.target.quantity,
+        req.removeAll
+      );
+      if (removed.removedQty <= 0) {
+        return {
+          handled: true,
+          items,
+          message: `No encontré "${describeCartTarget(req.target)}" en tu carrito.`,
+        };
+      }
+
+      const label = removed.removedNames.length === 1 ? removed.removedNames[0] : removed.removedNames.join(', ');
+      const note =
+        removed.removedQty < req.target.quantity && !req.removeAll
+          ? `Solo había ${removed.removedQty}; ${removed.removedQty === 1 ? 'lo quité' : 'los quité'}.`
+          : `Quité ${removed.removedQty} de ${label}.`;
+
+      return { handled: true, items: removed.items, message: note };
+    }
+
+    return { handled: false, items, message: '' };
+  }
+
   /** Resuelve selección en texto libre → producto/variación WooCommerce por SKU (cualquier catálogo). */
   async resolveSelectionFromText(
     tenantId: string,
@@ -533,6 +668,11 @@ export class SalesAgentToolsHandler {
   ): Promise<{ ok: boolean; message: string; items?: OrderItem[] }> {
     try {
       const trimmed = userText.trim();
+
+      if (isCartCorrectionIntent(trimmed) || isCartRemoveIntent(trimmed) || isCartClearIntent(trimmed) || isCartSetQuantityIntent(trimmed)) {
+        return { ok: false, message: 'Operación de carrito no aplicable aquí.' };
+      }
+
       const multi = parseMultiVariantSelection(trimmed);
       if (multi && multi.variantHints.length >= 2) {
         const items: OrderItem[] = [];
@@ -714,6 +854,11 @@ export class SalesAgentToolsHandler {
     }
 
     if (!bestVariation.sku?.trim()) {
+      const skuFromStore = await this.resolveSkuForVariation(config, bestVariation);
+      if (skuFromStore) bestVariation = { ...bestVariation, sku: skuFromStore };
+    }
+
+    if (!bestVariation.sku?.trim()) {
       return {
         ok: false,
         message: `Encontré "${bestVariation.name}" pero no tiene SKU en WooCommerce. Asigna SKU en la tienda.`,
@@ -746,23 +891,44 @@ export class SalesAgentToolsHandler {
     try {
       const variations = await this.massiBot.getProductVariations(config, anchor.productId);
       const matched = this.matchVariation(variations, variantHint);
-      if (!matched?.sku?.trim()) {
+      if (!matched) {
         return {
           ok: false,
           message: `No encontré la variación "${variantHint}" para ${anchor.name.split(' - ')[0] || 'el producto'}.`,
         };
       }
 
-      if (matched.sku === anchor.sku) {
-        return await this.buildOrderItemBySku(tenantId, matched.sku, quantity);
+      let sku = matched.sku?.trim();
+      if (!sku) {
+        sku = (await this.resolveSkuForVariation(config, matched)) ?? '';
+      }
+      if (!sku) {
+        return {
+          ok: false,
+          message: `Encontré "${matched.name}" pero no tiene SKU en WooCommerce. Asigna SKU en la tienda.`,
+        };
       }
 
-      return await this.buildOrderItemBySku(tenantId, matched.sku, quantity);
+      return await this.buildOrderItemBySku(tenantId, sku, quantity);
     } catch (err) {
       if (err instanceof DomainError && err.code === 'WOOCOMMERCE_ERROR') {
         return { ok: false, message: this.formatStoreError(err) };
       }
       return { ok: false, message: 'Error al consultar variaciones del producto en carrito.' };
+    }
+  }
+
+  /** MASSI Bot a veces devuelve variaciones sin SKU; WooCommerce REST sí lo tiene. */
+  private async resolveSkuForVariation(
+    config: WooCommerceConfigData,
+    variation: MassiBotVariation
+  ): Promise<string | null> {
+    if (variation.sku?.trim()) return variation.sku.trim();
+    try {
+      const product = await this.wcService.getProductById(config, variation.id);
+      return product?.sku?.trim() || null;
+    } catch {
+      return null;
     }
   }
 
@@ -874,6 +1040,11 @@ export class SalesAgentToolsHandler {
           ? `No encontré una variación que coincida con "${variantHint}".`
           : `No pude identificar el producto exacto en "${userText}". Indica SKU si lo tienes.`,
       };
+    }
+
+    if (!bestVariation.sku?.trim()) {
+      const skuFromStore = await this.resolveSkuForVariation(config, bestVariation);
+      if (skuFromStore) bestVariation = { ...bestVariation, sku: skuFromStore };
     }
 
     if (!bestVariation.sku?.trim()) {
