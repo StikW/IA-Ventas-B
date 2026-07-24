@@ -142,7 +142,7 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'finalizar_compra',
       description:
-        'Usar SOLO cuando el cliente confirma que no desea agregar más productos (ej. "eso es todo", "continuar con la compra"). Valida el carrito y muestra botones de pago.',
+        'Usar SOLO cuando el cliente confirma que no desea agregar más productos (ej. "eso es todo"). Valida stock y envía enlace al formulario de compra WooCommerce (modo link) o botones de pago (modo whatsapp legacy).',
       parameters: {
         type: 'object',
         properties: {
@@ -205,8 +205,13 @@ export class SalesAgentService {
     const history = session?.messages ?? [];
     let salesContext: SalesContext = session?.salesContext ?? { phase: 'browsing' };
 
-    // Saludo/menú: salir de payment_select o carrito activo.
-    if (isMenuGreeting(text) && (salesContext.flowStep === 'payment_select' || salesContext.flowStep === 'buying')) {
+    // Saludo/menú: salir de payment_select, checkout_redirect o carrito activo.
+    if (
+      isMenuGreeting(text) &&
+      (salesContext.flowStep === 'payment_select' ||
+        salesContext.flowStep === 'buying' ||
+        salesContext.flowStep === 'checkout_redirect')
+    ) {
       salesContext = { phase: 'browsing' };
     }
 
@@ -253,8 +258,29 @@ export class SalesAgentService {
       isCartFinalizeIntent(text) &&
       mutableContext.cartItems?.length
     ) {
-      const finalizeReply = await this.finalizeCart(input, mutableContext);
+      const finalizeReply = await this.finalizeCart(input, mutableContext, tenantConfig?.business);
       const now = new Date().toISOString();
+
+      if (finalizeReply.enteredCheckoutLink && finalizeReply.checkoutUrl) {
+        const checkoutPrompt = this.conversationFlow.buildCheckoutLinkReply(
+          mutableContext,
+          finalizeReply.checkoutUrl,
+          input.customerPhone
+        );
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: checkoutPrompt.replyText,
+          salesContext: { ...mutableContext, ...checkoutPrompt.salesContext },
+          now,
+          ragHits: 0,
+        });
+        return { replied: true, reply: checkoutPrompt.replyText, bbcResponse };
+      }
 
       if (finalizeReply.enteredPaymentSelect) {
         const total = mutableContext.cartItems?.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
@@ -289,6 +315,40 @@ export class SalesAgentService {
         ragHits: 0,
       });
       return { replied: true, reply: finalizeReply.message, bbcResponse };
+    }
+
+    if (
+      mutableContext.flowStep === 'checkout_redirect' &&
+      mutableContext.cartItems?.length &&
+      /formulario|link|enlace|checkout|completar\s+(la\s+)?compra|reenvi/i.test(text)
+    ) {
+      const link = await this.tools.buildCheckoutFormLink(
+        input.tenantId,
+        input.customerPhone,
+        mutableContext.cartItems,
+        tenantConfig?.business
+      );
+      const now = new Date().toISOString();
+      if (link.ok && link.url) {
+        const checkoutPrompt = this.conversationFlow.buildCheckoutLinkReply(
+          mutableContext,
+          link.url,
+          input.customerPhone
+        );
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: checkoutPrompt.replyText,
+          salesContext: { ...mutableContext, ...checkoutPrompt.salesContext },
+          now,
+          ragHits: 0,
+        });
+        return { replied: true, reply: checkoutPrompt.replyText, bbcResponse };
+      }
     }
 
     if (isProductSelectionIntent(text) && salesContext.phase !== 'awaiting_payment') {
@@ -358,6 +418,38 @@ export class SalesAgentService {
 
     const now = new Date().toISOString();
 
+    const enteredCheckoutLink =
+      mutableContext.flowStep === 'checkout_redirect' && salesContext.flowStep !== 'checkout_redirect';
+
+    if (enteredCheckoutLink && mutableContext.cartItems?.length) {
+      const link = await this.tools.buildCheckoutFormLink(
+        input.tenantId,
+        input.customerPhone,
+        mutableContext.cartItems,
+        tenantConfig?.business
+      );
+      if (link.ok && link.url) {
+        const checkoutPrompt = this.conversationFlow.buildCheckoutLinkReply(
+          mutableContext,
+          link.url,
+          input.customerPhone
+        );
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: checkoutPrompt.replyText,
+          salesContext: { ...mutableContext, ...checkoutPrompt.salesContext },
+          now,
+          ragHits: 0,
+        });
+        return { replied: true, reply: checkoutPrompt.replyText, bbcResponse };
+      }
+    }
+
     const enteredPaymentSelect =
       mutableContext.flowStep === 'payment_select' && salesContext.flowStep !== 'payment_select';
 
@@ -390,6 +482,39 @@ export class SalesAgentService {
       userText: text,
       reply,
       salesContext: mutableContext,
+      now,
+      ragHits: 0,
+    });
+
+    return { replied: true, reply, bbcResponse };
+  }
+
+  /** Respuesta amable cuando el procesamiento falla (ej. WooCommerce 502). */
+  async sendProcessingErrorReply(input: SalesAgentMessageInput): Promise<SalesAgentMessageResult> {
+    if (!hasBuilderBot) return { replied: false, reason: 'BUILDERBOT_NOT_CONFIGURED' };
+
+    const session = await this.chatRepo.find(input.tenantId, input.customerPhone);
+    const history = session?.messages ?? [];
+    const salesContext = session?.salesContext ?? { phase: 'browsing' };
+    const now = new Date().toISOString();
+
+    const lines = [
+      'Disculpa, no pude consultar la tienda en este momento. Intenta de nuevo en unos segundos.',
+    ];
+    if (salesContext.cartItems?.length) {
+      lines.push('', 'Tu pedido actual:', this.conversationFlow.formatCartSummary(salesContext.cartItems));
+    }
+
+    const reply = lines.join('\n');
+    const bbcResponse = await this.persistAndReply({
+      tenantId: input.tenantId,
+      deviceId: input.deviceId,
+      customerPhone: input.customerPhone,
+      messageId: input.messageId,
+      history,
+      userText: input.text.trim(),
+      reply,
+      salesContext,
       now,
       ragHits: 0,
     });
@@ -560,7 +685,8 @@ export class SalesAgentService {
         if (args.nombre_cliente) {
           salesContext.customerName = String(args.nombre_cliente).trim();
         }
-        return (await this.finalizeCart(input, salesContext)).message;
+        const tenantConfig = await this.configRepo.findByTenantId(input.tenantId);
+        return (await this.finalizeCart(input, salesContext, tenantConfig?.business)).message;
       }
       case 'consultar_pedidos': {
         return this.tools.listMassiOrders(input.tenantId, input.customerPhone);
@@ -613,8 +739,18 @@ export class SalesAgentService {
 
   private async finalizeCart(
     input: SalesAgentMessageInput,
-    salesContext: SalesContext
-  ): Promise<{ message: string; enteredPaymentSelect: boolean }> {
+    salesContext: SalesContext,
+    businessProfile?: {
+      checkoutFormUrl?: string;
+      checkoutMode?: 'link' | 'whatsapp';
+      bankAccountInfo?: string;
+    }
+  ): Promise<{
+    message: string;
+    enteredPaymentSelect: boolean;
+    enteredCheckoutLink?: boolean;
+    checkoutUrl?: string;
+  }> {
     const items = salesContext.cartItems ?? [];
     if (!items.length) {
       return { message: 'El carrito está vacío. Primero agrega productos con agregar_al_carrito.', enteredPaymentSelect: false };
@@ -634,10 +770,37 @@ export class SalesAgentService {
 
     const customerName = String(salesContext.customerName ?? input.customerPhone).trim();
     const massiEnabled = await this.tools.massiBotEnabled(input.tenantId);
+    const checkoutMode = businessProfile?.checkoutMode ?? 'link';
     const total = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
     const summary = this.conversationFlow.formatCartSummary(items);
 
-    if (massiEnabled) {
+    if (checkoutMode === 'link') {
+      const link = await this.tools.buildCheckoutFormLink(
+        input.tenantId,
+        input.customerPhone,
+        items,
+        businessProfile
+      );
+      if (!link.ok || !link.url) {
+        return { message: link.message, enteredPaymentSelect: false, enteredCheckoutLink: false };
+      }
+
+      Object.assign(salesContext, {
+        phase: 'browsing' as const,
+        flowStep: 'checkout_redirect' as const,
+        cartItems: items,
+        customerName,
+      });
+
+      return {
+        message: ['Carrito confirmado. Se enviará enlace al formulario de compra.', summary].join('\n'),
+        enteredPaymentSelect: false,
+        enteredCheckoutLink: true,
+        checkoutUrl: link.url,
+      };
+    }
+
+    if (massiEnabled && checkoutMode === 'whatsapp') {
       Object.assign(salesContext, {
         phase: 'browsing' as const,
         flowStep: 'payment_select' as const,
@@ -694,6 +857,8 @@ export class SalesAgentService {
       address?: string;
       businessHours?: string;
       bankAccountInfo?: string;
+      checkoutFormUrl?: string;
+      checkoutMode?: 'link' | 'whatsapp';
     };
     salesPhase: SalesContext['phase'];
     flowStep?: SalesContext['flowStep'];
@@ -713,9 +878,11 @@ export class SalesAgentService {
         ? 'FASE ACTUAL: esperando comprobante de pago. Recuérdale al cliente enviar la captura.'
         : input.salesPhase === 'order_created'
           ? 'FASE ACTUAL: pedido ya registrado. Ayuda con seguimiento si pregunta.'
-          : input.flowStep === 'buying'
-            ? `FASE ACTUAL: armando pedido (${input.cartItemCount} producto(s) en carrito). Agrega UN producto por vez. Si pide "otra de la misma" con distinta variante, usa agregar_producto_por_sku solo para la NUEVA variante. Si confirma que terminó → finalizar_compra.`
-            : 'FASE ACTUAL: exploración y venta.';
+          : input.flowStep === 'checkout_redirect'
+            ? 'FASE ACTUAL: ya se envió enlace al formulario WC. Si pide el link → finalizar_compra. NO uses botones de pago en chat.'
+            : input.flowStep === 'buying'
+              ? `FASE ACTUAL: armando pedido (${input.cartItemCount} producto(s)). Si confirma que terminó → finalizar_compra (link formulario WC).`
+              : 'FASE ACTUAL: exploración y venta.';
 
     return [
       `Eres el asistente de ventas por WhatsApp de "${input.businessName}".`,
@@ -725,9 +892,10 @@ export class SalesAgentService {
       '2) Catálogo y precios: SIEMPRE buscar_productos_tienda (WooCommerce). Funciona para cualquier producto del catálogo con SKU.',
       '3) IDENTIFICADOR PRINCIPAL: SKU. Productos simples y variaciones (talla, medida, color, etc.) deben tener SKU en WooCommerce.',
       '4) Tras agregar al carrito, pregunta *¿Deseas agregar algo más o eso sería todo?* Cada producto se agrega individualmente; el total se acumula.',
-      '5) Si pide "otra de la misma" con otra medida/variante, agrega SOLO la nueva variación (no re-busques las anteriores).',
-      '6) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
-      '7) Usa la menor cantidad de herramientas posible por mensaje.',
+      '5) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce (recoger, domicilio, pago). NO pidas método de pago en el chat.',
+      '6) Si pide "otra de la misma" con otra variante, agrega SOLO la nueva variación.',
+      '7) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
+      '8) Usa la menor cantidad de herramientas posible por mensaje.',
       'No inventes productos ni precios. Usa las herramientas.',
       phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',

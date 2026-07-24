@@ -5,16 +5,21 @@ import { IMassiBotService, MassiBotVariation } from '../../../massi-bot/domain/I
 import { IWooCommerceConfigRepository, IWooCommerceService, WooCommerceConfigData, WooCommerceProduct } from '../../../woocommerce/domain/IWooCommerceService';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 import { PendingCartItem } from '../../domain/IChatSessionRepository';
+import { DomainError } from '../../../../shared/domain/errors/DomainError';
 import {
   extractQuantityFromText,
   extractVariantHint,
+  isCartSiblingVariantIntent,
   isSameProductReference,
   looksLikeSku,
   normalizeProductText,
   parseProductSelectionQuery,
+  SELECTION_NOISE_WORDS,
   tokenizeProductQuery,
   VARIANT_STRIP_PATTERN,
 } from '../../domain/productSelection.utils';
+import { buildCheckoutFormUrl } from '../../domain/checkoutLink.utils';
+import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
 
 export interface StockCheckResult {
   available: boolean;
@@ -60,6 +65,14 @@ export class SalesAgentToolsHandler {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) return 'WooCommerce no está conectado para este negocio.';
 
+    try {
+      return await this.searchStoreProductsInner(config, query);
+    } catch (err) {
+      return this.formatStoreError(err);
+    }
+  }
+
+  private async searchStoreProductsInner(config: WooCommerceConfigData, query: string): Promise<string> {
     const trimmed = query.trim();
     const bySku = await this.resolveProductBySku(config, trimmed);
     if (bySku) {
@@ -422,6 +435,31 @@ export class SalesAgentToolsHandler {
     return this.wcConfigRepo.findByTenantId(tenantId).then((c) => !!(c && this.massiBot.isConfigured(c)));
   }
 
+  async buildCheckoutFormLink(
+    tenantId: string,
+    customerPhone: string,
+    cartItems: PendingCartItem[],
+    businessProfile?: BusinessProfileConfig
+  ): Promise<{ ok: boolean; url?: string; message: string }> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) {
+      return { ok: false, message: 'WooCommerce no está conectado. Configura la tienda en el panel.' };
+    }
+
+    const result = buildCheckoutFormUrl({
+      checkoutFormUrl: businessProfile?.checkoutFormUrl,
+      storeUrl: config.storeUrl,
+      customerPhone,
+      cartItems,
+    });
+
+    if (!result.ok || !result.url) {
+      return { ok: false, message: result.message ?? 'No se pudo generar el enlace de compra.' };
+    }
+
+    return { ok: true, url: result.url, message: result.url };
+  }
+
   async buildOrderItemBySku(
     tenantId: string,
     sku: string,
@@ -432,7 +470,13 @@ export class SalesAgentToolsHandler {
       return { ok: false, message: 'WooCommerce no conectado.' };
     }
 
-    const resolved = await this.resolveProductBySku(config, sku.trim());
+    let resolved;
+    try {
+      resolved = await this.resolveProductBySku(config, sku.trim());
+    } catch (err) {
+      return { ok: false, message: this.formatStoreError(err) };
+    }
+
     if (!resolved) {
       return { ok: false, message: `Producto con SKU "${sku}" no encontrado.` };
     }
@@ -470,6 +514,19 @@ export class SalesAgentToolsHandler {
     quantity = 1,
     context?: { cartItems?: PendingCartItem[] }
   ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+    try {
+      return await this.resolveSelectionFromTextInner(tenantId, userText, quantity, context);
+    } catch (err) {
+      return { ok: false, message: this.formatStoreError(err) };
+    }
+  }
+
+  private async resolveSelectionFromTextInner(
+    tenantId: string,
+    userText: string,
+    quantity = 1,
+    context?: { cartItems?: PendingCartItem[] }
+  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
       return { ok: false, message: 'WooCommerce no conectado.' };
@@ -485,17 +542,26 @@ export class SalesAgentToolsHandler {
 
     const parsed = parseProductSelectionQuery(trimmed);
     const variantHint = parsed.variantHint ?? extractVariantHint(trimmed);
+    const cartHasItems = !!context?.cartItems?.length;
+    let siblingAttempt: { ok: boolean; message: string; item?: OrderItem } | null = null;
 
-    if (isSameProductReference(trimmed) && context?.cartItems?.length && variantHint) {
-      const anchor = context.cartItems[context.cartItems.length - 1];
-      const sibling = await this.resolveSiblingVariation(tenantId, anchor, variantHint, qty);
-      if (sibling.ok) return sibling;
+    if (
+      (isSameProductReference(trimmed) || isCartSiblingVariantIntent(trimmed, cartHasItems)) &&
+      cartHasItems &&
+      variantHint
+    ) {
+      const anchor = context!.cartItems![context!.cartItems!.length - 1];
+      siblingAttempt = await this.resolveSiblingVariation(tenantId, anchor, variantHint, qty);
+      if (siblingAttempt.ok) return siblingAttempt;
     }
 
     const searchQuery = this.buildSearchQuery(trimmed, parsed.productQuery, context?.cartItems);
     const products = await this.searchProductsWithFallback(config, searchQuery);
 
     if (!products.length) {
+      if (siblingAttempt && !siblingAttempt.ok) {
+        return siblingAttempt;
+      }
       return {
         ok: false,
         message: `No encontré productos en la tienda para "${userText}".`,
@@ -594,15 +660,31 @@ export class SalesAgentToolsHandler {
         return { ok: false, message: 'Esa variación ya está en tu pedido.' };
       }
 
-      return this.buildOrderItemBySku(tenantId, matched.sku, quantity);
-    } catch {
+      return await this.buildOrderItemBySku(tenantId, matched.sku, quantity);
+    } catch (err) {
+      if (err instanceof DomainError && err.code === 'WOOCOMMERCE_ERROR') {
+        return { ok: false, message: this.formatStoreError(err) };
+      }
       return { ok: false, message: 'Error al consultar variaciones del producto en carrito.' };
     }
   }
 
+  private formatStoreError(err: unknown): string {
+    if (err instanceof DomainError && err.code === 'WOOCOMMERCE_ERROR') {
+      if (/error 50[234]/.test(err.message)) {
+        return 'No pude conectar con la tienda en este momento (error temporal). Intenta de nuevo en unos segundos.';
+      }
+      return 'No pude consultar la tienda. Intenta de nuevo en un momento.';
+    }
+    if (err instanceof DomainError && err.code === 'WOOCOMMERCE_NOT_CONFIGURED') {
+      return 'La tienda WooCommerce no está configurada.';
+    }
+    return 'Ocurrió un error al consultar la tienda. Intenta de nuevo.';
+  }
+
   private buildSearchQuery(userText: string, parsedQuery: string, cartItems?: PendingCartItem[]): string {
     const cleaned = parsedQuery.trim();
-    if (cleaned.length >= 3 && !/^(cadena|otra|misma|mismo)$/i.test(cleaned)) {
+    if (cleaned.length >= 3 && !SELECTION_NOISE_WORDS.test(cleaned)) {
       return cleaned;
     }
 
@@ -768,10 +850,18 @@ export class SalesAgentToolsHandler {
 
   private async searchProductsWithFallback(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]> {
     const attempts = this.buildSearchAttempts(query);
+    let lastError: unknown;
+
     for (const attempt of attempts) {
-      const found = await this.wcService.searchProducts(config, attempt);
-      if (found.length) return found;
+      try {
+        const found = await this.wcService.searchProducts(config, attempt);
+        if (found.length) return found;
+      } catch (err) {
+        lastError = err;
+      }
     }
+
+    if (lastError) throw lastError;
     return [];
   }
 

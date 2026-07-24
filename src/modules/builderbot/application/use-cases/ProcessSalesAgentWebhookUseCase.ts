@@ -77,6 +77,25 @@ export class ProcessSalesAgentWebhookUseCase
           },
           'Error procesando mensaje del agente de ventas'
         );
+
+        try {
+          const fallback = await this.salesAgent.sendProcessingErrorReply({
+            tenantId: input.tenantId,
+            deviceId: input.deviceId,
+            customerPhone: message.from,
+            text: message.text,
+            messageId: message.messageId,
+          });
+          if (fallback.replied) {
+            replied += 1;
+            if (fallback.bbcResponse) bbcResponse = fallback.bbcResponse;
+          }
+        } catch (fallbackErr) {
+          logger.error(
+            { err: fallbackErr, tenantId: input.tenantId, customerPhone: message.from },
+            'No se pudo enviar respuesta de error al cliente WhatsApp'
+          );
+        }
       }
     }
 

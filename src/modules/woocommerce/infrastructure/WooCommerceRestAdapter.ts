@@ -103,13 +103,25 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
 
     const url = this.buildRequestUrl(config, path);
     const init = this.buildFetchInit(url, options);
-    const { status, body } = await this.httpRequest(url, init);
+    const maxAttempts = 3;
 
-    if (status < 200 || status >= 300) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const { status, body } = await this.httpRequest(url, init);
+
+      if (status >= 200 && status < 300) {
+        return JSON.parse(body) as T;
+      }
+
+      const retryable = status === 502 || status === 503 || status === 504;
+      if (retryable && attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+        continue;
+      }
+
       throw new DomainError(`WooCommerce error ${status}: ${body}`, 'WOOCOMMERCE_ERROR');
     }
 
-    return JSON.parse(body) as T;
+    throw new DomainError('WooCommerce error: reintentos agotados', 'WOOCOMMERCE_ERROR');
   }
 
   async testConnection(config: WooCommerceConfigData): Promise<boolean> {

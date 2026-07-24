@@ -78,6 +78,15 @@ export class ConversationFlowService {
       return null;
     }
 
+    if (input.salesContext.flowStep === 'checkout_redirect') {
+      if (isMenuGreeting(text)) {
+        return this.buildWelcomeMessage(input.businessName, input.businessProfile);
+      }
+      if (isCartFinalizeIntent(text) || /formulario|link|enlace|checkout|completar\s+(la\s+)?compra/i.test(text)) {
+        return null;
+      }
+    }
+
     if (input.salesContext.flowStep !== 'payment_select') {
       return null;
     }
@@ -145,6 +154,39 @@ export class ConversationFlowService {
     );
     const total = cartItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
     return [...lines, `\n*Total:* $${total.toLocaleString('es-CO')}`].join('\n');
+  }
+
+  /** Tras cerrar carrito en modo `link`: envía URL al formulario WC/MASSI. */
+  buildCheckoutLinkReply(
+    salesContext: SalesContext,
+    checkoutUrl: string,
+    customerPhone: string
+  ): ConversationFlowResult {
+    const cartSummary = salesContext.cartItems?.length
+      ? `\n\n${this.formatCartSummary(salesContext.cartItems)}`
+      : '';
+    const body = [
+      '¡Perfecto! Tu selección está lista.',
+      cartSummary,
+      '',
+      'Completa tu pedido en el *formulario de la tienda* (recoger en tienda, envío a domicilio y método de pago):',
+      checkoutUrl,
+      '',
+      'Usa el mismo número de WhatsApp (*' + customerPhone.replace(/\D/g, '') + '*) si el formulario lo pide.',
+      'Cuando termines, recibirás confirmación por correo. Si necesitas ayuda, escríbeme por aquí.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    return {
+      replyText: body,
+      outbound: { kind: 'text', body },
+      salesContext: {
+        ...salesContext,
+        phase: 'browsing',
+        flowStep: 'checkout_redirect',
+      },
+    };
   }
 
   buildPaymentMethodPrompt(salesContext: SalesContext, totalHint?: string): ConversationFlowResult {

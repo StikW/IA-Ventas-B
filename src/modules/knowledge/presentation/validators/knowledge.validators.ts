@@ -5,6 +5,8 @@ export const updateBusinessConfigSchema = z.object({
   address: z.string().max(500).optional(),
   businessHours: z.string().max(500).optional(),
   bankAccountInfo: z.string().max(1000).optional(),
+  checkoutFormUrl: z.union([z.string().url().max(2000), z.literal('')]).optional(),
+  checkoutMode: z.enum(['link', 'whatsapp']).optional(),
 });
 
 export const knowledgeSearchSchema = z.object({

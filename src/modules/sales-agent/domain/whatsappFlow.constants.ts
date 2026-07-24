@@ -1,4 +1,6 @@
 /** IDs estables para botones WhatsApp (Meta button_reply.id) */
+import { extractVariantHint, hasConcreteProductSpec } from './productSelection.utils';
+
 export const WA_BTN = {
   MENU_BUY: 'massi:menu:buy',
   MENU_ORDERS: 'massi:menu:orders',
@@ -32,15 +34,18 @@ export function isMenuGreeting(text: string): boolean {
 export function isCartFinalizeIntent(text: string): boolean {
   const t = normalizeFlowText(text);
   return (
-    /^(eso\s+es\s+todo|es\s+todo|nada\s+m[aá]s|no\s+m[aá]s|listo|ya\s+est[aá]|finalizar|confirmar(\s+pedido)?)$/.test(t) ||
+    /^(eso\s+(?:es|ser[ií]a)\s+todo|es\s+todo|nada\s+m[aá]s|no\s+m[aá]s|listo|ya\s+est[aá]|finalizar|confirmar(\s+pedido)?)$/.test(
+      t
+    ) ||
     /continuar\s+con\s+la\s+compra|proceder\s+con\s+la\s+compra|quiero\s+(seguir|comprar|pagar|finalizar)|seguir\s+con\s+la\s+compra|listo\s+para\s+pagar|ya\s+no\s+quiero\s+m[aá]s/.test(
       t
     )
   );
 }
 
-/** Cliente quiere seguir agregando productos al carrito. */
+/** Cliente quiere seguir agregando productos al carrito (sin especificar producto). */
 export function isCartContinueShoppingIntent(text: string): boolean {
+  if (hasConcreteProductSpec(text)) return false;
   const t = normalizeFlowText(text);
   return /agregar|a[nñ]adir|algo\s+m[aá]s|otro\s+producto|m[aá]s\s+productos|s[ií],?\s+algo\s+m[aá]s|quiero\s+m[aá]s/.test(t);
 }
@@ -60,9 +65,11 @@ export function isProductSelectionIntent(text: string): boolean {
 
   if (/quiero|me gustar[ií]a|quisiera|dame|necesito|comprar|llevar|tomar|pedir|solicito|tambi[eé]n/.test(t)) return true;
 
-  if (/\b\d+\s*(?:ud?s?|unidades?|pares?|piezas?|pzs?)\b/i.test(t)) return true;
+  if (/\botra?\b/.test(t) && extractVariantHint(text)) return true;
 
-  if (/\b\d+\s*(?:cm|mm|gr?|kt|k|ml|oz|lb)\b/i.test(t) && t.split(/\s+/).filter(Boolean).length >= 2) return true;
+  if (extractVariantHint(text) && t.split(/\s+/).filter(Boolean).length >= 2) return true;
+
+  if (/\b\d+\s*(?:ud?s?|unidades?|pares?|piezas?|pzs?)\b/i.test(t)) return true;
 
   return false;
 }

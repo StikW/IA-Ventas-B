@@ -8,7 +8,7 @@ export interface ChatMessage {
 
 export type SalesPhase = 'browsing' | 'awaiting_payment' | 'order_created';
 
-export type ConversationFlowStep = 'menu' | 'buying' | 'payment_select' | 'help';
+export type ConversationFlowStep = 'menu' | 'buying' | 'payment_select' | 'checkout_redirect' | 'help';
 
 export interface PendingCartItem {
   productId: number;
