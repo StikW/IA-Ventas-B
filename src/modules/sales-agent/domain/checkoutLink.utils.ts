@@ -5,14 +5,24 @@ export const CHECKOUT_QUERY = {
   phone: 'phone',
   source: 'source',
   items: 'items',
+  /** Base pública de la tienda (ngrok/prod) para reescribir assets WP en dev */
+  publicStore: 'public_store',
 } as const;
 
 export interface BuildCheckoutLinkInput {
-  /** URL base del formulario (absoluta). Si no se define, se usa `{storeUrl}/checkout/`. */
+  /** URL base del formulario (absoluta). Tiene prioridad sobre checkoutPagePath. */
   checkoutFormUrl?: string;
+  /** Ruta checkout WC detectada, ej. `/finalizar-compra/`. Fallback antes de `/checkout/`. */
+  checkoutPagePath?: string;
   storeUrl: string;
   customerPhone: string;
   cartItems: PendingCartItem[];
+}
+
+function joinStorePath(storeUrl: string, path: string): string {
+  const base = storeUrl.replace(/\/$/, '');
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${normalized.endsWith('/') ? normalized : `${normalized}/`}`;
 }
 
 export interface BuildCheckoutLinkResult {
@@ -46,7 +56,9 @@ export function buildCheckoutFormUrl(input: BuildCheckoutLinkInput): BuildChecko
 
   const base =
     input.checkoutFormUrl?.trim() ||
-    `${storeUrl}/checkout/`;
+    (input.checkoutPagePath?.trim()
+      ? joinStorePath(storeUrl, input.checkoutPagePath.trim())
+      : `${storeUrl}/checkout/`);
 
   let url: URL;
   try {
@@ -58,6 +70,7 @@ export function buildCheckoutFormUrl(input: BuildCheckoutLinkInput): BuildChecko
   const phone = input.customerPhone.replace(/\D/g, '');
   url.searchParams.set(CHECKOUT_QUERY.phone, phone);
   url.searchParams.set(CHECKOUT_QUERY.source, 'whatsapp');
+  url.searchParams.set(CHECKOUT_QUERY.publicStore, storeUrl);
   url.searchParams.set(CHECKOUT_QUERY.items, encodeCheckoutItems(items));
 
   return { ok: true, url: url.toString() };

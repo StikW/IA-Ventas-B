@@ -6,6 +6,8 @@ export interface WooCommerceConfigData {
   /** Usuario WP con Application Password para massi-bot/v1 */
   botApiUser?: string;
   botApiPassword?: string;
+  /** Ruta checkout WC detectada al probar conexión, ej. `/finalizar-compra/` */
+  checkoutPagePath?: string;
   connected: boolean;
   botApiConnected?: boolean;
   lastSyncAt?: string;
@@ -45,7 +47,8 @@ export interface WooCommerceOrderResult {
 }
 
 export interface IWooCommerceService {
-  testConnection(config: WooCommerceConfigData): Promise<boolean>;
+  testConnection(config: WooCommerceConfigData): Promise<{ checkoutPagePath?: string }>;
+  resolveCheckoutPagePath(config: WooCommerceConfigData): Promise<string | null>;
   listProducts(config: WooCommerceConfigData, page?: number): Promise<WooCommerceProduct[]>;
   searchProducts(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]>;
   getProductBySku(config: WooCommerceConfigData, sku: string): Promise<WooCommerceProduct | null>;

@@ -448,6 +448,7 @@ export class SalesAgentToolsHandler {
 
     const result = buildCheckoutFormUrl({
       checkoutFormUrl: businessProfile?.checkoutFormUrl,
+      checkoutPagePath: config.checkoutPagePath,
       storeUrl: config.storeUrl,
       customerPhone,
       cartItems,

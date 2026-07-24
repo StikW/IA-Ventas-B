@@ -124,9 +124,31 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     throw new DomainError('WooCommerce error: reintentos agotados', 'WOOCOMMERCE_ERROR');
   }
 
-  async testConnection(config: WooCommerceConfigData): Promise<boolean> {
+  async testConnection(config: WooCommerceConfigData): Promise<{ checkoutPagePath?: string }> {
     await this.request(config, '/products?per_page=1');
-    return true;
+    const checkoutPagePath = (await this.resolveCheckoutPagePath(config)) ?? undefined;
+    return { checkoutPagePath };
+  }
+
+  async resolveCheckoutPagePath(config: WooCommerceConfigData): Promise<string | null> {
+    try {
+      const setting = await this.request<{ value?: string }>(
+        config,
+        '/settings/advanced/woocommerce_checkout_page_id'
+      );
+      const pageId = Number.parseInt(String(setting.value ?? ''), 10);
+      if (!pageId) return null;
+
+      const pageUrl = `${config.storeUrl.replace(/\/$/, '')}/wp-json/wp/v2/pages/${pageId}`;
+      const { status, body } = await this.httpRequest(pageUrl, this.buildFetchInit(pageUrl));
+      if (status < 200 || status >= 300) return null;
+
+      const page = JSON.parse(body) as { slug?: string };
+      const slug = page.slug?.trim();
+      return slug ? `/${slug}/` : null;
+    } catch {
+      return null;
+    }
   }
 
   async listProducts(config: WooCommerceConfigData, page = 1): Promise<WooCommerceProduct[]> {
