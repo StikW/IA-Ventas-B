@@ -54,23 +54,17 @@ Auth: header `Authorization: Basic base64(user:application_password)` + capabili
 
 ---
 
-## Flujo WhatsApp (botones + LLM)
+## Flujo WhatsApp (agente LLM + botones solo en pago)
 
-### Menú principal
+### Conversación general
 
-Se muestra al escribir **hola**, **menú**, **inicio**, etc.
-
-| Botón | ID interno | Acción |
-|-------|------------|--------|
-| Comprar | `massi:menu:buy` | Pide producto → agente LLM |
-| Mi pedido | `massi:menu:orders` | Lista pedidos MASSI + menú |
-| Ayuda | `massi:menu:help` | Conversación libre con LLM |
+Saludos, búsqueda de productos, pedidos y ayuda los resuelve el **agente LLM** en texto libre (sin botones de menú).
 
 ### Compra con MASSI conectado
 
 1. Cliente busca producto (texto libre → LLM + herramientas WC/RAG).
 2. LLM llama `preparar_pago` → valida stock, guarda carrito, **no crea pedido aún**.
-3. Backend envía botones: **Transferencia** | **Efectivo tienda** | **Menú principal**.
+3. Backend responde `route: "payment"` → BBC muestra botones: **Transferencia** | **Efectivo tienda** | **Menú principal**.
 4. Click en método → `POST /massi-bot/v1/orders` con `mdp_788` (Bre-B) o `mdp_789` (efectivo).
 5. **Transferencia:** instrucciones bancarias + espera comprobante (imagen).
 6. **Efectivo:** ticket provisional + indicación de ir a la joyería.
@@ -97,25 +91,25 @@ Imagen WhatsApp → webhook → `submitPaymentReport` en MASSI Bot API (si hay `
 
 La API outbound `POST /api/v2/{projectId}/messages` **solo envía texto**; ignora `buttons` e `interactive` (documentado en BBC MCP v2.1).
 
-En **cloud-v2** los botones se envían vía **flujos BBC** provisionados al sincronizar webhook:
+En **cloud-v2** los botones de pago se envían vía el flow BBC provisionado al sincronizar webhook:
 
 | Flow BBC | Ruta HTTP | Botones |
 |----------|-----------|---------|
-| `IA Ventas — Menú UI` | `route: "menu"` | Comprar · Mi pedido · Ayuda |
-| `IA Ventas — Pago UI` | `route: "payment"` | Transferencia · Efectivo · Menú |
+| `IA Ventas — Pago UI` | `route: "payment"` | Transferencia · Efectivo tienda · Menú principal |
 
-El webhook responde de forma **síncrona** `{ "route": "menu"|"payment"|"text", "message": "..." }`. El relay `add_http` usa reglas para ir al flow UI o `messageMapping` para texto.
+El resto de mensajes usan `route: "text"` y el agente responde en texto plano.
 
-**Configuración única en panel BBC:** el MCP aún no persiste `options.buttons`. Tras **Re-sincronizar webhook**, abre cada flow UI en [app.builderbot.cloud](https://app.builderbot.cloud) y añade los botones al `add_text` con estos IDs:
+El webhook responde de forma **síncrona** `{ "route": "payment"|"text", "message": "..." }`.
 
-| Botón | ID |
-|-------|-----|
-| Comprar | `massi:menu:buy` |
-| Mi pedido | `massi:menu:orders` |
-| Ayuda | `massi:menu:help` |
+**Configuración única en panel BBC:** el MCP no persiste `options.buttons`. Tras **Re-sincronizar webhook**, abre el flow **IA Ventas — Pago UI** en [app.builderbot.cloud](https://app.builderbot.cloud) y añade botones **Reply** al `add_text`:
+
+| Botón | ID (si el panel lo pide) |
+|-------|--------------------------|
 | Transferencia | `massi:pay:transfer` |
 | Efectivo tienda | `massi:pay:cash` |
 | Menú principal | `massi:menu:back` |
+
+Puedes **eliminar** el flow `IA Ventas — Menú UI` si lo creaste antes; ya no se usa.
 
 Modo **wa-api** (`console.builderbot.app`) sí soporta botones en `POST /messages` y el adapter los envía directo.
 

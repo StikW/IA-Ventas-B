@@ -1,9 +1,9 @@
 /** Respuesta que BuilderBot Cloud consume vía add_http (rules + messageMapping). */
-export type BbcUiRoute = 'menu' | 'payment' | 'text' | 'none';
+export type BbcUiRoute = 'payment' | 'text' | 'none';
 
 export interface BbcWebhookAgentResponse {
   route: BbcUiRoute;
-  /** Texto plano cuando route === 'text'. Vacío si BBC envía un flow UI (menú/pago). */
+  /** Texto plano cuando route === 'text'. Vacío si BBC envía el flow UI de pago con botones. */
   message?: string;
 }
 

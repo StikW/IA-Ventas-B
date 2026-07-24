@@ -42,77 +42,47 @@ export class ConversationFlowService {
     @inject(SalesAgentToolsHandler) private readonly tools: SalesAgentToolsHandler
   ) {}
 
+  /**
+   * Solo maneja el paso de selección de método de pago (botones BBC).
+   * Saludos, menú, compra y ayuda los resuelve el agente LLM.
+   */
   async tryHandle(input: ConversationFlowInput): Promise<ConversationFlowResult | null> {
     const text = input.text.trim();
     if (!text) return null;
 
     const action = resolveButtonAction(text);
+
+    if (input.salesContext.phase === 'awaiting_payment' && (action === WA_BTN.MENU_BACK || isMenuGreeting(text))) {
+      return {
+        replyText:
+          'Estamos esperando tu comprobante de pago. Envía la captura por este chat. Escribe *menú* cuando termines.',
+        outbound: {
+          kind: 'text',
+          body: 'Estamos esperando tu comprobante de pago. Envía la captura por este chat.',
+        },
+        salesContext: input.salesContext,
+      };
+    }
+
+    if (input.salesContext.flowStep !== 'payment_select') {
+      return null;
+    }
+
     const massiEnabled = await this.tools.massiBotEnabled(input.tenantId);
+    const paymentAction = action ?? resolvePaymentMethodChoice(text);
 
-    if (action === WA_BTN.MENU_BUY) {
-      return this.promptBuying(input.businessName);
-    }
-
-    if (action === WA_BTN.MENU_ORDERS) {
-      return this.showOrders(input, massiEnabled);
-    }
-
-    if (action === WA_BTN.MENU_HELP) {
-      return this.promptHelp(input.businessName);
-    }
-
-    if (action === WA_BTN.MENU_BACK || isMenuGreeting(text)) {
-      if (input.salesContext.phase === 'awaiting_payment') {
-        return {
-          replyText:
-            'Estamos esperando tu comprobante de pago. Envía la captura por este chat. Escribe *menú* cuando termines.',
-          outbound: {
-            kind: 'text',
-            body: 'Estamos esperando tu comprobante de pago. Envía la captura por este chat.',
-          },
-          salesContext: input.salesContext,
-        };
+    if (paymentAction) {
+      if (!massiEnabled || !input.salesContext.cartItems?.length) {
+        return this.cancelPaymentSelection(
+          'No pudimos continuar con el pago. Cuéntame qué producto buscas y te ayudo.'
+        );
       }
-      return this.buildMainMenu(input.businessName, input.salesContext);
+      return this.handlePaymentSelection(input, paymentAction);
     }
 
-    if (input.salesContext.flowStep === 'payment_select') {
-      const paymentAction = action ?? resolvePaymentMethodChoice(text);
-      if (paymentAction) {
-        if (!massiEnabled || !input.salesContext.cartItems?.length) {
-          return this.buildMainMenu(input.businessName, { ...input.salesContext, flowStep: 'menu' });
-        }
-        return this.handlePaymentSelection(input, paymentAction);
-      }
-
-      const total = input.salesContext.cartItems?.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
-      const totalHint = total ? `Total estimado: *$${total.toLocaleString('es-CO')}*` : undefined;
-      return this.buildPaymentMethodPrompt(input.salesContext, totalHint);
-    }
-
-    if (isMenuGreeting(text)) {
-      return this.buildMainMenu(input.businessName, input.salesContext);
-    }
-
-    return null;
-  }
-
-  buildMainMenu(businessName: string, salesContext: SalesContext): ConversationFlowResult {
-    const body = `¡Hola! Bienvenido a *${businessName}*.\n\n¿En qué te podemos ayudar hoy?`;
-    return {
-      replyText: body,
-      outbound: {
-        kind: 'buttons',
-        body,
-        footer: 'MASSI Joyería',
-        buttons: [
-          { id: WA_BTN.MENU_BUY, body: WA_BTN_LABEL.MENU_BUY },
-          { id: WA_BTN.MENU_ORDERS, body: WA_BTN_LABEL.MENU_ORDERS },
-          { id: WA_BTN.MENU_HELP, body: WA_BTN_LABEL.MENU_HELP },
-        ],
-      },
-      salesContext: { ...salesContext, phase: salesContext.phase ?? 'browsing', flowStep: 'menu' },
-    };
+    const total = input.salesContext.cartItems?.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+    const totalHint = total ? `Total estimado: *$${total.toLocaleString('es-CO')}*` : undefined;
+    return this.buildPaymentMethodPrompt(input.salesContext, totalHint);
   }
 
   buildPaymentMethodPrompt(salesContext: SalesContext, totalHint?: string): ConversationFlowResult {
@@ -137,46 +107,11 @@ export class ConversationFlowService {
     };
   }
 
-  private promptBuying(businessName: string): ConversationFlowResult {
-    const body = `Genial. Cuéntame qué producto buscas en *${businessName}* (por ejemplo: "balín diamantado" o "cadena oro 18k").`;
+  private cancelPaymentSelection(message: string): ConversationFlowResult {
     return {
-      replyText: body,
-      outbound: { kind: 'text', body },
-      salesContext: { phase: 'browsing', flowStep: 'buying' },
-    };
-  }
-
-  private promptHelp(businessName: string): ConversationFlowResult {
-    const body = `Estoy aquí para ayudarte con *${businessName}*. Pregúntame lo que necesites: productos, horarios, pagos o estado de pedido.`;
-    return {
-      replyText: body,
-      outbound: { kind: 'text', body },
-      salesContext: { phase: 'browsing', flowStep: 'help' },
-    };
-  }
-
-  private async showOrders(input: ConversationFlowInput, massiEnabled: boolean): Promise<ConversationFlowResult> {
-    let ordersText = 'Consulta de pedidos no disponible en este momento.';
-    if (massiEnabled) {
-      ordersText = await this.tools.listMassiOrders(input.tenantId, input.customerPhone);
-    }
-
-    const body = `*Tus pedidos recientes:*\n${ordersText}\n\n¿Deseas hacer algo más?`;
-    const menuButtons: BuilderBotButtonOption[] = [
-      { id: WA_BTN.MENU_BUY, body: WA_BTN_LABEL.MENU_BUY },
-      { id: WA_BTN.MENU_ORDERS, body: WA_BTN_LABEL.MENU_ORDERS },
-      { id: WA_BTN.MENU_HELP, body: WA_BTN_LABEL.MENU_HELP },
-    ];
-
-    return {
-      replyText: body,
-      outbound: {
-        kind: 'buttons',
-        body,
-        footer: 'MASSI Joyería',
-        buttons: menuButtons,
-      },
-      salesContext: { ...input.salesContext, phase: input.salesContext.phase ?? 'browsing', flowStep: 'menu' },
+      replyText: message,
+      outbound: { kind: 'text', body: message },
+      salesContext: { phase: 'browsing' },
     };
   }
 
@@ -188,11 +123,9 @@ export class ConversationFlowService {
     const customerName = input.salesContext.customerName ?? input.customerPhone;
 
     if (action === WA_BTN.MENU_BACK) {
-      return this.buildMainMenu(input.businessName, {
-        ...input.salesContext,
-        flowStep: 'menu',
-        cartItems: undefined,
-      });
+      return this.cancelPaymentSelection(
+        'De acuerdo. Si quieres seguir comprando, cuéntame qué producto buscas.'
+      );
     }
 
     const paymentMethod = action === WA_BTN.PAY_CASH ? 'mdp_789' : 'mdp_788';
@@ -205,11 +138,7 @@ export class ConversationFlowService {
     );
 
     if (!massiOrder.ok || !massiOrder.order) {
-      return {
-        replyText: massiOrder.message,
-        outbound: { kind: 'text', body: massiOrder.message },
-        salesContext: { phase: 'browsing', flowStep: 'menu' },
-      };
+      return this.cancelPaymentSelection(massiOrder.message);
     }
 
     const tenantConfig = await this.configRepo.findByTenantId(input.tenantId);
@@ -220,7 +149,7 @@ export class ConversationFlowService {
         `Pedido *#${massiOrder.order.orderNumber}* registrado.`,
         massiOrder.order.ticketCode ? `Ticket provisional: *${massiOrder.order.ticketCode}*.` : '',
         'Acércate a la joyería para completar el pago en efectivo y finalizar tu compra.',
-        'Escribe *menú* cuando quieras volver al inicio.',
+        'Cuéntame si necesitas algo más.',
       ]
         .filter(Boolean)
         .join('\n');
@@ -230,7 +159,6 @@ export class ConversationFlowService {
         outbound: { kind: 'text', body },
         salesContext: {
           phase: 'order_created',
-          flowStep: 'menu',
           lastOrderId: String(massiOrder.order.orderId),
           massiWooOrderId: massiOrder.order.orderId,
           massiWooOrderNumber: massiOrder.order.orderNumber,
