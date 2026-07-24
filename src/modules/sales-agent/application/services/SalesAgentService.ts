@@ -33,24 +33,12 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'buscar_productos_tienda',
-      description: 'Busca productos en WooCommerce por nombre o descripción.',
-      parameters: {
-        type: 'object',
-        properties: { consulta: { type: 'string' } },
-        required: ['consulta'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'listar_variaciones',
       description:
-        'Lista variaciones (promoción, talla, etc.) de un producto variable MASSI. Usar productId de buscar_productos_tienda.',
+        'Busca productos en WooCommerce por nombre, descripción o SKU exacto. Si el cliente da SKU, usa ese valor como consulta.',
       parameters: {
         type: 'object',
-        properties: { product_id: { type: 'number', description: 'ID del producto padre en WooCommerce' } },
-        required: ['product_id'],
+        properties: { consulta: { type: 'string', description: 'Nombre del producto o SKU (ej. CAD-LAZO-50)' } },
+        required: ['consulta'],
       },
     },
   },
@@ -59,13 +47,14 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'verificar_stock',
       description:
-        'Verifica disponibilidad. MASSI usa product_id (y variation_id si aplica); SKU suele estar vacío.',
+        'Verifica disponibilidad por SKU (preferido) o product_id. Cada variación MASSI debe tener su propio SKU.',
       parameters: {
         type: 'object',
         properties: {
-          product_id: { type: 'number', description: 'ID WooCommerce del producto' },
-          variation_id: { type: 'number', description: 'ID de variación si el cliente ya eligió' },
-          sku: { type: 'string', description: 'Opcional; muchos productos MASSI no tienen SKU' },
+          sku: { type: 'string', description: 'SKU WooCommerce de la variación o producto simple' },
+          product_id: { type: 'number', description: 'Alternativa si no hay SKU' },
+          variation_id: { type: 'number' },
+          variante: { type: 'string' },
           cantidad: { type: 'number' },
         },
         required: ['cantidad'],
@@ -378,6 +367,8 @@ export class SalesAgentService {
             : args.variationId
               ? Number(args.variationId)
               : undefined,
+          variantHint: args.variante ? String(args.variante) : args.variant ? String(args.variant) : undefined,
+          productName: args.nombre_producto ? String(args.nombre_producto) : undefined,
           quantity: Number(args.cantidad ?? 1),
         });
         return result.message;
@@ -474,10 +465,10 @@ export class SalesAgentService {
       'Responde en español, amable y conciso (máximo 3 párrafos).',
       'FLUJO DE VENTA:',
       '1) Saluda y ayuda al cliente. Si escribe *menú* o *hola*, puede usar los botones del menú principal.',
-      '2) Si busca productos, usa buscar_en_documentos y buscar_productos_tienda. Muestra productId, precio y si es variable usa listar_variaciones.',
-      '3) Productos MASSI suelen ser variables sin SKU: usa product_id y variation_id, no inventes SKU.',
-      '4) Antes de preparar_pago, verifica stock con verificar_stock (product_id + variation_id si aplica).',
-      '5) Cuando confirme compra (producto, variante, cantidad, nombre), usa preparar_pago.',
+      '2) Buscar productos: buscar_productos_tienda (nombre o SKU). buscar_en_documentos solo si hay PDFs subidos en Documentos.',
+      '3) Cada variación debe tener SKU propio en WooCommerce. verificar_stock y preparar_pago usan ese SKU.',
+      '4) Flujo: buscar → verificar_stock(sku) → preparar_pago con productId, sku, name, unitPrice, quantity.',
+      '5) Cuando confirme compra, usa preparar_pago.',
       '6) Tras elegir método de pago, pide comprobante (captura/foto) si pagó por transferencia.',
       'No inventes productos ni precios. Usa las herramientas.',
       phaseHint,

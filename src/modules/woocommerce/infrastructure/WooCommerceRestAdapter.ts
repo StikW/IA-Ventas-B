@@ -130,6 +130,11 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     const q = query.trim();
     if (!q) return [];
 
+    if (q.length >= 2) {
+      const bySku = await this.getProductBySku(config, q);
+      if (bySku) return [bySku];
+    }
+
     const products = await this.request<Array<Record<string, unknown>>>(
       config,
       `/products?search=${encodeURIComponent(q)}&per_page=20&status=publish`

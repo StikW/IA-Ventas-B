@@ -52,16 +52,36 @@ export class SalesAgentToolsHandler {
     const products = await this.wcService.searchProducts(config, query);
     if (!products.length) return `No se encontraron productos en la tienda para "${query}".`;
 
-    return products
-      .map((p) => this.formatProduct(p))
-      .join('\n');
+    const lines: string[] = [];
+    for (const p of products.slice(0, 5)) {
+      lines.push(this.formatProduct(p));
+      if (p.type === 'variable' && this.massiBot.isConfigured(config)) {
+        try {
+          const variations = await this.massiBot.getProductVariations(config, p.id);
+          for (const v of variations.slice(0, 12)) {
+            lines.push(`    ↳ ${this.formatVariationLine(v)}`);
+          }
+        } catch {
+          lines.push(`    ↳ (no se pudieron cargar variaciones de productId=${p.id})`);
+        }
+      }
+    }
+    return lines.join('\n');
   }
 
   async checkStock(
     tenantId: string,
-    input: { sku?: string; productId?: number; variationId?: number; quantity: number }
+    input: {
+      sku?: string;
+      productId?: number;
+      variationId?: number;
+      variantHint?: string;
+      productName?: string;
+      quantity: number;
+    }
   ): Promise<StockCheckResult> {
-    const { sku, productId, variationId, quantity } = input;
+    let { sku, productId, variationId, quantity } = input;
+    const variantHint = input.variantHint?.trim();
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
       return {
@@ -73,6 +93,21 @@ export class SalesAgentToolsHandler {
         stockQuantity: null,
         message: 'WooCommerce no conectado.',
       };
+    }
+
+    if (!productId && input.productName?.trim()) {
+      const found = await this.wcService.searchProducts(config, input.productName.trim());
+      if (found[0]) productId = found[0].id;
+    }
+
+    if (productId && variantHint && !variationId && this.massiBot.isConfigured(config)) {
+      try {
+        const variations = await this.massiBot.getProductVariations(config, productId);
+        const matched = this.matchVariation(variations, variantHint);
+        if (matched) variationId = matched.id;
+      } catch {
+        // continuar sin variationId
+      }
     }
 
     if (variationId && productId && this.massiBot.isConfigured(config)) {
@@ -157,9 +192,11 @@ export class SalesAgentToolsHandler {
           stockStatus: 'variable',
           stockQuantity: null,
           message: [
-            `${product.name} es un producto variable (productId=${productId}). Pide al cliente elegir variación:`,
+            `Producto encontrado: ${product.name} (productId=${productId}). Es variable — muestra estas opciones al cliente:`,
             ...lines,
-            'Usa listar_variaciones o verificar_stock con variation_id cuando el cliente elija.',
+            variantHint
+              ? `No encontré variación que coincida con "${variantHint}". Pide aclarar o elige variationId de la lista.`
+              : 'Cuando el cliente elija, usa verificar_stock con product_id y variation_id (o variante="50 cm").',
           ].join('\n'),
         };
       }
@@ -369,6 +406,54 @@ export class SalesAgentToolsHandler {
     return this.wcConfigRepo.findByTenantId(tenantId).then((c) => !!(c && this.massiBot.isConfigured(c)));
   }
 
+  private matchVariation(
+    variations: Array<{ id: number; name: string; attributes: Array<{ name: string; value: string }> }>,
+    hint: string
+  ) {
+    const norm = (s: string) =>
+      s
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/\p{M}/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const h = norm(hint);
+    if (!h) return undefined;
+
+    const scored = variations.map((v) => {
+      const name = norm(v.name);
+      const attrs = norm(v.attributes.map((a) => `${a.name} ${a.value}`).join(' '));
+      const blob = `${name} ${attrs}`;
+      let score = 0;
+      if (blob.includes(h)) score += 10;
+      if (name.includes(h)) score += 5;
+      for (const token of h.split(' ').filter((t) => t.length > 1)) {
+        if (blob.includes(token)) score += 2;
+      }
+      return { v, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    return best && best.score >= 4 ? best.v : undefined;
+  }
+
+  private formatVariationLine(v: {
+    id: number;
+    parentId: number;
+    name: string;
+    price: string;
+    stockStatus: string;
+    stockQuantity: number | null;
+    attributes: Array<{ name: string; value: string }>;
+  }): string {
+    const attrs = v.attributes.map((a) => `${a.name}: ${a.value}`).join(', ');
+    const stock =
+      v.stockQuantity != null ? `${v.stockStatus} (${v.stockQuantity} uds.)` : v.stockStatus;
+    return `${v.name} | variationId=${v.id} | productId=${v.parentId} | Precio: ${v.price} | ${attrs || 'sin atributos'} | Stock: ${stock}`;
+  }
+
   private isVariationAvailable(
     variation: { stockStatus: string; stockQuantity: number | null },
     quantity: number
@@ -388,6 +473,6 @@ export class SalesAgentToolsHandler {
     const stock =
       p.stockQuantity != null ? `${p.stockStatus} (${p.stockQuantity} uds.)` : p.stockStatus;
     const typeHint = p.type === 'variable' ? ' | Tipo: variable (usar listar_variaciones)' : '';
-    return `- ${p.name} | productId=${p.id} | SKU: ${p.sku || 'N/A'} | Precio desde: ${p.price} | Stock: ${stock}${typeHint}`;
+    return `- ${p.name} | SKU: ${p.sku || 'SIN SKU — asignar en WooCommerce'} | productId=${p.id} | Precio: ${p.price} | Stock: ${stock}${typeHint}`;
   }
 }
