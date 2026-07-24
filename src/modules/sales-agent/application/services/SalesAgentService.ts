@@ -92,6 +92,23 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'agregar_producto_por_sku',
+      description:
+        'Verifica stock y agrega al carrito por SKU en un solo paso. Preferir cuando el cliente elige un producto/variación ya listado. NO inicia el pago.',
+      parameters: {
+        type: 'object',
+        properties: {
+          sku: { type: 'string', description: 'SKU exacto de la variación (ej. CAD-LAZO-60)' },
+          cantidad: { type: 'number', description: 'Cantidad (default 1)' },
+          nombre_cliente: { type: 'string' },
+        },
+        required: ['sku'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'agregar_al_carrito',
       description:
         'Agrega producto(s) al carrito tras verificar stock por SKU. NO inicia el pago. Después debes preguntar si desea agregar algo más.',
@@ -461,6 +478,16 @@ export class SalesAgentService {
         });
         return result.message;
       }
+      case 'agregar_producto_por_sku': {
+        const sku = String(args.sku ?? '').trim();
+        const quantity = Number(args.cantidad ?? 1);
+        if (!sku) return 'Indica el SKU exacto del producto.';
+
+        const built = await this.tools.buildOrderItemBySku(input.tenantId, sku, quantity);
+        if (!built.ok || !built.item) return built.message;
+
+        return this.addItemsToCart(input, salesContext, [built.item], args.nombre_cliente);
+      }
       case 'agregar_al_carrito': {
         const newItems = this.parseOrderItems(args.productos);
         if (!newItems.length) return 'Debes indicar al menos un producto válido con SKU.';
@@ -468,26 +495,7 @@ export class SalesAgentService {
         const stockCheck = await this.tools.validateCartStock(input.tenantId, newItems);
         if (!stockCheck.ok) return stockCheck.message;
 
-        const customerName = String(
-          args.nombre_cliente ?? salesContext.customerName ?? input.customerPhone
-        ).trim();
-        const merged = this.mergeCartItems(salesContext.cartItems, newItems);
-
-        Object.assign(salesContext, {
-          phase: 'browsing' as const,
-          flowStep: 'buying' as const,
-          cartItems: merged,
-          customerName,
-        });
-
-        const summary = this.conversationFlow.formatCartSummary(merged);
-        return [
-          'Producto(s) agregado(s) al carrito:',
-          summary,
-          '',
-          'Indica al cliente el resumen y pregúntale: *¿Deseas agregar algo más o eso sería todo?*',
-          'NO menciones transferencia, Bre-B ni método de pago todavía.',
-        ].join('\n');
+        return this.addItemsToCart(input, salesContext, newItems, args.nombre_cliente);
       }
       case 'finalizar_compra':
       case 'preparar_pago': {
@@ -502,6 +510,34 @@ export class SalesAgentService {
       default:
         return `Herramienta desconocida: ${name}`;
     }
+  }
+
+  private addItemsToCart(
+    input: SalesAgentMessageInput,
+    salesContext: SalesContext,
+    newItems: OrderItem[],
+    customerNameArg?: unknown
+  ): string {
+    const customerName = String(
+      customerNameArg ?? salesContext.customerName ?? input.customerPhone
+    ).trim();
+    const merged = this.mergeCartItems(salesContext.cartItems, newItems);
+
+    Object.assign(salesContext, {
+      phase: 'browsing' as const,
+      flowStep: 'buying' as const,
+      cartItems: merged,
+      customerName,
+    });
+
+    const summary = this.conversationFlow.formatCartSummary(merged);
+    return [
+      'Producto(s) agregado(s) al carrito:',
+      summary,
+      '',
+      'Indica al cliente el resumen y pregúntale: *¿Deseas agregar algo más o eso sería todo?*',
+      'NO menciones transferencia, Bre-B ni método de pago todavía.',
+    ].join('\n');
   }
 
   private mergeCartItems(existing: PendingCartItem[] | undefined, newItems: OrderItem[]): PendingCartItem[] {
@@ -629,10 +665,10 @@ export class SalesAgentService {
       'FLUJO DE VENTA:',
       '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
       '2) IDENTIFICADOR PRINCIPAL: SKU. Cada variación tiene SKU único.',
-      '3) Cuando el cliente elija un producto: verificar_stock(sku) → agregar_al_carrito → preguntar *¿Deseas agregar algo más o eso sería todo?*',
-      '4) NO menciones transferencia, Bre-B ni método de pago al agregar productos. Solo cuando el cliente confirme que no quiere agregar más, usa finalizar_compra.',
-      '5) finalizar_compra muestra los botones de pago (transferencia / efectivo). No pidas confirmar transferencia antes de eso.',
-      '6) preparar_pago ya no existe; usa agregar_al_carrito y finalizar_compra.',
+      '3) Si el cliente elige un producto ya listado: usa agregar_producto_por_sku(sku) en UN solo paso. No encadenes buscar + verificar + agregar.',
+      '4) Cuando agregues al carrito, pregunta *¿Deseas agregar algo más o eso sería todo?*',
+      '5) NO menciones transferencia ni pago hasta que el cliente confirme que no quiere agregar más → entonces finalizar_compra.',
+      '6) Usa la menor cantidad de herramientas posible por mensaje.',
       'No inventes productos ni precios. Usa las herramientas.',
       phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',

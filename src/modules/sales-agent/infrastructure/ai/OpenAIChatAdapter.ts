@@ -19,6 +19,8 @@ export interface ChatWithToolsInput extends ChatCompletionInput {
   onToolCall: ToolCallHandler;
 }
 
+const MAX_TOOL_CALL_STEPS = 10;
+
 @injectable()
 export class OpenAIChatAdapter {
   private client: OpenAI | null = null;
@@ -74,12 +76,13 @@ export class OpenAIChatAdapter {
       { role: 'user', content: input.userMessage },
     ];
 
-    for (let step = 0; step < 6; step += 1) {
+    for (let step = 0; step < MAX_TOOL_CALL_STEPS; step += 1) {
+      const forceTextReply = step === MAX_TOOL_CALL_STEPS - 1;
       const response = await client.chat.completions.create({
         model: env.OPENAI_CHAT_MODEL,
         messages,
-        tools: input.tools,
-        tool_choice: 'auto',
+        tools: forceTextReply ? undefined : input.tools,
+        tool_choice: forceTextReply ? undefined : 'auto',
         temperature: 0.35,
         max_tokens: 700,
       });
@@ -116,6 +119,6 @@ export class OpenAIChatAdapter {
       return reply;
     }
 
-    throw new DomainError('El agente excedió el límite de llamadas a herramientas', 'OPENAI_TOOL_LIMIT');
+    return 'Disculpa, tuve un inconveniente procesando tu solicitud. ¿Puedes indicarme de nuevo el producto que deseas?';
   }
 }

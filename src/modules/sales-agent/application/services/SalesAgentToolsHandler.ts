@@ -411,6 +411,56 @@ export class SalesAgentToolsHandler {
     return this.wcConfigRepo.findByTenantId(tenantId).then((c) => !!(c && this.massiBot.isConfigured(c)));
   }
 
+  async buildOrderItemBySku(
+    tenantId: string,
+    sku: string,
+    quantity = 1
+  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) {
+      return { ok: false, message: 'WooCommerce no conectado.' };
+    }
+
+    const resolved = await this.resolveProductBySku(config, sku.trim());
+    if (!resolved) {
+      return { ok: false, message: `Producto con SKU "${sku}" no encontrado.` };
+    }
+
+    if (!this.isResolvedAvailable(resolved, quantity)) {
+      return {
+        ok: false,
+        message: `Sin stock para ${resolved.name} (SKU ${resolved.sku}). Estado: ${resolved.stockStatus}.`,
+      };
+    }
+
+    const unitPrice = Number.parseFloat(resolved.price);
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+      return { ok: false, message: `Precio inválido para SKU ${resolved.sku}.` };
+    }
+
+    return {
+      ok: true,
+      message: `Disponible: ${resolved.name} | SKU: ${resolved.sku} | precio ${unitPrice}.`,
+      item: {
+        productId: resolved.productId,
+        variationId: resolved.variationId,
+        sku: resolved.sku,
+        name: resolved.name,
+        quantity,
+        unitPrice,
+      },
+    };
+  }
+
+  private isResolvedAvailable(
+    resolved: { stockStatus: string; stockQuantity: number | null },
+    quantity: number
+  ): boolean {
+    if (resolved.stockStatus !== 'instock') return false;
+    if (resolved.stockQuantity == null) return true;
+    return resolved.stockQuantity >= quantity;
+  }
+
   private async resolveProductBySku(
     config: WooCommerceConfigData,
     sku: string
