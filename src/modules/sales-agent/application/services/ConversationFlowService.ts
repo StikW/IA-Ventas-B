@@ -1,8 +1,10 @@
 import { inject, injectable } from 'tsyringe';
 import { BuilderBotButtonOption } from '../../../builderbot/domain/IBuilderBotCloudService';
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
+import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 import {
+  isCartFinalizeIntent,
   isMenuGreeting,
   resolveButtonAction,
   resolvePaymentMethodChoice,
@@ -25,6 +27,7 @@ export interface ConversationFlowInput {
   customerPhone: string;
   text: string;
   businessName: string;
+  businessProfile?: BusinessProfileConfig;
   salesContext: SalesContext;
   historyLength: number;
 }
@@ -68,7 +71,11 @@ export class ConversationFlowService {
       input.salesContext.flowStep !== 'payment_select' &&
       input.salesContext.phase !== 'awaiting_payment'
     ) {
-      return this.buildWelcomeMessage(input.businessName, input.salesContext);
+      return this.buildWelcomeMessage(input.businessName, input.businessProfile);
+    }
+
+    if (input.salesContext.flowStep === 'buying' && isCartFinalizeIntent(text)) {
+      return null;
     }
 
     if (input.salesContext.flowStep !== 'payment_select') {
@@ -97,13 +104,32 @@ export class ConversationFlowService {
     return this.buildPaymentMethodPrompt(input.salesContext, totalHint);
   }
 
-  buildWelcomeMessage(businessName: string, salesContext: SalesContext): ConversationFlowResult {
+  buildWelcomeMessage(businessName: string, profile?: BusinessProfileConfig): ConversationFlowResult {
+    const description =
+      profile?.description?.trim() ||
+      'Somos *fabricantes de joyas en oro 18K*. Diseñamos y elaboramos piezas con la calidad que nos caracteriza.';
+
+    const address =
+      profile?.address?.trim() ||
+      [
+        '📍 *Edificio La Ceiba*, Local 101 — Primer piso',
+        'Calle 52 #47-28, Medellín, Antioquia',
+      ].join('\n');
+
+    const hours = profile?.businessHours?.trim();
+
     const body = [
       `¡Hola! Bienvenido a *${businessName}*.`,
       '',
+      description,
+      '',
+      address,
+      hours ? `🕐 ${hours}` : null,
+      '',
       '¿En qué te podemos ayudar hoy?',
-      'Puedes preguntarme por productos, precios, pedidos o cómo comprar.',
-    ].join('\n');
+    ]
+      .filter((line) => line !== null)
+      .join('\n');
 
     return {
       replyText: body,
@@ -112,8 +138,26 @@ export class ConversationFlowService {
     };
   }
 
+  formatCartSummary(cartItems: NonNullable<SalesContext['cartItems']>): string {
+    const lines = cartItems.map(
+      (item) =>
+        `· ${item.name} x${item.quantity} — $${(item.unitPrice * item.quantity).toLocaleString('es-CO')}`
+    );
+    const total = cartItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+    return [...lines, `\n*Total:* $${total.toLocaleString('es-CO')}`].join('\n');
+  }
+
   buildPaymentMethodPrompt(salesContext: SalesContext, totalHint?: string): ConversationFlowResult {
-    const body = ['Perfecto. Elige cómo deseas pagar:', totalHint ? `\n${totalHint}` : ''].filter(Boolean).join('\n');
+    const cartSummary =
+      salesContext.cartItems?.length ? `\n\n${this.formatCartSummary(salesContext.cartItems)}` : '';
+    const body = [
+      'Perfecto. Este es tu pedido:',
+      cartSummary,
+      totalHint ? `\n${totalHint}` : '',
+      '\nElige cómo deseas pagar:',
+    ]
+      .filter(Boolean)
+      .join('');
 
     return {
       replyText: body,

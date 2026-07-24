@@ -11,12 +11,12 @@ import { CreateOrderUseCase } from '../../../commerce/application/use-cases/Orde
 import { OrderItem } from '../../../commerce/domain/entities/Order.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
-import { ChatMessage, IChatSessionRepository, SalesContext } from '../../domain/IChatSessionRepository';
+import { ChatMessage, IChatSessionRepository, PendingCartItem, SalesContext } from '../../domain/IChatSessionRepository';
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
 import { ConversationFlowService, OutboundWhatsAppMessage } from './ConversationFlowService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
-import { isMenuGreeting } from '../../domain/whatsappFlow.constants';
+import { isCartFinalizeIntent, isMenuGreeting } from '../../domain/whatsappFlow.constants';
 
 const AGENT_ACTOR = 'system:sales-agent';
 
@@ -92,14 +92,13 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'preparar_pago',
+      name: 'agregar_al_carrito',
       description:
-        'Valida stock y crea el pedido en MASSI listo para recibir comprobante. Usar cuando el cliente confirma compra por transferencia (Bre-B).',
+        'Agrega producto(s) al carrito tras verificar stock por SKU. NO inicia el pago. Después debes preguntar si desea agregar algo más.',
       parameters: {
         type: 'object',
         properties: {
           nombre_cliente: { type: 'string' },
-          metodo_pago: { type: 'string', description: 'mdp_788 transferencia Bre-B, mdp_789 efectivo en tienda' },
           productos: {
             type: 'array',
             items: {
@@ -116,7 +115,21 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
             },
           },
         },
-        required: ['nombre_cliente', 'productos'],
+        required: ['productos'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'finalizar_compra',
+      description:
+        'Usar SOLO cuando el cliente confirma que no desea agregar más productos (ej. "eso es todo", "continuar con la compra"). Valida el carrito y muestra botones de pago.',
+      parameters: {
+        type: 'object',
+        properties: {
+          nombre_cliente: { type: 'string' },
+        },
       },
     },
   },
@@ -174,8 +187,8 @@ export class SalesAgentService {
     const history = session?.messages ?? [];
     let salesContext: SalesContext = session?.salesContext ?? { phase: 'browsing' };
 
-    // Saludo nuevo: salir de payment_select y dejar que el LLM responda (sin botones).
-    if (isMenuGreeting(text) && salesContext.flowStep === 'payment_select') {
+    // Saludo/menú: salir de payment_select o carrito activo.
+    if (isMenuGreeting(text) && (salesContext.flowStep === 'payment_select' || salesContext.flowStep === 'buying')) {
       salesContext = { phase: 'browsing' };
     }
 
@@ -184,6 +197,7 @@ export class SalesAgentService {
       customerPhone: input.customerPhone,
       text,
       businessName,
+      businessProfile: tenantConfig?.business,
       salesContext,
       historyLength: history.length,
     });
@@ -210,9 +224,54 @@ export class SalesAgentService {
       businessName,
       businessProfile: tenantConfig?.business,
       salesPhase: salesContext.phase,
+      flowStep: salesContext.flowStep,
+      cartItemCount: salesContext.cartItems?.length ?? 0,
     });
 
     let mutableContext = { ...salesContext };
+
+    if (
+      mutableContext.flowStep === 'buying' &&
+      isCartFinalizeIntent(text) &&
+      mutableContext.cartItems?.length
+    ) {
+      const finalizeReply = await this.finalizeCart(input, mutableContext);
+      const now = new Date().toISOString();
+
+      if (finalizeReply.enteredPaymentSelect) {
+        const total = mutableContext.cartItems?.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+        const totalHint = total ? `Total: *$${total.toLocaleString('es-CO')}*` : undefined;
+        const paymentPrompt = this.conversationFlow.buildPaymentMethodPrompt(mutableContext, totalHint);
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: paymentPrompt.replyText,
+          salesContext: { ...mutableContext, ...paymentPrompt.salesContext },
+          outbound: paymentPrompt.outbound,
+          now,
+          ragHits: 0,
+        });
+        return { replied: true, reply: paymentPrompt.replyText, bbcResponse };
+      }
+
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: finalizeReply.message,
+        salesContext: mutableContext,
+        now,
+        ragHits: 0,
+      });
+      return { replied: true, reply: finalizeReply.message, bbcResponse };
+    }
 
     const reply = await this.chat.completeWithTools({
       systemPrompt,
@@ -402,45 +461,40 @@ export class SalesAgentService {
         });
         return result.message;
       }
-      case 'preparar_pago': {
-        const items = this.parseOrderItems(args.productos);
-        if (!items.length) return 'Debes indicar al menos un producto válido.';
+      case 'agregar_al_carrito': {
+        const newItems = this.parseOrderItems(args.productos);
+        if (!newItems.length) return 'Debes indicar al menos un producto válido con SKU.';
 
-        const stockCheck = await this.tools.validateCartStock(input.tenantId, items);
+        const stockCheck = await this.tools.validateCartStock(input.tenantId, newItems);
         if (!stockCheck.ok) return stockCheck.message;
 
-        const customerName = String(args.nombre_cliente ?? input.customerPhone).trim();
-        const massiEnabled = await this.tools.massiBotEnabled(input.tenantId);
+        const customerName = String(
+          args.nombre_cliente ?? salesContext.customerName ?? input.customerPhone
+        ).trim();
+        const merged = this.mergeCartItems(salesContext.cartItems, newItems);
 
-        if (massiEnabled) {
-          if (salesContext.flowStep === 'payment_select' && salesContext.cartItems?.length) {
-            return 'El carrito ya está listo. El cliente debe elegir transferencia (1) o efectivo (2) con los botones o escribiendo la opción.';
-          }
+        Object.assign(salesContext, {
+          phase: 'browsing' as const,
+          flowStep: 'buying' as const,
+          cartItems: merged,
+          customerName,
+        });
 
-          Object.assign(salesContext, {
-            phase: 'browsing' as const,
-            flowStep: 'payment_select' as const,
-            cartItems: items,
-            customerName,
-          });
-
-          const total = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
-          return [
-            'Stock validado correctamente.',
-            `Total estimado: $${total.toLocaleString('es-CO')}.`,
-            'El cliente elegirá transferencia o efectivo con los botones de WhatsApp.',
-          ].join('\n');
-        }
-
-        Object.assign(salesContext, this.tools.buildAwaitingPaymentContext(salesContext, items, customerName));
-
-        const tenantConfig = await this.configRepo.findByTenantId(input.tenantId);
-        const bankInfo = tenantConfig?.business?.bankAccountInfo ?? 'Consulta al negocio los datos de pago.';
+        const summary = this.conversationFlow.formatCartSummary(merged);
         return [
-          'Stock validado correctamente.',
-          `Datos para transferencia:\n${bankInfo}`,
-          'Indica al cliente que envíe una captura o foto del comprobante de pago por este chat.',
+          'Producto(s) agregado(s) al carrito:',
+          summary,
+          '',
+          'Indica al cliente el resumen y pregúntale: *¿Deseas agregar algo más o eso sería todo?*',
+          'NO menciones transferencia, Bre-B ni método de pago todavía.',
         ].join('\n');
+      }
+      case 'finalizar_compra':
+      case 'preparar_pago': {
+        if (args.nombre_cliente) {
+          salesContext.customerName = String(args.nombre_cliente).trim();
+        }
+        return (await this.finalizeCart(input, salesContext)).message;
       }
       case 'consultar_pedidos': {
         return this.tools.listMassiOrders(input.tenantId, input.customerPhone);
@@ -448,6 +502,78 @@ export class SalesAgentService {
       default:
         return `Herramienta desconocida: ${name}`;
     }
+  }
+
+  private mergeCartItems(existing: PendingCartItem[] | undefined, newItems: OrderItem[]): PendingCartItem[] {
+    const cart: PendingCartItem[] = [...(existing ?? [])];
+    for (const item of newItems) {
+      const idx = cart.findIndex((row) => row.sku === item.sku);
+      if (idx >= 0) {
+        cart[idx] = { ...cart[idx], quantity: cart[idx].quantity + item.quantity };
+      } else {
+        cart.push({ ...item });
+      }
+    }
+    return cart;
+  }
+
+  private async finalizeCart(
+    input: SalesAgentMessageInput,
+    salesContext: SalesContext
+  ): Promise<{ message: string; enteredPaymentSelect: boolean }> {
+    const items = salesContext.cartItems ?? [];
+    if (!items.length) {
+      return { message: 'El carrito está vacío. Primero agrega productos con agregar_al_carrito.', enteredPaymentSelect: false };
+    }
+
+    if (salesContext.flowStep === 'payment_select') {
+      return {
+        message: 'El carrito ya está listo. El cliente debe elegir transferencia o efectivo con los botones de WhatsApp.',
+        enteredPaymentSelect: false,
+      };
+    }
+
+    const stockCheck = await this.tools.validateCartStock(input.tenantId, items);
+    if (!stockCheck.ok) {
+      return { message: stockCheck.message, enteredPaymentSelect: false };
+    }
+
+    const customerName = String(salesContext.customerName ?? input.customerPhone).trim();
+    const massiEnabled = await this.tools.massiBotEnabled(input.tenantId);
+    const total = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+    const summary = this.conversationFlow.formatCartSummary(items);
+
+    if (massiEnabled) {
+      Object.assign(salesContext, {
+        phase: 'browsing' as const,
+        flowStep: 'payment_select' as const,
+        cartItems: items,
+        customerName,
+      });
+
+      return {
+        message: [
+          'Carrito confirmado. Se mostrarán los botones de pago al cliente.',
+          summary,
+          `Total: $${total.toLocaleString('es-CO')}.`,
+        ].join('\n'),
+        enteredPaymentSelect: true,
+      };
+    }
+
+    Object.assign(salesContext, this.tools.buildAwaitingPaymentContext(salesContext, items, customerName));
+    const tenantConfig = await this.configRepo.findByTenantId(input.tenantId);
+    const bankInfo = tenantConfig?.business?.bankAccountInfo ?? 'Consulta al negocio los datos de pago.';
+
+    return {
+      message: [
+        'Stock validado correctamente.',
+        summary,
+        `Datos para transferencia:\n${bankInfo}`,
+        'Indica al cliente que envíe una captura o foto del comprobante de pago por este chat.',
+      ].join('\n'),
+      enteredPaymentSelect: false,
+    };
   }
 
   private parseOrderItems(raw: unknown): OrderItem[] {
@@ -476,6 +602,8 @@ export class SalesAgentService {
       bankAccountInfo?: string;
     };
     salesPhase: SalesContext['phase'];
+    flowStep?: SalesContext['flowStep'];
+    cartItemCount: number;
   }): string {
     const profileLines = [
       input.businessProfile?.description ? `Descripción: ${input.businessProfile.description}` : null,
@@ -491,18 +619,20 @@ export class SalesAgentService {
         ? 'FASE ACTUAL: esperando comprobante de pago. Recuérdale al cliente enviar la captura.'
         : input.salesPhase === 'order_created'
           ? 'FASE ACTUAL: pedido ya registrado. Ayuda con seguimiento si pregunta.'
-          : 'FASE ACTUAL: exploración y venta.';
+          : input.flowStep === 'buying'
+            ? `FASE ACTUAL: armando pedido (${input.cartItemCount} producto(s) en carrito). Si el cliente quiere otro producto, búscalo y usa agregar_al_carrito. Si confirma que no desea agregar más (ej. "eso es todo", "continuar con la compra"), usa finalizar_compra. NO hables de transferencia ni pago hasta finalizar_compra.`
+            : 'FASE ACTUAL: exploración y venta.';
 
     return [
       `Eres el asistente de ventas por WhatsApp de "${input.businessName}".`,
       'Responde en español, amable y conciso (máximo 3 párrafos).',
       'FLUJO DE VENTA:',
       '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
-      '2) IDENTIFICADOR PRINCIPAL: SKU. Cada variación (medida, peso, etc.) tiene SKU único en WooCommerce.',
-      '3) Flujo: buscar_productos_tienda (por nombre si hace falta) → identificar SKU de la variación → verificar_stock(sku) → preparar_pago con ese SKU.',
-      '4) Cuando el cliente elija una opción (ej. cadena 50 cm), usa el SKU exacto de esa variación, no el nombre completo.',
-      '5) preparar_pago siempre requiere sku en cada producto. No inventes SKUs ni precios.',
-      '6) Cuando confirme compra, usa preparar_pago. Tras elegir método de pago, pide comprobante si pagó por transferencia.',
+      '2) IDENTIFICADOR PRINCIPAL: SKU. Cada variación tiene SKU único.',
+      '3) Cuando el cliente elija un producto: verificar_stock(sku) → agregar_al_carrito → preguntar *¿Deseas agregar algo más o eso sería todo?*',
+      '4) NO menciones transferencia, Bre-B ni método de pago al agregar productos. Solo cuando el cliente confirme que no quiere agregar más, usa finalizar_compra.',
+      '5) finalizar_compra muestra los botones de pago (transferencia / efectivo). No pidas confirmar transferencia antes de eso.',
+      '6) preparar_pago ya no existe; usa agregar_al_carrito y finalizar_compra.',
       'No inventes productos ni precios. Usa las herramientas.',
       phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',

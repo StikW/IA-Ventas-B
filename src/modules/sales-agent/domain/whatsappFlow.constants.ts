@@ -28,6 +28,23 @@ export function isMenuGreeting(text: string): boolean {
   return MENU_GREETING_PATTERN.test(text.trim());
 }
 
+/** Cliente indica que terminó de elegir productos y quiere pagar. */
+export function isCartFinalizeIntent(text: string): boolean {
+  const t = normalizeFlowText(text);
+  return (
+    /^(eso\s+es\s+todo|es\s+todo|nada\s+m[aá]s|no\s+m[aá]s|listo|ya\s+est[aá]|finalizar|confirmar(\s+pedido)?)$/.test(t) ||
+    /continuar\s+con\s+la\s+compra|proceder\s+con\s+la\s+compra|quiero\s+(seguir|comprar|pagar|finalizar)|seguir\s+con\s+la\s+compra|listo\s+para\s+pagar|ya\s+no\s+quiero\s+m[aá]s/.test(
+      t
+    )
+  );
+}
+
+/** Cliente quiere seguir agregando productos al carrito. */
+export function isCartContinueShoppingIntent(text: string): boolean {
+  const t = normalizeFlowText(text);
+  return /agregar|a[nñ]adir|algo\s+m[aá]s|otro\s+producto|m[aá]s\s+productos|s[ií],?\s+algo\s+m[aá]s|quiero\s+m[aá]s/.test(t);
+}
+
 export function resolveButtonAction(text: string): string | null {
   const normalized = normalizeFlowText(text);
   const byLabel: Record<string, string> = {
