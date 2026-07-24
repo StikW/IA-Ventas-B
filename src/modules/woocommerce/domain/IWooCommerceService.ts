@@ -21,6 +21,7 @@ export interface WooCommerceProduct {
   stockStatus: string;
   description: string;
   status: string;
+  type?: string;
 }
 
 export interface WooCommerceOrderPayload {
@@ -48,6 +49,7 @@ export interface IWooCommerceService {
   listProducts(config: WooCommerceConfigData, page?: number): Promise<WooCommerceProduct[]>;
   searchProducts(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]>;
   getProductBySku(config: WooCommerceConfigData, sku: string): Promise<WooCommerceProduct | null>;
+  getProductById(config: WooCommerceConfigData, productId: number): Promise<WooCommerceProduct | null>;
   createOrder(config: WooCommerceConfigData, order: WooCommerceOrderPayload): Promise<WooCommerceOrderResult>;
   updateOrder(config: WooCommerceConfigData, orderId: number, update: WooCommerceOrderUpdatePayload): Promise<WooCommerceOrderResult>;
 }

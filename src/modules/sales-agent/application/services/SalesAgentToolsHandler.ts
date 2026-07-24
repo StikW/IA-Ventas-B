@@ -57,13 +57,17 @@ export class SalesAgentToolsHandler {
       .join('\n');
   }
 
-  async checkStock(tenantId: string, sku: string, quantity: number): Promise<StockCheckResult> {
+  async checkStock(
+    tenantId: string,
+    input: { sku?: string; productId?: number; variationId?: number; quantity: number }
+  ): Promise<StockCheckResult> {
+    const { sku, productId, variationId, quantity } = input;
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
       return {
         available: false,
-        sku,
-        name: sku,
+        sku: sku ?? '',
+        name: sku ?? String(productId ?? ''),
         quantity,
         stockStatus: 'unknown',
         stockQuantity: null,
@@ -71,35 +75,181 @@ export class SalesAgentToolsHandler {
       };
     }
 
-    const product = await this.wcService.getProductBySku(config, sku);
-    if (!product) {
+    if (variationId && productId && this.massiBot.isConfigured(config)) {
+      try {
+        const variations = await this.massiBot.getProductVariations(config, productId);
+        const variation = variations.find((v) => v.id === variationId);
+        if (!variation) {
+          return {
+            available: false,
+            sku: sku ?? '',
+            name: String(productId),
+            quantity,
+            stockStatus: 'notfound',
+            stockQuantity: null,
+            message: `Variación ${variationId} no encontrada para el producto ${productId}.`,
+          };
+        }
+        const available = this.isVariationAvailable(variation, quantity);
+        return {
+          available,
+          sku: variation.sku || sku || '',
+          name: variation.name,
+          quantity,
+          stockStatus: variation.stockStatus,
+          stockQuantity: variation.stockQuantity,
+          message: available
+            ? `Disponible: ${variation.name} (variación ID ${variation.id}), cantidad ${quantity}, precio ${variation.price}. productId=${productId}, variationId=${variation.id}.`
+            : `Sin stock para ${variation.name}. Estado: ${variation.stockStatus}.`,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Error al consultar variaciones';
+        return {
+          available: false,
+          sku: sku ?? '',
+          name: String(productId),
+          quantity,
+          stockStatus: 'error',
+          stockQuantity: null,
+          message: msg,
+        };
+      }
+    }
+
+    if (productId) {
+      const product = await this.wcService.getProductById(config, productId);
+      if (!product) {
+        return {
+          available: false,
+          sku: sku ?? '',
+          name: String(productId),
+          quantity,
+          stockStatus: 'notfound',
+          stockQuantity: null,
+          message: `Producto ID ${productId} no encontrado.`,
+        };
+      }
+
+      if (product.type === 'variable' && this.massiBot.isConfigured(config)) {
+        const variations = await this.massiBot.getProductVariations(config, productId);
+        if (!variations.length) {
+          return {
+            available: false,
+            sku: product.sku,
+            name: product.name,
+            quantity,
+            stockStatus: product.stockStatus,
+            stockQuantity: null,
+            message: `${product.name} es variable pero no tiene variaciones publicadas. productId=${productId}.`,
+          };
+        }
+        const lines = variations.map(
+          (v) =>
+            `  · ${v.name} | variationId=${v.id} | precio ${v.price} | stock ${v.stockStatus}${
+              v.stockQuantity != null ? ` (${v.stockQuantity})` : ''
+            }`
+        );
+        return {
+          available: false,
+          sku: product.sku,
+          name: product.name,
+          quantity,
+          stockStatus: 'variable',
+          stockQuantity: null,
+          message: [
+            `${product.name} es un producto variable (productId=${productId}). Pide al cliente elegir variación:`,
+            ...lines,
+            'Usa listar_variaciones o verificar_stock con variation_id cuando el cliente elija.',
+          ].join('\n'),
+        };
+      }
+
+      const available = this.isProductAvailable(product, quantity);
       return {
-        available: false,
-        sku,
-        name: sku,
+        available,
+        sku: product.sku,
+        name: product.name,
         quantity,
-        stockStatus: 'notfound',
-        stockQuantity: null,
-        message: `Producto con SKU "${sku}" no encontrado.`,
+        stockStatus: product.stockStatus,
+        stockQuantity: product.stockQuantity,
+        message: available
+          ? `Disponible: ${product.name} (productId=${product.id}), cantidad ${quantity}, precio ${product.price}.`
+          : `Sin stock suficiente para ${product.name}. Estado: ${product.stockStatus}.`,
       };
     }
 
-    const available = this.isProductAvailable(product, quantity);
+    if (sku?.trim()) {
+      const product = await this.wcService.getProductBySku(config, sku.trim());
+      if (!product) {
+        return {
+          available: false,
+          sku,
+          name: sku,
+          quantity,
+          stockStatus: 'notfound',
+          stockQuantity: null,
+          message: `Producto con SKU "${sku}" no encontrado. Usa product_id de buscar_productos_tienda si es MASSI.`,
+        };
+      }
+      if (product.type === 'variable') {
+        return this.checkStock(tenantId, { productId: product.id, quantity });
+      }
+      const available = this.isProductAvailable(product, quantity);
+      return {
+        available,
+        sku: product.sku,
+        name: product.name,
+        quantity,
+        stockStatus: product.stockStatus,
+        stockQuantity: product.stockQuantity,
+        message: available
+          ? `Disponible: ${product.name} (SKU ${product.sku}, productId=${product.id}), cantidad ${quantity}, precio ${product.price}.`
+          : `Sin stock suficiente para ${product.name} (SKU ${product.sku}). Estado: ${product.stockStatus}.`,
+      };
+    }
+
     return {
-      available,
-      sku: product.sku,
-      name: product.name,
+      available: false,
+      sku: '',
+      name: '',
       quantity,
-      stockStatus: product.stockStatus,
-      stockQuantity: product.stockQuantity,
-      message: available
-        ? `Disponible: ${product.name} (SKU ${product.sku}), cantidad ${quantity}, precio ${product.price}.`
-        : `Sin stock suficiente para ${product.name} (SKU ${product.sku}). Estado: ${product.stockStatus}.`,
+      stockStatus: 'unknown',
+      stockQuantity: null,
+      message: 'Indica product_id (de buscar_productos_tienda) o sku para verificar stock.',
     };
   }
 
+  async listVariations(tenantId: string, productId: number): Promise<string> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) return 'WooCommerce no conectado.';
+    if (!this.massiBot.isConfigured(config)) {
+      return 'Variaciones MASSI requieren MASSI Bot API configurada.';
+    }
+
+    const variations = await this.massiBot.getProductVariations(config, productId);
+    if (!variations.length) return `Sin variaciones para productId=${productId}.`;
+
+    return variations
+      .map((v) => {
+        const attrs = v.attributes.map((a) => `${a.name}: ${a.value}`).join(', ');
+        const stock =
+          v.stockQuantity != null ? `${v.stockStatus} (${v.stockQuantity} uds.)` : v.stockStatus;
+        return `- ${v.name} | variationId=${v.id} | productId=${v.parentId} | Precio: ${v.price} | ${attrs || 'sin atributos'} | Stock: ${stock}`;
+      })
+      .join('\n');
+  }
+
   async validateCartStock(tenantId: string, items: OrderItem[]): Promise<{ ok: boolean; message: string }> {
-    const checks = await Promise.all(items.map((item) => this.checkStock(tenantId, item.sku, item.quantity)));
+    const checks = await Promise.all(
+      items.map((item) =>
+        this.checkStock(tenantId, {
+          sku: item.sku,
+          productId: item.productId,
+          variationId: item.variationId,
+          quantity: item.quantity,
+        })
+      )
+    );
     const unavailable = checks.filter((c) => !c.available);
     if (unavailable.length) {
       return {
@@ -219,6 +369,15 @@ export class SalesAgentToolsHandler {
     return this.wcConfigRepo.findByTenantId(tenantId).then((c) => !!(c && this.massiBot.isConfigured(c)));
   }
 
+  private isVariationAvailable(
+    variation: { stockStatus: string; stockQuantity: number | null },
+    quantity: number
+  ): boolean {
+    if (variation.stockStatus !== 'instock') return false;
+    if (variation.stockQuantity == null) return true;
+    return variation.stockQuantity >= quantity;
+  }
+
   private isProductAvailable(product: WooCommerceProduct, quantity: number): boolean {
     if (product.stockStatus !== 'instock') return false;
     if (product.stockQuantity == null) return true;
@@ -228,6 +387,7 @@ export class SalesAgentToolsHandler {
   private formatProduct(p: WooCommerceProduct): string {
     const stock =
       p.stockQuantity != null ? `${p.stockStatus} (${p.stockQuantity} uds.)` : p.stockStatus;
-    return `- ${p.name} | SKU: ${p.sku || 'N/A'} | ID: ${p.id} | Precio: ${p.price} | Stock: ${stock}`;
+    const typeHint = p.type === 'variable' ? ' | Tipo: variable (usar listar_variaciones)' : '';
+    return `- ${p.name} | productId=${p.id} | SKU: ${p.sku || 'N/A'} | Precio desde: ${p.price} | Stock: ${stock}${typeHint}`;
   }
 }

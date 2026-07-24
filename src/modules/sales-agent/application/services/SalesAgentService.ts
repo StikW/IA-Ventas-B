@@ -44,15 +44,31 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'listar_variaciones',
+      description:
+        'Lista variaciones (promoción, talla, etc.) de un producto variable MASSI. Usar productId de buscar_productos_tienda.',
+      parameters: {
+        type: 'object',
+        properties: { product_id: { type: 'number', description: 'ID del producto padre en WooCommerce' } },
+        required: ['product_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'verificar_stock',
-      description: 'Verifica disponibilidad de un producto por SKU y cantidad.',
+      description:
+        'Verifica disponibilidad. MASSI usa product_id (y variation_id si aplica); SKU suele estar vacío.',
       parameters: {
         type: 'object',
         properties: {
-          sku: { type: 'string' },
+          product_id: { type: 'number', description: 'ID WooCommerce del producto' },
+          variation_id: { type: 'number', description: 'ID de variación si el cliente ya eligió' },
+          sku: { type: 'string', description: 'Opcional; muchos productos MASSI no tienen SKU' },
           cantidad: { type: 'number' },
         },
-        required: ['sku', 'cantidad'],
+        required: ['cantidad'],
       },
     },
   },
@@ -351,12 +367,19 @@ export class SalesAgentService {
         return this.tools.searchDocuments(input.tenantId, String(args.consulta ?? ''));
       case 'buscar_productos_tienda':
         return this.tools.searchStoreProducts(input.tenantId, String(args.consulta ?? ''));
+      case 'listar_variaciones':
+        return this.tools.listVariations(input.tenantId, Number(args.product_id ?? args.productId ?? 0));
       case 'verificar_stock': {
-        const result = await this.tools.checkStock(
-          input.tenantId,
-          String(args.sku ?? ''),
-          Number(args.cantidad ?? 1)
-        );
+        const result = await this.tools.checkStock(input.tenantId, {
+          sku: args.sku ? String(args.sku) : undefined,
+          productId: args.product_id ? Number(args.product_id) : args.productId ? Number(args.productId) : undefined,
+          variationId: args.variation_id
+            ? Number(args.variation_id)
+            : args.variationId
+              ? Number(args.variationId)
+              : undefined,
+          quantity: Number(args.cantidad ?? 1),
+        });
         return result.message;
       }
       case 'preparar_pago': {
@@ -451,10 +474,11 @@ export class SalesAgentService {
       'Responde en español, amable y conciso (máximo 3 párrafos).',
       'FLUJO DE VENTA:',
       '1) Saluda y ayuda al cliente. Si escribe *menú* o *hola*, puede usar los botones del menú principal.',
-      '2) Si busca productos, usa buscar_en_documentos y buscar_productos_tienda. Muestra opciones reales con SKU y precio.',
-      '3) Si pide algo específico, usa verificar_stock antes de confirmar disponibilidad.',
-      '4) Cuando confirme compra (producto, cantidad, nombre), usa preparar_pago.',
-      '5) Tras preparar_pago, pide comprobante de pago (captura/foto). El pedido se crea automáticamente al recibir la imagen.',
+      '2) Si busca productos, usa buscar_en_documentos y buscar_productos_tienda. Muestra productId, precio y si es variable usa listar_variaciones.',
+      '3) Productos MASSI suelen ser variables sin SKU: usa product_id y variation_id, no inventes SKU.',
+      '4) Antes de preparar_pago, verifica stock con verificar_stock (product_id + variation_id si aplica).',
+      '5) Cuando confirme compra (producto, variante, cantidad, nombre), usa preparar_pago.',
+      '6) Tras elegir método de pago, pide comprobante (captura/foto) si pagó por transferencia.',
       'No inventes productos ni precios. Usa las herramientas.',
       phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',

@@ -147,6 +147,16 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     return this.mapProduct(products[0]);
   }
 
+  async getProductById(config: WooCommerceConfigData, productId: number): Promise<WooCommerceProduct | null> {
+    if (!productId || productId <= 0) return null;
+    try {
+      const product = await this.request<Record<string, unknown>>(config, `/products/${productId}`);
+      return this.mapProduct(product);
+    } catch {
+      return null;
+    }
+  }
+
   async createOrder(config: WooCommerceConfigData, order: WooCommerceOrderPayload): Promise<WooCommerceOrderResult> {
     const result = await this.request<Record<string, unknown>>(config, '/orders', {
       method: 'POST',
@@ -188,6 +198,7 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
       stockStatus: p.stock_status as string,
       description: (p.short_description as string) ?? '',
       status: p.status as string,
+      type: p.type ? String(p.type) : undefined,
     };
   }
 }
