@@ -93,7 +93,7 @@ export class BuilderBotCloudWebhookRelay {
       },
       rules,
       avoidResponse: false,
-      messageMapping: 'message',
+      messageMapping: 'reply',
     };
   }
 

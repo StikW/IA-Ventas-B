@@ -68,6 +68,11 @@ export class ConversationFlowService {
       return null;
     }
 
+    // Saludo u otro tema durante selección de pago → lo maneja el agente (sesión ya limpiada arriba).
+    if (isMenuGreeting(text)) {
+      return null;
+    }
+
     const massiEnabled = await this.tools.massiBotEnabled(input.tenantId);
     const paymentAction = action ?? resolvePaymentMethodChoice(text);
 

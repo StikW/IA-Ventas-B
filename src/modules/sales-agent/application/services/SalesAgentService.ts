@@ -16,6 +16,7 @@ import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
 import { ConversationFlowService, OutboundWhatsAppMessage } from './ConversationFlowService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
+import { isMenuGreeting } from '../../domain/whatsappFlow.constants';
 
 const AGENT_ACTOR = 'system:sales-agent';
 
@@ -155,7 +156,12 @@ export class SalesAgentService {
     const tenantConfig = await this.configRepo.findByTenantId(input.tenantId);
     const session = await this.chatRepo.find(input.tenantId, input.customerPhone);
     const history = session?.messages ?? [];
-    const salesContext: SalesContext = session?.salesContext ?? { phase: 'browsing' };
+    let salesContext: SalesContext = session?.salesContext ?? { phase: 'browsing' };
+
+    // Saludo nuevo: salir de payment_select y dejar que el LLM responda (sin botones).
+    if (isMenuGreeting(text) && salesContext.flowStep === 'payment_select') {
+      salesContext = { phase: 'browsing' };
+    }
 
     const flowResult = await this.conversationFlow.tryHandle({
       tenantId: input.tenantId,
@@ -522,7 +528,7 @@ export class SalesAgentService {
     if (useCloudRelay) {
       const route = resolveBbcUiRoute(outbound);
       const bbcResponse: BbcWebhookAgentResponse =
-        route === 'text' ? { route: 'text', message: outbound.body } : { route, message: '' };
+        route === 'text' ? { route: 'text', reply: outbound.body } : { route: 'payment' };
 
       await this.audit.log({
         tenantId: params.tenantId,
