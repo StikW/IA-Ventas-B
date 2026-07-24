@@ -45,6 +45,28 @@ export function isCartContinueShoppingIntent(text: string): boolean {
   return /agregar|a[nñ]adir|algo\s+m[aá]s|otro\s+producto|m[aá]s\s+productos|s[ií],?\s+algo\s+m[aá]s|quiero\s+m[aá]s/.test(t);
 }
 
+/** Cliente elige o pide un producto concreto (no una pregunta de catálogo). Aplica a cualquier catálogo WC. */
+export function isProductSelectionIntent(text: string): boolean {
+  const t = normalizeFlowText(text);
+  const trimmed = text.trim();
+
+  if (isMenuGreeting(t) || isCartFinalizeIntent(t) || isCartContinueShoppingIntent(t)) return false;
+
+  if (/^(qu[eé]|cu[aá]les|cu[aá]nto|tienen|hay|muestr|list|inform|productos?\s+(tienen|hay)|cat[aá]logo|precio\s+de)/.test(t)) {
+    return false;
+  }
+
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]{2,}$/.test(trimmed) && !/\s/.test(trimmed)) return true;
+
+  if (/quiero|me gustar[ií]a|quisiera|dame|necesito|comprar|llevar|tomar|pedir|solicito/.test(t)) return true;
+
+  if (/\b\d+\s*(?:ud?s?|unidades?|pares?|piezas?|pzs?)\b/i.test(t)) return true;
+
+  if (/\b\d+\s*(?:cm|mm|gr?|kt|k|ml|oz|lb)\b/i.test(t) && t.split(/\s+/).filter(Boolean).length >= 2) return true;
+
+  return false;
+}
+
 export function resolveButtonAction(text: string): string | null {
   const normalized = normalizeFlowText(text);
   const byLabel: Record<string, string> = {

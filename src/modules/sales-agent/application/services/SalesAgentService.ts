@@ -16,7 +16,7 @@ import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
 import { ConversationFlowService, OutboundWhatsAppMessage } from './ConversationFlowService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
-import { isCartFinalizeIntent, isMenuGreeting } from '../../domain/whatsappFlow.constants';
+import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent } from '../../domain/whatsappFlow.constants';
 
 const AGENT_ACTOR = 'system:sales-agent';
 
@@ -25,7 +25,8 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'buscar_en_documentos',
-      description: 'Busca información de productos en documentos vectorizados del negocio. Incluye sugerencias relacionadas.',
+      description:
+        'Busca en PDFs subidos al panel. NO usar para catálogo/precios si WooCommerce está conectado; usa buscar_productos_tienda.',
       parameters: {
         type: 'object',
         properties: { consulta: { type: 'string', description: 'Qué busca el cliente' } },
@@ -42,7 +43,7 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          consulta: { type: 'string', description: 'SKU exacto (preferido, ej. CAD-LAZO-50) o nombre corto del producto' },
+          consulta: { type: 'string', description: 'SKU exacto o palabras clave del nombre del producto' },
         },
         required: ['consulta'],
       },
@@ -66,11 +67,11 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'verificar_stock',
       description:
-        'Verifica disponibilidad por SKU (obligatorio y preferido). Cada variación MASSI tiene SKU único que identifica medida/características.',
+        'Verifica disponibilidad por SKU (obligatorio y preferido). Cada variación en WooCommerce debe tener SKU único.',
       parameters: {
         type: 'object',
         properties: {
-          sku: { type: 'string', description: 'SKU exacto de la variación o producto simple (ej. CAD-LAZO-50)' },
+          sku: { type: 'string', description: 'SKU exacto de la variación o producto simple' },
           product_id: { type: 'number', description: 'Solo si no tienes SKU: ID del producto padre' },
           variation_id: { type: 'number' },
           variante: { type: 'string', description: 'Solo sin SKU: medida, ej. "50 cm"' },
@@ -98,7 +99,7 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: {
         type: 'object',
         properties: {
-          sku: { type: 'string', description: 'SKU exacto de la variación (ej. CAD-LAZO-60)' },
+          sku: { type: 'string', description: 'SKU exacto del producto o variación en WooCommerce' },
           cantidad: { type: 'number', description: 'Cantidad (default 1)' },
           nombre_cliente: { type: 'string' },
         },
@@ -288,6 +289,36 @@ export class SalesAgentService {
         ragHits: 0,
       });
       return { replied: true, reply: finalizeReply.message, bbcResponse };
+    }
+
+    if (isProductSelectionIntent(text) && salesContext.phase !== 'awaiting_payment') {
+      const selection = await this.tools.resolveSelectionFromText(input.tenantId, text);
+      if (selection.ok && selection.item) {
+        this.addItemsToCart(input, mutableContext, [selection.item]);
+        const summary = this.conversationFlow.formatCartSummary(mutableContext.cartItems ?? []);
+        const reply = [
+          `¡Listo! Agregué *${selection.item.name}* a tu pedido.`,
+          '',
+          summary,
+          '',
+          '¿Deseas agregar algo más o eso sería todo?',
+        ].join('\n');
+
+        const now = new Date().toISOString();
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply,
+          salesContext: mutableContext,
+          now,
+          ragHits: 0,
+        });
+        return { replied: true, reply, bbcResponse };
+      }
     }
 
     const reply = await this.chat.completeWithTools({
@@ -664,11 +695,12 @@ export class SalesAgentService {
       'Responde en español, amable y conciso (máximo 3 párrafos).',
       'FLUJO DE VENTA:',
       '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
-      '2) IDENTIFICADOR PRINCIPAL: SKU. Cada variación tiene SKU único.',
-      '3) Si el cliente elige un producto ya listado: usa agregar_producto_por_sku(sku) en UN solo paso. No encadenes buscar + verificar + agregar.',
-      '4) Cuando agregues al carrito, pregunta *¿Deseas agregar algo más o eso sería todo?*',
-      '5) NO menciones transferencia ni pago hasta que el cliente confirme que no quiere agregar más → entonces finalizar_compra.',
-      '6) Usa la menor cantidad de herramientas posible por mensaje.',
+      '2) Catálogo y precios: SIEMPRE buscar_productos_tienda (WooCommerce). Funciona para cualquier producto del catálogo con SKU.',
+      '3) IDENTIFICADOR PRINCIPAL: SKU. Productos simples y variaciones (talla, medida, color, etc.) deben tener SKU en WooCommerce.',
+      '4) Tras agregar al carrito, pregunta *¿Deseas agregar algo más o eso sería todo?*',
+      '5) NO menciones transferencia ni pago hasta finalizar_compra.',
+      '6) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
+      '7) Usa la menor cantidad de herramientas posible por mensaje.',
       'No inventes productos ni precios. Usa las herramientas.',
       phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',

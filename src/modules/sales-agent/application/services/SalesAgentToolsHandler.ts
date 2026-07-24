@@ -4,6 +4,15 @@ import { OrderItem } from '../../../commerce/domain/entities/Order.types';
 import { IMassiBotService, MassiBotVariation } from '../../../massi-bot/domain/IMassiBotService';
 import { IWooCommerceConfigRepository, IWooCommerceService, WooCommerceConfigData, WooCommerceProduct } from '../../../woocommerce/domain/IWooCommerceService';
 import { SalesContext } from '../../domain/IChatSessionRepository';
+import {
+  extractQuantityFromText,
+  extractVariantHint,
+  looksLikeSku,
+  normalizeProductText,
+  parseProductSelectionQuery,
+  tokenizeProductQuery,
+  VARIANT_STRIP_PATTERN,
+} from '../../domain/productSelection.utils';
 
 export interface StockCheckResult {
   available: boolean;
@@ -55,10 +64,10 @@ export class SalesAgentToolsHandler {
       return this.formatResolvedSkuProduct(bySku);
     }
 
-    const parsed = this.parseProductQuery(trimmed);
+    const parsed = parseProductSelectionQuery(trimmed);
     const products = await this.searchProductsWithFallback(config, parsed.productQuery || trimmed);
     if (!products.length) {
-      return `No se encontraron productos para "${query}". Prueba con el SKU exacto o un nombre corto (ej. "cadena lazo oro 18k").`;
+      return `No se encontraron productos para "${query}". Prueba con el SKU exacto o un nombre más corto del producto.`;
     }
 
     const lines: string[] = [
@@ -78,7 +87,7 @@ export class SalesAgentToolsHandler {
       }
     }
     lines.push(
-      '\nIMPORTANTE: Cuando el cliente elija una opción, usa verificar_stock(sku) con el SKU exacto de esa variación.'
+      '\nIMPORTANTE: Cuando el cliente elija una opción, usa agregar_producto_por_sku con el SKU exacto de esa variación.'
     );
     return lines.join('\n');
   }
@@ -126,7 +135,7 @@ export class SalesAgentToolsHandler {
     }
 
     if (!productId && input.productName?.trim()) {
-      const parsed = this.parseProductQuery(input.productName.trim());
+      const parsed = parseProductSelectionQuery(input.productName.trim());
       if (!variantHint && parsed.variantHint) variantHint = parsed.variantHint;
       const found = await this.searchProductsWithFallback(config, parsed.productQuery);
       if (found[0]) productId = found[0].id;
@@ -452,6 +461,142 @@ export class SalesAgentToolsHandler {
     };
   }
 
+  /** Resuelve selección en texto libre → producto/variación WooCommerce por SKU (cualquier catálogo). */
+  async resolveSelectionFromText(
+    tenantId: string,
+    userText: string,
+    quantity = 1
+  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) {
+      return { ok: false, message: 'WooCommerce no conectado.' };
+    }
+
+    const trimmed = userText.trim();
+    const qty = extractQuantityFromText(trimmed, quantity);
+
+    if (looksLikeSku(trimmed)) {
+      const bySku = await this.buildOrderItemBySku(tenantId, trimmed, qty);
+      if (bySku.ok) return bySku;
+    }
+
+    const parsed = parseProductSelectionQuery(trimmed);
+    const variantHint = parsed.variantHint ?? extractVariantHint(trimmed);
+    const products = await this.searchProductsWithFallback(config, parsed.productQuery || trimmed);
+
+    if (!products.length) {
+      return {
+        ok: false,
+        message: `No encontré productos en la tienda para "${userText}".`,
+      };
+    }
+
+    let bestVariation: MassiBotVariation | null = null;
+    let bestParentId = 0;
+    let bestScore = 0;
+
+    for (const product of products.slice(0, 5)) {
+      if (product.type === 'variable' && this.massiBot.isConfigured(config)) {
+        try {
+          const variations = await this.massiBot.getProductVariations(config, product.id);
+          for (const variation of variations) {
+            const score = this.scoreVariationMatch(variation, product.name, userText, variantHint);
+            if (score > bestScore) {
+              bestScore = score;
+              bestVariation = variation;
+              bestParentId = product.id;
+            }
+          }
+        } catch {
+          continue;
+        }
+      } else if (product.sku) {
+        const score = this.scoreSimpleProductMatch(product.name, userText);
+        if (score > bestScore) {
+          bestScore = score;
+          bestVariation = {
+            id: product.id,
+            parentId: product.id,
+            name: product.name,
+            sku: product.sku,
+            price: product.price,
+            stockStatus: product.stockStatus,
+            stockQuantity: product.stockQuantity,
+            attributes: [],
+          };
+          bestParentId = product.id;
+        }
+      }
+    }
+
+    const minScore = variantHint ? 6 : 8;
+    if (!bestVariation || bestScore < minScore) {
+      return {
+        ok: false,
+        message: variantHint
+          ? `No encontré una variación que coincida con "${variantHint}" para "${parsed.productQuery}".`
+          : `No pude identificar el producto exacto en "${userText}". Indica nombre, variante o SKU.`,
+      };
+    }
+
+    if (!bestVariation.sku?.trim()) {
+      return {
+        ok: false,
+        message: `Encontré "${bestVariation.name}" pero no tiene SKU en WooCommerce. Asigna SKU en la tienda.`,
+      };
+    }
+
+    const itemResult = await this.buildOrderItemBySku(tenantId, bestVariation.sku, qty);
+    if (!itemResult.ok || !itemResult.item) return itemResult;
+
+    if (bestVariation.id !== bestParentId && !itemResult.item.variationId) {
+      itemResult.item.variationId = bestVariation.id;
+      itemResult.item.productId = bestParentId;
+    }
+
+    return itemResult;
+  }
+
+  private scoreVariationMatch(
+    variation: MassiBotVariation,
+    parentName: string,
+    userText: string,
+    variantHint?: string
+  ): number {
+    if (variantHint && this.matchVariation([variation], variantHint)) return 20;
+    if (this.matchVariation([variation], userText)) return 15;
+
+    const blob = normalizeProductText(
+      `${parentName} ${variation.name} ${variation.attributes.map((attribute) => `${attribute.name} ${attribute.value}`).join(' ')}`
+    );
+    let score = 0;
+
+    if (variantHint) {
+      const compactHint = variantHint.replace(/\s+/g, '');
+      if (blob.replace(/\s+/g, '').includes(compactHint)) score += 8;
+    }
+
+    const tokens = tokenizeProductQuery(userText);
+    if (tokens.length === 0) return score;
+
+    const matched = tokens.filter((token) => blob.includes(token)).length;
+    score += matched * 2;
+
+    if (matched / tokens.length >= 0.5) score += 4;
+    if (matched === tokens.length && tokens.length >= 2) score += 3;
+
+    return score;
+  }
+
+  private scoreSimpleProductMatch(productName: string, userText: string): number {
+    const name = normalizeProductText(productName);
+    const tokens = tokenizeProductQuery(userText);
+    if (!tokens.length) return 0;
+
+    const matched = tokens.filter((token) => name.includes(token)).length;
+    return matched * 2 + (matched / tokens.length >= 0.5 ? 4 : 0);
+  }
+
   private isResolvedAvailable(
     resolved: { stockStatus: string; stockQuantity: number | null },
     quantity: number
@@ -585,45 +730,33 @@ export class SalesAgentToolsHandler {
     add(q);
 
     const withoutIntent = q
-      .replace(/^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+)/gi, '')
+      .replace(
+        /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+)/gi,
+        ''
+      )
       .trim();
     add(withoutIntent);
 
-    const withoutSize = q
-      .replace(/\b(?:de\s+)?\d+\s*(?:cm|mm|gr?|kt|k)\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    add(withoutSize);
+    const withoutVariant = q.replace(VARIANT_STRIP_PATTERN, '').replace(/\s+/g, ' ').trim();
+    add(withoutVariant);
 
     if (withoutIntent !== q) {
-      add(
-        withoutIntent
-          .replace(/\b(?:de\s+)?\d+\s*(?:cm|mm|gr?|kt|k)\b/gi, '')
-          .replace(/\s+/g, ' ')
-          .trim()
-      );
+      add(withoutIntent.replace(VARIANT_STRIP_PATTERN, '').replace(/\s+/g, ' ').trim());
     }
 
-    const keywords = withoutSize
-      .split(/\s+/)
-      .filter((word) => word.length > 2 && !/^(oro|de|en|18k|14k|24k)$/i.test(word));
+    const keywords = tokenizeProductQuery(withoutVariant);
     if (keywords.length >= 2) {
-      add(keywords.slice(0, 4).join(' '));
+      add(keywords.slice(0, 5).join(' '));
+    }
+    if (keywords.length >= 1) {
+      add(keywords.slice(0, 3).join(' '));
     }
 
     return attempts;
   }
 
   private parseProductQuery(query: string): { productQuery: string; variantHint?: string } {
-    const sizeMatch = query.match(/\b(?:de\s+)?(\d+\s*(?:cm|mm))\b/i);
-    const variantHint = sizeMatch?.[1]?.replace(/\s+/g, ' ').trim();
-    const productQuery = query
-      .replace(/^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|una?\s+|un\s+|la\s+|el\s+)/gi, '')
-      .replace(/\b(?:de\s+)?\d+\s*(?:cm|mm|gr?|kt|k)\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    return { productQuery: productQuery || query, variantHint };
+    return parseProductSelectionQuery(query);
   }
 
   private matchVariation(variations: MassiBotVariation[], hint: string) {
