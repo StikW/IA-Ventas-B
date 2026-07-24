@@ -38,11 +38,26 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'buscar_productos_tienda',
       description:
-        'Busca productos en WooCommerce por nombre, descripción o SKU exacto. Si el cliente da SKU, usa ese valor como consulta.',
+        'Busca productos en WooCommerce. Preferir SKU exacto si lo conoces. Si buscas por nombre, devuelve SKUs de cada variación para usar en stock/compra.',
       parameters: {
         type: 'object',
-        properties: { consulta: { type: 'string', description: 'Nombre del producto o SKU (ej. CAD-LAZO-50)' } },
+        properties: {
+          consulta: { type: 'string', description: 'SKU exacto (preferido, ej. CAD-LAZO-50) o nombre corto del producto' },
+        },
         required: ['consulta'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'listar_variaciones',
+      description:
+        'Lista variaciones con SKU, medidas y precios de un producto variable. Usar solo si aún no tienes el SKU de la variación.',
+      parameters: {
+        type: 'object',
+        properties: { product_id: { type: 'number', description: 'ID del producto padre en WooCommerce' } },
+        required: ['product_id'],
       },
     },
   },
@@ -51,14 +66,15 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'verificar_stock',
       description:
-        'Verifica disponibilidad por SKU (preferido) o product_id. Cada variación MASSI debe tener su propio SKU.',
+        'Verifica disponibilidad por SKU (obligatorio y preferido). Cada variación MASSI tiene SKU único que identifica medida/características.',
       parameters: {
         type: 'object',
         properties: {
-          sku: { type: 'string', description: 'SKU WooCommerce de la variación o producto simple' },
-          product_id: { type: 'number', description: 'Alternativa si no hay SKU' },
+          sku: { type: 'string', description: 'SKU exacto de la variación o producto simple (ej. CAD-LAZO-50)' },
+          product_id: { type: 'number', description: 'Solo si no tienes SKU: ID del producto padre' },
           variation_id: { type: 'number' },
-          variante: { type: 'string' },
+          variante: { type: 'string', description: 'Solo sin SKU: medida, ej. "50 cm"' },
+          nombre_producto: { type: 'string', description: 'Evitar si es posible; preferir SKU' },
           cantidad: { type: 'number' },
         },
         required: ['cantidad'],
@@ -96,7 +112,7 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                 quantity: { type: 'number' },
                 unitPrice: { type: 'number' },
               },
-              required: ['productId', 'name', 'quantity', 'unitPrice'],
+              required: ['productId', 'sku', 'name', 'quantity', 'unitPrice'],
             },
           },
         },
@@ -448,7 +464,7 @@ export class SalesAgentService {
           unitPrice: Number(row.unitPrice ?? 0),
         };
       })
-      .filter((item) => item.productId > 0 && item.name && item.quantity > 0);
+      .filter((item) => item.productId > 0 && item.sku && item.name && item.quantity > 0);
   }
 
   private buildSystemPrompt(input: {
@@ -481,12 +497,12 @@ export class SalesAgentService {
       `Eres el asistente de ventas por WhatsApp de "${input.businessName}".`,
       'Responde en español, amable y conciso (máximo 3 párrafos).',
       'FLUJO DE VENTA:',
-      '1) Saluda y ayuda al cliente. Si escribe *menú* o *hola*, puede usar los botones del menú principal.',
-      '2) Buscar productos: buscar_productos_tienda (nombre o SKU). buscar_en_documentos solo si hay PDFs subidos en Documentos.',
-      '3) Cada variación debe tener SKU propio en WooCommerce. verificar_stock y preparar_pago usan ese SKU.',
-      '4) Flujo: buscar → verificar_stock(sku) → preparar_pago con productId, sku, name, unitPrice, quantity.',
-      '5) Cuando confirme compra, usa preparar_pago.',
-      '6) Tras elegir método de pago, pide comprobante (captura/foto) si pagó por transferencia.',
+      '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
+      '2) IDENTIFICADOR PRINCIPAL: SKU. Cada variación (medida, peso, etc.) tiene SKU único en WooCommerce.',
+      '3) Flujo: buscar_productos_tienda (por nombre si hace falta) → identificar SKU de la variación → verificar_stock(sku) → preparar_pago con ese SKU.',
+      '4) Cuando el cliente elija una opción (ej. cadena 50 cm), usa el SKU exacto de esa variación, no el nombre completo.',
+      '5) preparar_pago siempre requiere sku en cada producto. No inventes SKUs ni precios.',
+      '6) Cuando confirme compra, usa preparar_pago. Tras elegir método de pago, pide comprobante si pagó por transferencia.',
       'No inventes productos ni precios. Usa las herramientas.',
       phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',

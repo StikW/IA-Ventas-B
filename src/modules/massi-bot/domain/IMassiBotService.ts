@@ -21,6 +21,7 @@ export interface MassiBotVariation {
   stockStatus: string;
   stockQuantity: number | null;
   attributes: Array<{ name: string; value: string }>;
+  isVariation?: boolean;
 }
 
 export interface MassiBotOrderSummary {
@@ -82,6 +83,7 @@ export interface IMassiBotService {
   findClientByPhone(config: WooCommerceConfigData, phone: string): Promise<MassiBotClientProfile>;
   listOrdersByPhone(config: WooCommerceConfigData, phone: string, limit?: number): Promise<MassiBotOrderSummary[]>;
   getProductVariations(config: WooCommerceConfigData, productId: number): Promise<MassiBotVariation[]>;
+  findProductBySku(config: WooCommerceConfigData, sku: string): Promise<MassiBotVariation | null>;
   createOrder(config: WooCommerceConfigData, input: MassiBotCreateOrderInput): Promise<MassiBotOrderSummary>;
   submitPaymentReport(config: WooCommerceConfigData, input: MassiBotPaymentReportInput): Promise<MassiBotPaymentReportResult>;
 }

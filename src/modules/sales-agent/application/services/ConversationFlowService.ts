@@ -43,8 +43,7 @@ export class ConversationFlowService {
   ) {}
 
   /**
-   * Solo maneja el paso de selección de método de pago (botones BBC).
-   * Saludos, menú, compra y ayuda los resuelve el agente LLM.
+   * Saludo de bienvenida (texto) y selección de método de pago (botones BBC).
    */
   async tryHandle(input: ConversationFlowInput): Promise<ConversationFlowResult | null> {
     const text = input.text.trim();
@@ -62,6 +61,14 @@ export class ConversationFlowService {
         },
         salesContext: input.salesContext,
       };
+    }
+
+    if (
+      isMenuGreeting(text) &&
+      input.salesContext.flowStep !== 'payment_select' &&
+      input.salesContext.phase !== 'awaiting_payment'
+    ) {
+      return this.buildWelcomeMessage(input.businessName, input.salesContext);
     }
 
     if (input.salesContext.flowStep !== 'payment_select') {
@@ -88,6 +95,21 @@ export class ConversationFlowService {
     const total = input.salesContext.cartItems?.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
     const totalHint = total ? `Total estimado: *$${total.toLocaleString('es-CO')}*` : undefined;
     return this.buildPaymentMethodPrompt(input.salesContext, totalHint);
+  }
+
+  buildWelcomeMessage(businessName: string, salesContext: SalesContext): ConversationFlowResult {
+    const body = [
+      `¡Hola! Bienvenido a *${businessName}*.`,
+      '',
+      '¿En qué te podemos ayudar hoy?',
+      'Puedes preguntarme por productos, precios, pedidos o cómo comprar.',
+    ].join('\n');
+
+    return {
+      replyText: body,
+      outbound: { kind: 'text', body },
+      salesContext: { phase: 'browsing' },
+    };
   }
 
   buildPaymentMethodPrompt(salesContext: SalesContext, totalHint?: string): ConversationFlowResult {

@@ -55,6 +55,22 @@ export class MassiBotRestAdapter implements IMassiBotService {
     return res.data;
   }
 
+  async findProductBySku(config: WooCommerceConfigData, sku: string): Promise<MassiBotVariation | null> {
+    try {
+      const res = await this.request<{ data: MassiBotVariation }>(
+        config,
+        'GET',
+        `/products/by-sku?sku=${encodeURIComponent(sku.trim())}`
+      );
+      return res.data ?? null;
+    } catch (err) {
+      if (err instanceof DomainError && err.message.includes('404')) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
   async createOrder(config: WooCommerceConfigData, input: MassiBotCreateOrderInput): Promise<MassiBotOrderSummary> {
     const res = await this.request<{ data: MassiBotOrderSummary }>(config, 'POST', '/orders', {
       body: {

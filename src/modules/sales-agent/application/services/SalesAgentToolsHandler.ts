@@ -1,8 +1,8 @@
 import { inject, injectable } from 'tsyringe';
 import { RagSearchService } from '../../../knowledge/application/services/RagSearchService';
 import { OrderItem } from '../../../commerce/domain/entities/Order.types';
-import { IMassiBotService } from '../../../massi-bot/domain/IMassiBotService';
-import { IWooCommerceConfigRepository, IWooCommerceService, WooCommerceProduct } from '../../../woocommerce/domain/IWooCommerceService';
+import { IMassiBotService, MassiBotVariation } from '../../../massi-bot/domain/IMassiBotService';
+import { IWooCommerceConfigRepository, IWooCommerceService, WooCommerceConfigData, WooCommerceProduct } from '../../../woocommerce/domain/IWooCommerceService';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 
 export interface StockCheckResult {
@@ -49,10 +49,21 @@ export class SalesAgentToolsHandler {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) return 'WooCommerce no está conectado para este negocio.';
 
-    const products = await this.wcService.searchProducts(config, query);
-    if (!products.length) return `No se encontraron productos en la tienda para "${query}".`;
+    const trimmed = query.trim();
+    const bySku = await this.resolveProductBySku(config, trimmed);
+    if (bySku) {
+      return this.formatResolvedSkuProduct(bySku);
+    }
 
-    const lines: string[] = [];
+    const parsed = this.parseProductQuery(trimmed);
+    const products = await this.searchProductsWithFallback(config, parsed.productQuery || trimmed);
+    if (!products.length) {
+      return `No se encontraron productos para "${query}". Prueba con el SKU exacto o un nombre corto (ej. "cadena lazo oro 18k").`;
+    }
+
+    const lines: string[] = [
+      'Resultados (cada variación tiene SKU único — úsalo para stock y compra):',
+    ];
     for (const p of products.slice(0, 5)) {
       lines.push(this.formatProduct(p));
       if (p.type === 'variable' && this.massiBot.isConfigured(config)) {
@@ -66,6 +77,9 @@ export class SalesAgentToolsHandler {
         }
       }
     }
+    lines.push(
+      '\nIMPORTANTE: Cuando el cliente elija una opción, usa verificar_stock(sku) con el SKU exacto de esa variación.'
+    );
     return lines.join('\n');
   }
 
@@ -81,7 +95,7 @@ export class SalesAgentToolsHandler {
     }
   ): Promise<StockCheckResult> {
     let { sku, productId, variationId, quantity } = input;
-    const variantHint = input.variantHint?.trim();
+    let variantHint = input.variantHint?.trim();
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
       return {
@@ -95,8 +109,26 @@ export class SalesAgentToolsHandler {
       };
     }
 
+    if (sku?.trim()) {
+      const resolved = await this.resolveProductBySku(config, sku.trim());
+      if (resolved) {
+        return this.stockResultFromResolved(resolved, quantity);
+      }
+      return {
+        available: false,
+        sku: sku.trim(),
+        name: sku.trim(),
+        quantity,
+        stockStatus: 'notfound',
+        stockQuantity: null,
+        message: `Producto con SKU "${sku.trim()}" no encontrado. Verifica el SKU en buscar_productos_tienda.`,
+      };
+    }
+
     if (!productId && input.productName?.trim()) {
-      const found = await this.wcService.searchProducts(config, input.productName.trim());
+      const parsed = this.parseProductQuery(input.productName.trim());
+      if (!variantHint && parsed.variantHint) variantHint = parsed.variantHint;
+      const found = await this.searchProductsWithFallback(config, parsed.productQuery);
       if (found[0]) productId = found[0].id;
     }
 
@@ -104,7 +136,10 @@ export class SalesAgentToolsHandler {
       try {
         const variations = await this.massiBot.getProductVariations(config, productId);
         const matched = this.matchVariation(variations, variantHint);
-        if (matched) variationId = matched.id;
+        if (matched) {
+          variationId = matched.id;
+          if (!sku && matched.sku) sku = matched.sku;
+        }
       } catch {
         // continuar sin variationId
       }
@@ -134,8 +169,8 @@ export class SalesAgentToolsHandler {
           stockStatus: variation.stockStatus,
           stockQuantity: variation.stockQuantity,
           message: available
-            ? `Disponible: ${variation.name} (variación ID ${variation.id}), cantidad ${quantity}, precio ${variation.price}. productId=${productId}, variationId=${variation.id}.`
-            : `Sin stock para ${variation.name}. Estado: ${variation.stockStatus}.`,
+            ? `Disponible: ${variation.name} | SKU: ${variation.sku || sku || 'SIN SKU'} | productId=${productId}, variationId=${variation.id} | cantidad ${quantity} | precio ${variation.price}. Usa este SKU en preparar_pago.`
+            : `Sin stock para ${variation.name} (SKU ${variation.sku || sku || '—'}). Estado: ${variation.stockStatus}.`,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Error al consultar variaciones';
@@ -180,7 +215,7 @@ export class SalesAgentToolsHandler {
         }
         const lines = variations.map(
           (v) =>
-            `  · ${v.name} | variationId=${v.id} | precio ${v.price} | stock ${v.stockStatus}${
+            `  · SKU: ${v.sku || 'SIN SKU'} | ${v.name} | variationId=${v.id} | precio ${v.price} | stock ${v.stockStatus}${
               v.stockQuantity != null ? ` (${v.stockQuantity})` : ''
             }`
         );
@@ -192,11 +227,11 @@ export class SalesAgentToolsHandler {
           stockStatus: 'variable',
           stockQuantity: null,
           message: [
-            `Producto encontrado: ${product.name} (productId=${productId}). Es variable — muestra estas opciones al cliente:`,
+            `Producto encontrado: ${product.name} (productId=${productId}). Es variable — opciones:`,
             ...lines,
             variantHint
-              ? `No encontré variación que coincida con "${variantHint}". Pide aclarar o elige variationId de la lista.`
-              : 'Cuando el cliente elija, usa verificar_stock con product_id y variation_id (o variante="50 cm").',
+              ? `No encontré variación que coincida con "${variantHint}". Pide al cliente el SKU exacto o aclara la medida.`
+              : 'Cuando el cliente elija, usa verificar_stock con el SKU de la variación.',
           ].join('\n'),
         };
       }
@@ -210,37 +245,7 @@ export class SalesAgentToolsHandler {
         stockStatus: product.stockStatus,
         stockQuantity: product.stockQuantity,
         message: available
-          ? `Disponible: ${product.name} (productId=${product.id}), cantidad ${quantity}, precio ${product.price}.`
-          : `Sin stock suficiente para ${product.name}. Estado: ${product.stockStatus}.`,
-      };
-    }
-
-    if (sku?.trim()) {
-      const product = await this.wcService.getProductBySku(config, sku.trim());
-      if (!product) {
-        return {
-          available: false,
-          sku,
-          name: sku,
-          quantity,
-          stockStatus: 'notfound',
-          stockQuantity: null,
-          message: `Producto con SKU "${sku}" no encontrado. Usa product_id de buscar_productos_tienda si es MASSI.`,
-        };
-      }
-      if (product.type === 'variable') {
-        return this.checkStock(tenantId, { productId: product.id, quantity });
-      }
-      const available = this.isProductAvailable(product, quantity);
-      return {
-        available,
-        sku: product.sku,
-        name: product.name,
-        quantity,
-        stockStatus: product.stockStatus,
-        stockQuantity: product.stockQuantity,
-        message: available
-          ? `Disponible: ${product.name} (SKU ${product.sku}, productId=${product.id}), cantidad ${quantity}, precio ${product.price}.`
+          ? `Disponible: ${product.name} | SKU: ${product.sku} | productId=${product.id} | cantidad ${quantity} | precio ${product.price}.`
           : `Sin stock suficiente para ${product.name} (SKU ${product.sku}). Estado: ${product.stockStatus}.`,
       };
     }
@@ -252,7 +257,7 @@ export class SalesAgentToolsHandler {
       quantity,
       stockStatus: 'unknown',
       stockQuantity: null,
-      message: 'Indica product_id (de buscar_productos_tienda) o sku para verificar stock.',
+      message: 'Indica el SKU exacto del producto o variación (preferido). Alternativa: product_id + variante.',
     };
   }
 
@@ -271,7 +276,7 @@ export class SalesAgentToolsHandler {
         const attrs = v.attributes.map((a) => `${a.name}: ${a.value}`).join(', ');
         const stock =
           v.stockQuantity != null ? `${v.stockStatus} (${v.stockQuantity} uds.)` : v.stockStatus;
-        return `- ${v.name} | variationId=${v.id} | productId=${v.parentId} | Precio: ${v.price} | ${attrs || 'sin atributos'} | Stock: ${stock}`;
+        return `- SKU: ${v.sku || 'SIN SKU'} | ${v.name} | variationId=${v.id} | productId=${v.parentId} | Precio: ${v.price} | ${attrs || 'sin atributos'} | Stock: ${stock}`;
       })
       .join('\n');
   }
@@ -406,10 +411,172 @@ export class SalesAgentToolsHandler {
     return this.wcConfigRepo.findByTenantId(tenantId).then((c) => !!(c && this.massiBot.isConfigured(c)));
   }
 
-  private matchVariation(
-    variations: Array<{ id: number; name: string; attributes: Array<{ name: string; value: string }> }>,
-    hint: string
-  ) {
+  private async resolveProductBySku(
+    config: WooCommerceConfigData,
+    sku: string
+  ): Promise<{
+    productId: number;
+    variationId?: number;
+    sku: string;
+    name: string;
+    price: string;
+    stockStatus: string;
+    stockQuantity: number | null;
+  } | null> {
+    const normalizedSku = sku.trim();
+    if (!normalizedSku) return null;
+
+    if (this.massiBot.isConfigured(config)) {
+      try {
+        const item = await this.massiBot.findProductBySku(config, normalizedSku);
+        if (item) {
+          const isVariation = item.isVariation ?? item.id !== item.parentId;
+          return {
+            productId: item.parentId,
+            variationId: isVariation ? item.id : undefined,
+            sku: item.sku || normalizedSku,
+            name: item.name,
+            price: item.price,
+            stockStatus: item.stockStatus,
+            stockQuantity: item.stockQuantity,
+          };
+        }
+      } catch {
+        // fallback WooCommerce REST
+      }
+    }
+
+    const product = await this.wcService.getProductBySku(config, normalizedSku);
+    if (!product) return null;
+
+    return {
+      productId: product.id,
+      sku: product.sku || normalizedSku,
+      name: product.name,
+      price: product.price,
+      stockStatus: product.stockStatus,
+      stockQuantity: product.stockQuantity,
+    };
+  }
+
+  private stockResultFromResolved(
+    resolved: {
+      productId: number;
+      variationId?: number;
+      sku: string;
+      name: string;
+      price: string;
+      stockStatus: string;
+      stockQuantity: number | null;
+    },
+    quantity: number
+  ): StockCheckResult {
+    const available =
+      resolved.stockStatus === 'instock' &&
+      (resolved.stockQuantity == null || resolved.stockQuantity >= quantity);
+
+    return {
+      available,
+      sku: resolved.sku,
+      name: resolved.name,
+      quantity,
+      stockStatus: resolved.stockStatus,
+      stockQuantity: resolved.stockQuantity,
+      message: available
+        ? `Disponible: ${resolved.name} | SKU: ${resolved.sku} | productId=${resolved.productId}${
+            resolved.variationId ? `, variationId=${resolved.variationId}` : ''
+          } | cantidad ${quantity} | precio ${resolved.price}. Usa este SKU en preparar_pago.`
+        : `Sin stock para ${resolved.name} (SKU ${resolved.sku}). Estado: ${resolved.stockStatus}.`,
+    };
+  }
+
+  private formatResolvedSkuProduct(resolved: {
+    productId: number;
+    variationId?: number;
+    sku: string;
+    name: string;
+    price: string;
+    stockStatus: string;
+    stockQuantity: number | null;
+  }): string {
+    const stock =
+      resolved.stockQuantity != null
+        ? `${resolved.stockStatus} (${resolved.stockQuantity} uds.)`
+        : resolved.stockStatus;
+    return [
+      'Producto encontrado por SKU:',
+      `- ${resolved.name}`,
+      `  SKU: ${resolved.sku}`,
+      `  productId=${resolved.productId}${resolved.variationId ? ` | variationId=${resolved.variationId}` : ''}`,
+      `  Precio: ${resolved.price} | Stock: ${stock}`,
+      'Usa verificar_stock(sku) y preparar_pago con este SKU exacto.',
+    ].join('\n');
+  }
+
+  private async searchProductsWithFallback(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]> {
+    const attempts = this.buildSearchAttempts(query);
+    for (const attempt of attempts) {
+      const found = await this.wcService.searchProducts(config, attempt);
+      if (found.length) return found;
+    }
+    return [];
+  }
+
+  private buildSearchAttempts(query: string): string[] {
+    const q = query.trim();
+    if (!q) return [];
+
+    const attempts: string[] = [];
+    const add = (value: string) => {
+      const trimmed = value.trim().replace(/\s+/g, ' ');
+      if (trimmed && !attempts.includes(trimmed)) attempts.push(trimmed);
+    };
+
+    add(q);
+
+    const withoutIntent = q
+      .replace(/^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+)/gi, '')
+      .trim();
+    add(withoutIntent);
+
+    const withoutSize = q
+      .replace(/\b(?:de\s+)?\d+\s*(?:cm|mm|gr?|kt|k)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    add(withoutSize);
+
+    if (withoutIntent !== q) {
+      add(
+        withoutIntent
+          .replace(/\b(?:de\s+)?\d+\s*(?:cm|mm|gr?|kt|k)\b/gi, '')
+          .replace(/\s+/g, ' ')
+          .trim()
+      );
+    }
+
+    const keywords = withoutSize
+      .split(/\s+/)
+      .filter((word) => word.length > 2 && !/^(oro|de|en|18k|14k|24k)$/i.test(word));
+    if (keywords.length >= 2) {
+      add(keywords.slice(0, 4).join(' '));
+    }
+
+    return attempts;
+  }
+
+  private parseProductQuery(query: string): { productQuery: string; variantHint?: string } {
+    const sizeMatch = query.match(/\b(?:de\s+)?(\d+\s*(?:cm|mm))\b/i);
+    const variantHint = sizeMatch?.[1]?.replace(/\s+/g, ' ').trim();
+    const productQuery = query
+      .replace(/^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|una?\s+|un\s+|la\s+|el\s+)/gi, '')
+      .replace(/\b(?:de\s+)?\d+\s*(?:cm|mm|gr?|kt|k)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return { productQuery: productQuery || query, variantHint };
+  }
+
+  private matchVariation(variations: MassiBotVariation[], hint: string) {
     const norm = (s: string) =>
       s
         .toLowerCase()
@@ -418,19 +585,26 @@ export class SalesAgentToolsHandler {
         .replace(/\s+/g, ' ')
         .trim();
 
+    const compact = (s: string) => norm(s).replace(/\s+/g, '');
+
     const h = norm(hint);
+    const hc = compact(hint);
     if (!h) return undefined;
 
     const scored = variations.map((v) => {
       const name = norm(v.name);
       const attrs = norm(v.attributes.map((a) => `${a.name} ${a.value}`).join(' '));
       const blob = `${name} ${attrs}`;
+      const blobCompact = compact(blob);
       let score = 0;
       if (blob.includes(h)) score += 10;
       if (name.includes(h)) score += 5;
+      if (hc && blobCompact.includes(hc)) score += 8;
       for (const token of h.split(' ').filter((t) => t.length > 1)) {
         if (blob.includes(token)) score += 2;
       }
+      const sizeToken = hc.match(/\d+(?:cm|mm)?/);
+      if (sizeToken && blobCompact.includes(sizeToken[0])) score += 6;
       return { v, score };
     });
 
@@ -439,19 +613,11 @@ export class SalesAgentToolsHandler {
     return best && best.score >= 4 ? best.v : undefined;
   }
 
-  private formatVariationLine(v: {
-    id: number;
-    parentId: number;
-    name: string;
-    price: string;
-    stockStatus: string;
-    stockQuantity: number | null;
-    attributes: Array<{ name: string; value: string }>;
-  }): string {
+  private formatVariationLine(v: MassiBotVariation): string {
     const attrs = v.attributes.map((a) => `${a.name}: ${a.value}`).join(', ');
     const stock =
       v.stockQuantity != null ? `${v.stockStatus} (${v.stockQuantity} uds.)` : v.stockStatus;
-    return `${v.name} | variationId=${v.id} | productId=${v.parentId} | Precio: ${v.price} | ${attrs || 'sin atributos'} | Stock: ${stock}`;
+    return `SKU: ${v.sku || 'SIN SKU'} | ${v.name} | variationId=${v.id} | productId=${v.parentId} | Precio: ${v.price} | ${attrs || 'sin atributos'} | Stock: ${stock}`;
   }
 
   private isVariationAvailable(
@@ -472,7 +638,7 @@ export class SalesAgentToolsHandler {
   private formatProduct(p: WooCommerceProduct): string {
     const stock =
       p.stockQuantity != null ? `${p.stockStatus} (${p.stockQuantity} uds.)` : p.stockStatus;
-    const typeHint = p.type === 'variable' ? ' | Tipo: variable (usar listar_variaciones)' : '';
+    const typeHint = p.type === 'variable' ? ' | Tipo: variable (cada variación tiene SKU propio)' : '';
     return `- ${p.name} | SKU: ${p.sku || 'SIN SKU — asignar en WooCommerce'} | productId=${p.id} | Precio: ${p.price} | Stock: ${stock}${typeHint}`;
   }
 }
