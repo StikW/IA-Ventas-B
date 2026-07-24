@@ -292,7 +292,9 @@ export class SalesAgentService {
     }
 
     if (isProductSelectionIntent(text) && salesContext.phase !== 'awaiting_payment') {
-      const selection = await this.tools.resolveSelectionFromText(input.tenantId, text);
+      const selection = await this.tools.resolveSelectionFromText(input.tenantId, text, 1, {
+        cartItems: mutableContext.cartItems,
+      });
       if (selection.ok && selection.item) {
         this.addItemsToCart(input, mutableContext, [selection.item]);
         const summary = this.conversationFlow.formatCartSummary(mutableContext.cartItems ?? []);
@@ -305,6 +307,31 @@ export class SalesAgentService {
         ].join('\n');
 
         const now = new Date().toISOString();
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply,
+          salesContext: mutableContext,
+          now,
+          ragHits: 0,
+        });
+        return { replied: true, reply, bbcResponse };
+      }
+
+      if (mutableContext.cartItems?.length && mutableContext.flowStep === 'buying') {
+        const now = new Date().toISOString();
+        const reply = [
+          selection.message,
+          '',
+          'Tu pedido actual:',
+          this.conversationFlow.formatCartSummary(mutableContext.cartItems),
+          '',
+          '¿Deseas agregar algo más, probar con otra variante, o finalizar la compra?',
+        ].join('\n');
         const bbcResponse = await this.persistAndReply({
           tenantId: input.tenantId,
           deviceId: input.deviceId,
@@ -687,7 +714,7 @@ export class SalesAgentService {
         : input.salesPhase === 'order_created'
           ? 'FASE ACTUAL: pedido ya registrado. Ayuda con seguimiento si pregunta.'
           : input.flowStep === 'buying'
-            ? `FASE ACTUAL: armando pedido (${input.cartItemCount} producto(s) en carrito). Si el cliente quiere otro producto, búscalo y usa agregar_al_carrito. Si confirma que no desea agregar más (ej. "eso es todo", "continuar con la compra"), usa finalizar_compra. NO hables de transferencia ni pago hasta finalizar_compra.`
+            ? `FASE ACTUAL: armando pedido (${input.cartItemCount} producto(s) en carrito). Agrega UN producto por vez. Si pide "otra de la misma" con distinta variante, usa agregar_producto_por_sku solo para la NUEVA variante. Si confirma que terminó → finalizar_compra.`
             : 'FASE ACTUAL: exploración y venta.';
 
     return [
@@ -697,8 +724,8 @@ export class SalesAgentService {
       '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
       '2) Catálogo y precios: SIEMPRE buscar_productos_tienda (WooCommerce). Funciona para cualquier producto del catálogo con SKU.',
       '3) IDENTIFICADOR PRINCIPAL: SKU. Productos simples y variaciones (talla, medida, color, etc.) deben tener SKU en WooCommerce.',
-      '4) Tras agregar al carrito, pregunta *¿Deseas agregar algo más o eso sería todo?*',
-      '5) NO menciones transferencia ni pago hasta finalizar_compra.',
+      '4) Tras agregar al carrito, pregunta *¿Deseas agregar algo más o eso sería todo?* Cada producto se agrega individualmente; el total se acumula.',
+      '5) Si pide "otra de la misma" con otra medida/variante, agrega SOLO la nueva variación (no re-busques las anteriores).',
       '6) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
       '7) Usa la menor cantidad de herramientas posible por mensaje.',
       'No inventes productos ni precios. Usa las herramientas.',

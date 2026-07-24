@@ -4,9 +4,11 @@ import { OrderItem } from '../../../commerce/domain/entities/Order.types';
 import { IMassiBotService, MassiBotVariation } from '../../../massi-bot/domain/IMassiBotService';
 import { IWooCommerceConfigRepository, IWooCommerceService, WooCommerceConfigData, WooCommerceProduct } from '../../../woocommerce/domain/IWooCommerceService';
 import { SalesContext } from '../../domain/IChatSessionRepository';
+import { PendingCartItem } from '../../domain/IChatSessionRepository';
 import {
   extractQuantityFromText,
   extractVariantHint,
+  isSameProductReference,
   looksLikeSku,
   normalizeProductText,
   parseProductSelectionQuery,
@@ -465,7 +467,8 @@ export class SalesAgentToolsHandler {
   async resolveSelectionFromText(
     tenantId: string,
     userText: string,
-    quantity = 1
+    quantity = 1,
+    context?: { cartItems?: PendingCartItem[] }
   ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
@@ -482,7 +485,15 @@ export class SalesAgentToolsHandler {
 
     const parsed = parseProductSelectionQuery(trimmed);
     const variantHint = parsed.variantHint ?? extractVariantHint(trimmed);
-    const products = await this.searchProductsWithFallback(config, parsed.productQuery || trimmed);
+
+    if (isSameProductReference(trimmed) && context?.cartItems?.length && variantHint) {
+      const anchor = context.cartItems[context.cartItems.length - 1];
+      const sibling = await this.resolveSiblingVariation(tenantId, anchor, variantHint, qty);
+      if (sibling.ok) return sibling;
+    }
+
+    const searchQuery = this.buildSearchQuery(trimmed, parsed.productQuery, context?.cartItems);
+    const products = await this.searchProductsWithFallback(config, searchQuery);
 
     if (!products.length) {
       return {
@@ -555,6 +566,53 @@ export class SalesAgentToolsHandler {
     }
 
     return itemResult;
+  }
+
+  /** Misma familia de producto que el carrito, otra variación (ej. 50cm → 60cm). */
+  private async resolveSiblingVariation(
+    tenantId: string,
+    anchor: PendingCartItem,
+    variantHint: string,
+    quantity: number
+  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected || !this.massiBot.isConfigured(config)) {
+      return { ok: false, message: 'No se pudo resolver variación desde el carrito.' };
+    }
+
+    try {
+      const variations = await this.massiBot.getProductVariations(config, anchor.productId);
+      const matched = this.matchVariation(variations, variantHint);
+      if (!matched?.sku?.trim()) {
+        return {
+          ok: false,
+          message: `No encontré la variación "${variantHint}" para ${anchor.name.split(' - ')[0] || 'el producto'}.`,
+        };
+      }
+
+      if (matched.sku === anchor.sku) {
+        return { ok: false, message: 'Esa variación ya está en tu pedido.' };
+      }
+
+      return this.buildOrderItemBySku(tenantId, matched.sku, quantity);
+    } catch {
+      return { ok: false, message: 'Error al consultar variaciones del producto en carrito.' };
+    }
+  }
+
+  private buildSearchQuery(userText: string, parsedQuery: string, cartItems?: PendingCartItem[]): string {
+    const cleaned = parsedQuery.trim();
+    if (cleaned.length >= 3 && !/^(cadena|otra|misma|mismo)$/i.test(cleaned)) {
+      return cleaned;
+    }
+
+    if (cartItems?.length) {
+      const anchor = cartItems[cartItems.length - 1];
+      const baseName = anchor.name.split(' - ')[0]?.trim() || anchor.name;
+      if (baseName.length >= 3) return baseName;
+    }
+
+    return userText;
   }
 
   private scoreVariationMatch(

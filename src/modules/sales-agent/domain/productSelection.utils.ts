@@ -29,8 +29,31 @@ export function normalizeProductText(text: string): string {
 }
 
 export function extractVariantHint(text: string): string | undefined {
-  const match = text.match(VARIANT_HINT_PATTERN);
-  return match?.[1]?.replace(/\s+/g, ' ').trim();
+  const matches = [...text.matchAll(new RegExp(VARIANT_HINT_PATTERN.source, 'gi'))];
+  const last = matches.at(-1);
+  return last?.[1]?.replace(/\s+/g, ' ').trim();
+}
+
+/** Cliente pide otro ítem del mismo producto base (ej. "otra de la misma pero 60cm"). */
+export function isSameProductReference(text: string): boolean {
+  const t = normalizeProductText(text);
+  return /tambi[eé]n|otra?|m[aá]s|del mismo|de la misma|igual|mismo producto|misma/.test(t);
+}
+
+export function parseProductSelectionQuery(query: string): { productQuery: string; variantHint?: string } {
+  const variantHint = extractVariantHint(query);
+  const productQuery = query
+    .replace(
+      /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|tambi[eé]n|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+|otra?\s+|m[aá]s\s+)/gi,
+      ''
+    )
+    .replace(/\b(tambi[eé]n|otra?|m[aá]s|del mismo|de la misma|pero|igual|mismo|misma)\b/gi, '')
+    .replace(VARIANT_STRIP_PATTERN, '')
+    .replace(QUANTITY_PATTERN, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return { productQuery: productQuery || query.trim(), variantHint };
 }
 
 export function extractQuantityFromText(text: string, defaultQty = 1): number {
@@ -45,21 +68,6 @@ export function extractQuantityFromText(text: string, defaultQty = 1): number {
 export function looksLikeSku(text: string): boolean {
   const trimmed = text.trim();
   return SKU_LIKE_PATTERN.test(trimmed) && !/\s/.test(trimmed);
-}
-
-export function parseProductSelectionQuery(query: string): { productQuery: string; variantHint?: string } {
-  const variantHint = extractVariantHint(query);
-  const productQuery = query
-    .replace(
-      /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+)/gi,
-      ''
-    )
-    .replace(VARIANT_STRIP_PATTERN, '')
-    .replace(QUANTITY_PATTERN, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return { productQuery: productQuery || query.trim(), variantHint };
 }
 
 export function tokenizeProductQuery(text: string): string[] {

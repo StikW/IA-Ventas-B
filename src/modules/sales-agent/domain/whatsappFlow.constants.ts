@@ -58,7 +58,7 @@ export function isProductSelectionIntent(text: string): boolean {
 
   if (/^[A-Za-z0-9][A-Za-z0-9._-]{2,}$/.test(trimmed) && !/\s/.test(trimmed)) return true;
 
-  if (/quiero|me gustar[ií]a|quisiera|dame|necesito|comprar|llevar|tomar|pedir|solicito/.test(t)) return true;
+  if (/quiero|me gustar[ií]a|quisiera|dame|necesito|comprar|llevar|tomar|pedir|solicito|tambi[eé]n/.test(t)) return true;
 
   if (/\b\d+\s*(?:ud?s?|unidades?|pares?|piezas?|pzs?)\b/i.test(t)) return true;
 
