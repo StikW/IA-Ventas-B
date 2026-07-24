@@ -15,6 +15,7 @@ import { ChatMessage, IChatSessionRepository, PendingCartItem, SalesContext } fr
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
 import { ConversationFlowService, OutboundWhatsAppMessage } from './ConversationFlowService';
+import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent } from '../../domain/whatsappFlow.constants';
 
@@ -205,14 +206,20 @@ export class SalesAgentService {
     const history = session?.messages ?? [];
     let salesContext: SalesContext = session?.salesContext ?? { phase: 'browsing' };
 
-    // Saludo/menú: salir de payment_select, checkout_redirect o carrito activo.
+    // Saludo/menú: volver al menú principal (conserva carrito).
     if (
       isMenuGreeting(text) &&
       (salesContext.flowStep === 'payment_select' ||
         salesContext.flowStep === 'buying' ||
-        salesContext.flowStep === 'checkout_redirect')
+        salesContext.flowStep === 'checkout_redirect' ||
+        salesContext.flowStep === 'discovery')
     ) {
-      salesContext = { phase: 'browsing' };
+      salesContext = {
+        phase: 'browsing',
+        flowStep: 'menu',
+        cartItems: salesContext.cartItems,
+        customerName: salesContext.customerName,
+      };
     }
 
     const flowResult = await this.conversationFlow.tryHandle({
@@ -253,11 +260,7 @@ export class SalesAgentService {
 
     let mutableContext = { ...salesContext };
 
-    if (
-      mutableContext.flowStep === 'buying' &&
-      isCartFinalizeIntent(text) &&
-      mutableContext.cartItems?.length
-    ) {
+    if (isCartFinalizeIntent(text) && mutableContext.cartItems?.length) {
       const finalizeReply = await this.finalizeCart(input, mutableContext, tenantConfig?.business);
       const now = new Date().toISOString();
 
@@ -352,20 +355,17 @@ export class SalesAgentService {
     }
 
     if (isProductSelectionIntent(text) && salesContext.phase !== 'awaiting_payment') {
-      const selection = await this.tools.resolveSelectionFromText(input.tenantId, text, 1, {
+      const selection = await this.tools.resolveSelectionsFromText(input.tenantId, text, 1, {
         cartItems: mutableContext.cartItems,
       });
-      if (selection.ok && selection.item) {
-        this.addItemsToCart(input, mutableContext, [selection.item]);
-        const summary = this.conversationFlow.formatCartSummary(mutableContext.cartItems ?? []);
-        const reply = [
-          `¡Listo! Agregué *${selection.item.name}* a tu pedido.`,
-          '',
-          summary,
-          '',
-          '¿Deseas agregar algo más o eso sería todo?',
-        ].join('\n');
-
+      if (selection.ok && selection.items?.length) {
+        this.addItemsToCart(input, mutableContext, selection.items);
+        const addedNames = selection.items.map((item) => `*${item.name}*`).join(', ');
+        const introLine =
+          selection.items.length === 1 ?
+            `¡Listo! Agregué ${addedNames} a tu pedido.`
+          : `¡Listo! Agregué ${selection.items.length} productos a tu pedido: ${addedNames}.`;
+        const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, introLine);
         const now = new Date().toISOString();
         const bbcResponse = await this.persistAndReply({
           tenantId: input.tenantId,
@@ -374,12 +374,13 @@ export class SalesAgentService {
           messageId: input.messageId,
           history,
           userText: text,
-          reply,
-          salesContext: mutableContext,
+          reply: cartPrompt.replyText,
+          salesContext: { ...mutableContext, ...cartPrompt.salesContext },
+          outbound: cartPrompt.outbound,
           now,
           ragHits: 0,
         });
-        return { replied: true, reply, bbcResponse };
+        return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
 
       if (mutableContext.cartItems?.length && mutableContext.flowStep === 'buying') {
@@ -705,7 +706,7 @@ export class SalesAgentService {
     const customerName = String(
       customerNameArg ?? salesContext.customerName ?? input.customerPhone
     ).trim();
-    const merged = this.mergeCartItems(salesContext.cartItems, newItems);
+    const merged = CartService.merge(salesContext.cartItems, newItems);
 
     Object.assign(salesContext, {
       phase: 'browsing' as const,
@@ -714,7 +715,7 @@ export class SalesAgentService {
       customerName,
     });
 
-    const summary = this.conversationFlow.formatCartSummary(merged);
+    const summary = CartService.formatSummary(merged);
     return [
       'Producto(s) agregado(s) al carrito:',
       summary,
@@ -725,16 +726,7 @@ export class SalesAgentService {
   }
 
   private mergeCartItems(existing: PendingCartItem[] | undefined, newItems: OrderItem[]): PendingCartItem[] {
-    const cart: PendingCartItem[] = [...(existing ?? [])];
-    for (const item of newItems) {
-      const idx = cart.findIndex((row) => row.sku === item.sku);
-      if (idx >= 0) {
-        cart[idx] = { ...cart[idx], quantity: cart[idx].quantity + item.quantity };
-      } else {
-        cart.push({ ...item });
-      }
-    }
-    return cart;
+    return CartService.merge(existing, newItems);
   }
 
   private async finalizeCart(
@@ -881,8 +873,10 @@ export class SalesAgentService {
           : input.flowStep === 'checkout_redirect'
             ? 'FASE ACTUAL: ya se envió enlace al formulario WC. Si pide el link → finalizar_compra. NO uses botones de pago en chat.'
             : input.flowStep === 'buying'
-              ? `FASE ACTUAL: armando pedido (${input.cartItemCount} producto(s)). Si confirma que terminó → finalizar_compra (link formulario WC).`
-              : 'FASE ACTUAL: exploración y venta.';
+              ? `FASE ACTUAL: carrito con ${input.cartItemCount} producto(s). El cliente tiene botones Finalizar/Agregar más. Si agrega por texto, usa agregar_producto_por_sku. NO llames finalizar_compra salvo confirmación explícita.`
+              : input.flowStep === 'discovery' || input.flowStep === 'menu'
+                ? 'FASE ACTUAL: exploración. Recomienda productos según interés del cliente (catálogo WC + docs). Cuando elija, usa agregar_producto_por_sku con SKU exacto. No listes catálogo entero; sugiere 3-5 opciones relevantes.'
+                : 'FASE ACTUAL: exploración y venta.';
 
     return [
       `Eres el asistente de ventas por WhatsApp de "${input.businessName}".`,
@@ -967,11 +961,21 @@ export class SalesAgentService {
         return { route: 'payment' };
       }
 
-      await this.builderBot.sendTextMessage({
-        deviceId: params.deviceId,
-        phone,
-        message: outbound.body,
-      });
+      if (outbound.kind === 'buttons') {
+        await this.builderBot.sendButtonsMessage({
+          deviceId: params.deviceId,
+          phone,
+          body: outbound.body,
+          footer: outbound.footer,
+          buttons: outbound.buttons,
+        });
+      } else {
+        await this.builderBot.sendTextMessage({
+          deviceId: params.deviceId,
+          phone,
+          message: outbound.body,
+        });
+      }
 
       await this.audit.log({
         tenantId: params.tenantId,

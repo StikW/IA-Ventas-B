@@ -13,6 +13,7 @@ import {
   isSameProductReference,
   looksLikeSku,
   normalizeProductText,
+  parseMultiVariantSelection,
   parseProductSelectionQuery,
   SELECTION_NOISE_WORDS,
   tokenizeProductQuery,
@@ -515,8 +516,55 @@ export class SalesAgentToolsHandler {
     quantity = 1,
     context?: { cartItems?: PendingCartItem[] }
   ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+    const batch = await this.resolveSelectionsFromText(tenantId, userText, quantity, context);
+    if (!batch.ok || !batch.items?.length) {
+      return { ok: false, message: batch.message };
+    }
+    return { ok: true, message: batch.message, item: batch.items[0] };
+  }
+
+  /** Resuelve una o varias selecciones (ej. "45cm y otra de 50cm"). */
+  async resolveSelectionsFromText(
+    tenantId: string,
+    userText: string,
+    quantity = 1,
+    context?: { cartItems?: PendingCartItem[] }
+  ): Promise<{ ok: boolean; message: string; items?: OrderItem[] }> {
     try {
-      return await this.resolveSelectionFromTextInner(tenantId, userText, quantity, context);
+      const trimmed = userText.trim();
+      const multi = parseMultiVariantSelection(trimmed);
+      if (multi && multi.variantHints.length >= 2) {
+        const items: OrderItem[] = [];
+        for (const hint of multi.variantHints) {
+          const syntheticText = `${multi.baseQuery} de ${hint}`;
+          const result = await this.resolveSelectionFromTextInner(tenantId, syntheticText, quantity, context);
+          if (!result.ok || !result.item) {
+            if (items.length) {
+              return {
+                ok: false,
+                message: `${result.message} (Se agregaron ${items.length} producto(s) antes del error.)`,
+                items,
+              };
+            }
+            return { ok: false, message: result.message };
+          }
+          const duplicate = items.some((row) => row.sku === result.item!.sku);
+          if (!duplicate) items.push(result.item);
+        }
+
+        if (!items.length) {
+          return { ok: false, message: 'No pude identificar los productos solicitados.' };
+        }
+
+        return { ok: true, message: '', items };
+      }
+
+      const single = await this.resolveSelectionFromTextInner(tenantId, trimmed, quantity, context);
+      return {
+        ok: single.ok,
+        message: single.message,
+        items: single.item ? [single.item] : undefined,
+      };
     } catch (err) {
       return { ok: false, message: this.formatStoreError(err) };
     }
@@ -684,7 +732,11 @@ export class SalesAgentToolsHandler {
   }
 
   private buildSearchQuery(userText: string, parsedQuery: string, cartItems?: PendingCartItem[]): string {
-    const cleaned = parsedQuery.trim();
+    const cleaned = parsedQuery
+      .trim()
+      .replace(/^(agregar|a[nñ]adir)\s+/i, '')
+      .replace(/\s+de\s*$/i, '')
+      .trim();
     if (cleaned.length >= 3 && !SELECTION_NOISE_WORDS.test(cleaned)) {
       return cleaned;
     }
@@ -880,9 +932,10 @@ export class SalesAgentToolsHandler {
 
     const withoutIntent = q
       .replace(
-        /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+)/gi,
+        /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|agregar|a[nñ]adir|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+)/gi,
         ''
       )
+      .replace(/\s+de\s*$/i, '')
       .trim();
     add(withoutIntent);
 

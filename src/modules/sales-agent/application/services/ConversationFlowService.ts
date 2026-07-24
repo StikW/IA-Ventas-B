@@ -4,6 +4,7 @@ import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRe
 import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 import {
+  isCartContinueShoppingIntent,
   isCartFinalizeIntent,
   isMenuGreeting,
   resolveButtonAction,
@@ -12,6 +13,7 @@ import {
   WA_BTN_LABEL,
 } from '../../domain/whatsappFlow.constants';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
+import { CartService } from './CartService';
 
 export type OutboundWhatsAppMessage =
   | { kind: 'text'; body: string }
@@ -66,21 +68,30 @@ export class ConversationFlowService {
       };
     }
 
+    if (input.salesContext.flowStep !== 'payment_select' && input.salesContext.phase !== 'awaiting_payment') {
+      const menuResult = await this.tryHandleMenuAndCartButtons(input, action);
+      if (menuResult) return menuResult;
+    }
+
     if (
       isMenuGreeting(text) &&
       input.salesContext.flowStep !== 'payment_select' &&
       input.salesContext.phase !== 'awaiting_payment'
     ) {
-      return this.buildWelcomeMessage(input.businessName, input.businessProfile);
+      return this.buildWelcomeMessage(input.businessName, input.businessProfile, input.salesContext);
     }
 
     if (input.salesContext.flowStep === 'buying' && isCartFinalizeIntent(text)) {
       return null;
     }
 
+    if (input.salesContext.flowStep === 'buying' && isCartContinueShoppingIntent(text)) {
+      return this.buildDiscoveryPrompt(input.salesContext, '¿Qué más te gustaría agregar a tu pedido? Cuéntame el producto.');
+    }
+
     if (input.salesContext.flowStep === 'checkout_redirect') {
       if (isMenuGreeting(text)) {
-        return this.buildWelcomeMessage(input.businessName, input.businessProfile);
+        return this.buildWelcomeMessage(input.businessName, input.businessProfile, input.salesContext);
       }
       if (isCartFinalizeIntent(text) || /formulario|link|enlace|checkout|completar\s+(la\s+)?compra/i.test(text)) {
         return null;
@@ -113,7 +124,11 @@ export class ConversationFlowService {
     return this.buildPaymentMethodPrompt(input.salesContext, totalHint);
   }
 
-  buildWelcomeMessage(businessName: string, profile?: BusinessProfileConfig): ConversationFlowResult {
+  buildWelcomeMessage(
+    businessName: string,
+    profile?: BusinessProfileConfig,
+    previousContext?: SalesContext
+  ): ConversationFlowResult {
     const description =
       profile?.description?.trim() ||
       'Somos *fabricantes de joyas en oro 18K*. Diseñamos y elaboramos piezas con la calidad que nos caracteriza.';
@@ -127,6 +142,11 @@ export class ConversationFlowService {
 
     const hours = profile?.businessHours?.trim();
 
+    const cartNote =
+      previousContext?.cartItems?.length ?
+        `\n\n🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido. Pulsa *Finalizar pedido* cuando quieras completar la compra.`
+      : null;
+
     const body = [
       `¡Hola! Bienvenido a *${businessName}*.`,
       '',
@@ -134,26 +154,65 @@ export class ConversationFlowService {
       '',
       address,
       hours ? `🕐 ${hours}` : null,
+      cartNote,
       '',
       '¿En qué te podemos ayudar hoy?',
     ]
       .filter((line) => line !== null)
       .join('\n');
 
+    const buttons =
+      previousContext?.cartItems?.length ?
+        [
+          { id: WA_BTN.MENU_BUY, body: WA_BTN_LABEL.MENU_BUY },
+          { id: WA_BTN.CART_FINALIZE, body: WA_BTN_LABEL.CART_FINALIZE },
+          { id: WA_BTN.MENU_ORDERS, body: WA_BTN_LABEL.MENU_ORDERS },
+        ]
+      : [
+          { id: WA_BTN.MENU_BUY, body: WA_BTN_LABEL.MENU_BUY },
+          { id: WA_BTN.MENU_ORDERS, body: WA_BTN_LABEL.MENU_ORDERS },
+          { id: WA_BTN.MENU_HELP, body: WA_BTN_LABEL.MENU_HELP },
+        ];
+
     return {
       replyText: body,
-      outbound: { kind: 'text', body },
-      salesContext: { phase: 'browsing' },
+      outbound: { kind: 'buttons', body, buttons },
+      salesContext: {
+        phase: 'browsing',
+        flowStep: 'menu',
+        cartItems: previousContext?.cartItems,
+        customerName: previousContext?.customerName,
+      },
+    };
+  }
+
+  /** Tras agregar al carrito: acciones persistentes por botones. */
+  buildCartActionPrompt(salesContext: SalesContext, introLine: string): ConversationFlowResult {
+    const items = salesContext.cartItems ?? [];
+    const summary = items.length ? CartService.formatSummary(items) : '';
+    const body = [introLine, '', summary, '', '¿Qué deseas hacer?'].filter(Boolean).join('\n');
+
+    return {
+      replyText: body,
+      outbound: {
+        kind: 'buttons',
+        body,
+        buttons: [
+          { id: WA_BTN.CART_ADD_MORE, body: WA_BTN_LABEL.CART_ADD_MORE },
+          { id: WA_BTN.CART_FINALIZE, body: WA_BTN_LABEL.CART_FINALIZE },
+          { id: WA_BTN.MENU_BACK, body: WA_BTN_LABEL.MENU_BACK },
+        ],
+      },
+      salesContext: {
+        ...salesContext,
+        phase: 'browsing',
+        flowStep: 'buying',
+      },
     };
   }
 
   formatCartSummary(cartItems: NonNullable<SalesContext['cartItems']>): string {
-    const lines = cartItems.map(
-      (item) =>
-        `· ${item.name} x${item.quantity} — $${(item.unitPrice * item.quantity).toLocaleString('es-CO')}`
-    );
-    const total = cartItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
-    return [...lines, `\n*Total:* $${total.toLocaleString('es-CO')}`].join('\n');
+    return CartService.formatSummary(cartItems);
   }
 
   /** Tras cerrar carrito en modo `link`: envía URL al formulario WC/MASSI. */
@@ -220,11 +279,115 @@ export class ConversationFlowService {
     };
   }
 
+  private async tryHandleMenuAndCartButtons(
+    input: ConversationFlowInput,
+    action: string | null
+  ): Promise<ConversationFlowResult | null> {
+    if (!action) return null;
+
+    if (action === WA_BTN.MENU_BUY) {
+      return this.buildDiscoveryPrompt(
+        input.salesContext,
+        '¡Perfecto! Cuéntame qué joya buscas (cadena, anillo, balín, dije…) o describe lo que tienes en mente.'
+      );
+    }
+
+    if (action === WA_BTN.MENU_ORDERS) {
+      const orders = await this.tools.listMassiOrders(input.tenantId, input.customerPhone);
+      return {
+        replyText: orders,
+        outbound: {
+          kind: 'buttons',
+          body: orders,
+          buttons: [
+            { id: WA_BTN.MENU_BUY, body: WA_BTN_LABEL.MENU_BUY },
+            { id: WA_BTN.MENU_BACK, body: WA_BTN_LABEL.MENU_BACK },
+          ],
+        },
+        salesContext: {
+          ...input.salesContext,
+          phase: 'browsing',
+          flowStep: 'menu',
+        },
+      };
+    }
+
+    if (action === WA_BTN.MENU_HELP) {
+      const profile = input.businessProfile;
+      const body = [
+        'Te ayudamos con:',
+        '· Comprar joyas en oro 18K',
+        '· Consultar tu pedido',
+        '· Información de la joyería',
+        '',
+        profile?.address?.trim() ? `📍 ${profile.address.trim()}` : null,
+        profile?.businessHours?.trim() ? `🕐 ${profile.businessHours.trim()}` : null,
+        '',
+        'Pulsa *Comprar* para empezar o escríbeme tu pregunta.',
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      return {
+        replyText: body,
+        outbound: {
+          kind: 'buttons',
+          body,
+          buttons: [
+            { id: WA_BTN.MENU_BUY, body: WA_BTN_LABEL.MENU_BUY },
+            { id: WA_BTN.MENU_ORDERS, body: WA_BTN_LABEL.MENU_ORDERS },
+            { id: WA_BTN.MENU_BACK, body: WA_BTN_LABEL.MENU_BACK },
+          ],
+        },
+        salesContext: {
+          ...input.salesContext,
+          phase: 'browsing',
+          flowStep: 'help',
+        },
+      };
+    }
+
+    if (action === WA_BTN.MENU_BACK) {
+      return this.buildWelcomeMessage(input.businessName, input.businessProfile, input.salesContext);
+    }
+
+    if (action === WA_BTN.CART_ADD_MORE) {
+      return this.buildDiscoveryPrompt(
+        input.salesContext,
+        '¿Qué más te gustaría agregar? Cuéntame el producto o variante.'
+      );
+    }
+
+    if (action === WA_BTN.CART_FINALIZE) {
+      if (!input.salesContext.cartItems?.length) {
+        return this.buildDiscoveryPrompt(
+          input.salesContext,
+          'Tu carrito está vacío. Cuéntame qué producto te interesa.'
+        );
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  private buildDiscoveryPrompt(salesContext: SalesContext, message: string): ConversationFlowResult {
+    return {
+      replyText: message,
+      outbound: { kind: 'text', body: message },
+      salesContext: {
+        ...salesContext,
+        phase: 'browsing',
+        flowStep: 'discovery',
+      },
+    };
+  }
+
   private cancelPaymentSelection(message: string): ConversationFlowResult {
     return {
       replyText: message,
       outbound: { kind: 'text', body: message },
-      salesContext: { phase: 'browsing' },
+      salesContext: { phase: 'browsing', flowStep: 'discovery' },
     };
   }
 

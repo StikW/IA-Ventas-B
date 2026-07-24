@@ -38,9 +38,8 @@ export function normalizeProductText(text: string): string {
 }
 
 export function extractVariantHint(text: string): string | undefined {
-  const matches = [...text.matchAll(new RegExp(VARIANT_HINT_PATTERN.source, 'gi'))];
-  const last = matches.at(-1);
-  if (last?.[1]) return last[1].replace(/\s+/g, ' ').trim();
+  const all = extractAllVariantHints(text);
+  if (all.length) return all.at(-1);
 
   const color = text.match(COLOR_HINT_PATTERN);
   if (color?.[1]) return color[1].trim();
@@ -49,6 +48,45 @@ export function extractVariantHint(text: string): string | undefined {
   if (textSize?.[1]) return textSize[1].trim();
 
   return undefined;
+}
+
+/** Todas las medidas/variantes mencionadas (ej. "45cm y otra de 50cm" → ambas). */
+export function extractAllVariantHints(text: string): string[] {
+  const matches = [...text.matchAll(new RegExp(VARIANT_HINT_PATTERN.source, 'gi'))];
+  const hints = matches
+    .map((match) => match[1]?.replace(/\s+/g, ' ').trim())
+    .filter((hint): hint is string => !!hint);
+
+  return [...new Set(hints)];
+}
+
+/** Detecta pedido con varias medidas/variantes en un solo mensaje. */
+export function parseMultiVariantSelection(text: string): { baseQuery: string; variantHints: string[] } | null {
+  const variantHints = extractAllVariantHints(text);
+  if (variantHints.length < 2) return null;
+
+  const hasMultiCue =
+    /\s+y\s+(?:otra?|una?|un\b)/i.test(text) ||
+    variantHints.length >= 2;
+
+  if (!hasMultiCue) return null;
+
+  const baseQuery = text
+    .replace(
+      /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|agregar|a[nñ]adir|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+)/gi,
+      ''
+    )
+    .replace(/\s+y\s+(?:otra?\s*(?:de\s+)?|una?\s*(?:de\s+)?|un\s+(?:de\s+)?)[^.!?]*$/gi, '')
+    .replace(VARIANT_STRIP_PATTERN, '')
+    .replace(QUANTITY_PATTERN, '')
+    .replace(/\b(tambi[eé]n|otra?|m[aá]s|del mismo|de la misma|pero|igual|mismo|misma)\b/gi, '')
+    .replace(/\s+de\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!baseQuery || baseQuery.length < 3) return null;
+
+  return { baseQuery, variantHints };
 }
 
 /** Cliente pide otro ítem del mismo producto base (ej. "otra de la misma pero 60cm"). */
@@ -65,11 +103,12 @@ export function isCartSiblingVariantIntent(text: string, cartHasItems: boolean):
   if (isSameProductReference(text)) return true;
 
   const t = normalizeProductText(text);
+  if (/^(qu[eé]|cu[aá]les|cu[aá]nto|hay|tienen|muestr)/.test(t)) return false;
+
+  if (/\b(agregar|a[nñ]adir)\b/.test(t) && PURCHASE_INTENT_PATTERN.test(t)) return true;
+
   const wordCount = t.split(/\s+/).filter(Boolean).length;
-  // Ej. "45 cm", "talla M", "en rojo", "otra de 45 cm"
-  if (wordCount <= 8 && !/^(qu[eé]|cu[aá]les|cu[aá]nto|hay|tienen|muestr)/.test(t)) {
-    return true;
-  }
+  if (wordCount <= 15) return true;
   return false;
 }
 
@@ -86,12 +125,13 @@ export function parseProductSelectionQuery(query: string): { productQuery: strin
   const variantHint = extractVariantHint(query);
   const productQuery = query
     .replace(
-      /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|tambi[eé]n|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+|otra?\s+|m[aá]s\s+)/gi,
+      /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|agregar|a[nñ]adir|tambi[eé]n|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+|otra?\s+|m[aá]s\s+)/gi,
       ''
     )
     .replace(/\b(tambi[eé]n|otra?|m[aá]s|del mismo|de la misma|pero|igual|mismo|misma)\b/gi, '')
     .replace(VARIANT_STRIP_PATTERN, '')
     .replace(QUANTITY_PATTERN, '')
+    .replace(/\s+de\s*$/i, '')
     .replace(/\s+/g, ' ')
     .trim();
 

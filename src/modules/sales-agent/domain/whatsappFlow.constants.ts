@@ -5,18 +5,22 @@ export const WA_BTN = {
   MENU_BUY: 'massi:menu:buy',
   MENU_ORDERS: 'massi:menu:orders',
   MENU_HELP: 'massi:menu:help',
+  MENU_BACK: 'massi:menu:back',
+  CART_ADD_MORE: 'massi:cart:more',
+  CART_FINALIZE: 'massi:cart:finalize',
   PAY_TRANSFER: 'massi:pay:transfer',
   PAY_CASH: 'massi:pay:cash',
-  MENU_BACK: 'massi:menu:back',
 } as const;
 
 export const WA_BTN_LABEL = {
   MENU_BUY: 'Comprar',
   MENU_ORDERS: 'Mi pedido',
   MENU_HELP: 'Ayuda',
+  MENU_BACK: 'Menú',
+  CART_ADD_MORE: 'Agregar más',
+  CART_FINALIZE: 'Finalizar pedido',
   PAY_TRANSFER: 'Transferencia',
   PAY_CASH: 'Efectivo tienda',
-  MENU_BACK: 'Menú principal',
 } as const;
 
 export const MENU_GREETING_PATTERN =
@@ -32,12 +36,13 @@ export function isMenuGreeting(text: string): boolean {
 
 /** Cliente indica que terminó de elegir productos y quiere pagar. */
 export function isCartFinalizeIntent(text: string): boolean {
+  if (resolveButtonAction(text) === WA_BTN.CART_FINALIZE) return true;
   const t = normalizeFlowText(text);
   return (
-    /^(eso\s+(?:es|ser[ií]a)\s+todo|es\s+todo|nada\s+m[aá]s|no\s+m[aá]s|listo|ya\s+est[aá]|finalizar|confirmar(\s+pedido)?)$/.test(
+    /^(eso\s+(?:es|ser[ií]a)\s+todo|es\s+todo|nada\s+m[aá]s|no\s+m[aá]s|listo|ya\s+est[aá]|finalizar(\s+(?:con\s+)?(?:la\s+)?compra)?|confirmar(\s+pedido)?)$/.test(
       t
     ) ||
-    /continuar\s+con\s+la\s+compra|proceder\s+con\s+la\s+compra|quiero\s+(seguir|comprar|pagar|finalizar)|seguir\s+con\s+la\s+compra|listo\s+para\s+pagar|ya\s+no\s+quiero\s+m[aá]s/.test(
+    /continuar\s+con\s+la\s+compra|proceder\s+con\s+la\s+compra|finalizar\s+(?:con\s+)?(?:la\s+)?compra|cerrar\s+(?:el\s+)?pedido|quiero\s+(seguir|comprar|pagar|finalizar)|seguir\s+con\s+la\s+compra|listo\s+para\s+pagar|ya\s+no\s+quiero\s+m[aá]s/.test(
       t
     )
   );
@@ -45,6 +50,7 @@ export function isCartFinalizeIntent(text: string): boolean {
 
 /** Cliente quiere seguir agregando productos al carrito (sin especificar producto). */
 export function isCartContinueShoppingIntent(text: string): boolean {
+  if (resolveButtonAction(text) === WA_BTN.CART_ADD_MORE) return true;
   if (hasConcreteProductSpec(text)) return false;
   const t = normalizeFlowText(text);
   return /agregar|a[nñ]adir|algo\s+m[aá]s|otro\s+producto|m[aá]s\s+productos|s[ií],?\s+algo\s+m[aá]s|quiero\s+m[aá]s/.test(t);
@@ -80,9 +86,12 @@ export function resolveButtonAction(text: string): string | null {
     [normalizeFlowText(WA_BTN_LABEL.MENU_BUY)]: WA_BTN.MENU_BUY,
     [normalizeFlowText(WA_BTN_LABEL.MENU_ORDERS)]: WA_BTN.MENU_ORDERS,
     [normalizeFlowText(WA_BTN_LABEL.MENU_HELP)]: WA_BTN.MENU_HELP,
+    [normalizeFlowText(WA_BTN_LABEL.CART_ADD_MORE)]: WA_BTN.CART_ADD_MORE,
+    [normalizeFlowText(WA_BTN_LABEL.CART_FINALIZE)]: WA_BTN.CART_FINALIZE,
     [normalizeFlowText(WA_BTN_LABEL.PAY_TRANSFER)]: WA_BTN.PAY_TRANSFER,
     [normalizeFlowText(WA_BTN_LABEL.PAY_CASH)]: WA_BTN.PAY_CASH,
     [normalizeFlowText(WA_BTN_LABEL.MENU_BACK)]: WA_BTN.MENU_BACK,
+    'menu principal': WA_BTN.MENU_BACK,
   };
   if (byLabel[normalized]) return byLabel[normalized];
   if (text.startsWith('massi:')) return text;
