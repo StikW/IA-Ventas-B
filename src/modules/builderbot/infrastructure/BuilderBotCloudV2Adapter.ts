@@ -723,9 +723,11 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
 
   async sendButtonsMessage(input: SendButtonsMessageInput): Promise<void> {
     const buttons = input.buttons.slice(0, 3).map((btn) => ({
-      body: btn.body,
-      id: btn.id ?? btn.body,
+      body: btn.body.slice(0, 20),
+      id: (btn.id ?? btn.body).slice(0, 256),
     }));
+
+    const fallbackText = [input.body.trim(), ...buttons.map((b, i) => `${i + 1}. ${b.body}`)].join('\n');
 
     try {
       await this.postV2Message(input.deviceId, input.phone, {
@@ -736,8 +738,7 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
         },
       });
     } catch {
-      const fallback = [input.body.trim(), ...buttons.map((b, i) => `${i + 1}. ${b.body}`)].join('\n');
-      await this.sendTextMessage({ deviceId: input.deviceId, phone: input.phone, message: fallback });
+      await this.sendTextMessage({ deviceId: input.deviceId, phone: input.phone, message: fallbackText });
     }
   }
 
@@ -795,11 +796,12 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
       body: JSON.stringify(v2Payload),
     });
 
+    const v2Body = await v2Response.text();
+
     if (v2Response.ok) return;
 
-    const v2ErrorBody = await v2Response.text();
     throw new DomainError(
-      `BuilderBot Cloud API error ${v2Response.status}: ${v2ErrorBody}`,
+      `BuilderBot Cloud API error ${v2Response.status}: ${v2Body}`,
       'BUILDERBOT_ERROR'
     );
   }

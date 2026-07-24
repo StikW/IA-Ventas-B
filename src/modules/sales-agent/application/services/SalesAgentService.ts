@@ -198,7 +198,10 @@ export class SalesAgentService {
 
     const now = new Date().toISOString();
 
-    if (mutableContext.flowStep === 'payment_select') {
+    const enteredPaymentSelect =
+      mutableContext.flowStep === 'payment_select' && salesContext.flowStep !== 'payment_select';
+
+    if (enteredPaymentSelect) {
       const total = mutableContext.cartItems?.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
       const totalHint = total ? `Total estimado: *$${total.toLocaleString('es-CO')}*` : undefined;
       const paymentPrompt = this.conversationFlow.buildPaymentMethodPrompt(mutableContext, totalHint);
@@ -384,6 +387,10 @@ export class SalesAgentService {
         const massiEnabled = await this.tools.massiBotEnabled(input.tenantId);
 
         if (massiEnabled) {
+          if (salesContext.flowStep === 'payment_select' && salesContext.cartItems?.length) {
+            return 'El carrito ya está listo. El cliente debe elegir transferencia (1) o efectivo (2) con los botones o escribiendo la opción.';
+          }
+
           Object.assign(salesContext, {
             phase: 'browsing' as const,
             flowStep: 'payment_select' as const,

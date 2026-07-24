@@ -3,8 +3,10 @@ import { BuilderBotButtonOption } from '../../../builderbot/domain/IBuilderBotCl
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 import {
+  formatPaymentMethodChoicesHint,
   isMenuGreeting,
   resolveButtonAction,
+  resolvePaymentMethodChoice,
   WA_BTN,
   WA_BTN_LABEL,
 } from '../../domain/whatsappFlow.constants';
@@ -75,11 +77,18 @@ export class ConversationFlowService {
       return this.buildMainMenu(input.businessName, input.salesContext);
     }
 
-    if (input.salesContext.flowStep === 'payment_select' && action) {
-      if (!massiEnabled || !input.salesContext.cartItems?.length) {
-        return this.buildMainMenu(input.businessName, { ...input.salesContext, flowStep: 'menu' });
+    if (input.salesContext.flowStep === 'payment_select') {
+      const paymentAction = action ?? resolvePaymentMethodChoice(text);
+      if (paymentAction) {
+        if (!massiEnabled || !input.salesContext.cartItems?.length) {
+          return this.buildMainMenu(input.businessName, { ...input.salesContext, flowStep: 'menu' });
+        }
+        return this.handlePaymentSelection(input, paymentAction);
       }
-      return this.handlePaymentSelection(input, action);
+
+      const total = input.salesContext.cartItems?.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+      const totalHint = total ? `Total estimado: *$${total.toLocaleString('es-CO')}*` : undefined;
+      return this.buildPaymentMethodPrompt(input.salesContext, totalHint);
     }
 
     if (isMenuGreeting(text)) {
@@ -108,7 +117,13 @@ export class ConversationFlowService {
   }
 
   buildPaymentMethodPrompt(salesContext: SalesContext, totalHint?: string): ConversationFlowResult {
-    const body = ['Perfecto. Elige cómo deseas pagar:', totalHint ? `\n${totalHint}` : ''].filter(Boolean).join('\n');
+    const body = [
+      'Perfecto. Elige cómo deseas pagar:',
+      totalHint ? `\n${totalHint}` : '',
+      `\n${formatPaymentMethodChoicesHint()}`,
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     return {
       replyText: body,

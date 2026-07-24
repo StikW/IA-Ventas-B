@@ -13,6 +13,7 @@ function asArray(value: unknown): unknown[] {
 
 function readText(message: Record<string, unknown>): string | undefined {
   const interactive = readInteractiveReply(message);
+  if (interactive.buttonId?.startsWith('massi:')) return interactive.buttonId;
   if (interactive.text) return interactive.text;
 
   const text = asRecord(message.text);
@@ -80,6 +81,9 @@ function readFrom(root: Record<string, unknown>): string | undefined {
 
 function readIncomingText(root: Record<string, unknown>): string | undefined {
   const interactive = readInteractiveReply(root);
+  if (interactive.buttonId?.startsWith('massi:') && !isBuilderBotTemplateLiteral(interactive.buttonId)) {
+    return interactive.buttonId;
+  }
   if (interactive.text && !isBuilderBotTemplateLiteral(interactive.text)) return interactive.text;
 
   const direct = readText(root);
