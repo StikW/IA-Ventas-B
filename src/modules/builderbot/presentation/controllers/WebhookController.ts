@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { container } from 'tsyringe';
 import { env } from '../../../../shared/infrastructure/config/env';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
+import { emptyBbcWebhookResponse } from '../../domain/BbcWebhookAgentResponse';
 import { HandleBuilderBotWebhookUseCase } from '../../application/use-cases/HandleBuilderBotWebhookUseCase';
 import { ProcessSalesAgentWebhookUseCase } from '../../application/use-cases/ProcessSalesAgentWebhookUseCase';
 
@@ -47,24 +48,27 @@ export class WebhookController {
         headers: normalizeHeaders(req),
       });
 
-      res.status(200).json({ data: result });
+      let bbcResponse = emptyBbcWebhookResponse();
 
       if (result.incomingMessages.length > 0) {
         const agentUseCase = container.resolve(ProcessSalesAgentWebhookUseCase);
-        void agentUseCase
-          .execute({
+        try {
+          const agentResult = await agentUseCase.execute({
             tenantId: result.tenantId,
             deviceId: result.deviceId,
             messages: result.incomingMessages,
             images: [],
-          })
-          .catch((err) => {
-            logger.error(
-              { err, tenantId: result.tenantId, messageCount: result.incomingMessages.length },
-              'Error en procesamiento asíncrono del agente de ventas'
-            );
           });
+          bbcResponse = agentResult.bbcResponse;
+        } catch (err) {
+          logger.error(
+            { err, tenantId: result.tenantId, messageCount: result.incomingMessages.length },
+            'Error en procesamiento del agente de ventas (webhook BBC)'
+          );
+        }
       }
+
+      res.status(200).json(bbcResponse);
 
       if (result.incomingImages.length > 0) {
         const agentUseCase = container.resolve(ProcessSalesAgentWebhookUseCase);

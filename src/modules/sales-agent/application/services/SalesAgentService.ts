@@ -4,6 +4,8 @@ import { hasBuilderBot, hasOpenAI } from '../../../../shared/infrastructure/conf
 import { AuditService } from '../../../../shared/infrastructure/audit/AuditService';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
 import { IBuilderBotCloudService } from '../../../builderbot/domain/IBuilderBotCloudService';
+import { BbcWebhookAgentResponse, emptyBbcWebhookResponse } from '../../../builderbot/domain/BbcWebhookAgentResponse';
+import { resolveBuilderBotApiMode } from '../../../builderbot/infrastructure/builderBotApiMode';
 import { normalizeBuilderBotPhone } from '../../../builderbot/infrastructure/builderBotPhone';
 import { CreateOrderUseCase } from '../../../commerce/application/use-cases/OrderUseCases';
 import { OrderItem } from '../../../commerce/domain/entities/Order.types';
@@ -13,6 +15,7 @@ import { ChatMessage, IChatSessionRepository, SalesContext } from '../../domain/
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
 import { ConversationFlowService, OutboundWhatsAppMessage } from './ConversationFlowService';
+import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 
 const AGENT_ACTOR = 'system:sales-agent';
 
@@ -123,6 +126,7 @@ export interface SalesAgentMessageResult {
   replied: boolean;
   reply?: string;
   reason?: string;
+  bbcResponse?: BbcWebhookAgentResponse;
 }
 
 @injectable()
@@ -164,7 +168,7 @@ export class SalesAgentService {
 
     if (flowResult) {
       const now = new Date().toISOString();
-      await this.persistAndReply({
+      const bbcResponse = await this.persistAndReply({
         tenantId: input.tenantId,
         deviceId: input.deviceId,
         customerPhone: input.customerPhone,
@@ -177,7 +181,7 @@ export class SalesAgentService {
         now,
         ragHits: 0,
       });
-      return { replied: true, reply: flowResult.replyText };
+      return { replied: true, reply: flowResult.replyText, bbcResponse };
     }
 
     const systemPrompt = this.buildSystemPrompt({
@@ -205,7 +209,7 @@ export class SalesAgentService {
       const total = mutableContext.cartItems?.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
       const totalHint = total ? `Total estimado: *$${total.toLocaleString('es-CO')}*` : undefined;
       const paymentPrompt = this.conversationFlow.buildPaymentMethodPrompt(mutableContext, totalHint);
-      await this.persistAndReply({
+      const bbcResponse = await this.persistAndReply({
         tenantId: input.tenantId,
         deviceId: input.deviceId,
         customerPhone: input.customerPhone,
@@ -218,10 +222,10 @@ export class SalesAgentService {
         now,
         ragHits: 0,
       });
-      return { replied: true, reply: paymentPrompt.replyText };
+      return { replied: true, reply: paymentPrompt.replyText, bbcResponse };
     }
 
-    await this.persistAndReply({
+    const bbcResponse = await this.persistAndReply({
       tenantId: input.tenantId,
       deviceId: input.deviceId,
       customerPhone: input.customerPhone,
@@ -234,7 +238,7 @@ export class SalesAgentService {
       ragHits: 0,
     });
 
-    return { replied: true, reply };
+    return { replied: true, reply, bbcResponse };
   }
 
   async handleIncomingImage(input: SalesAgentImageInput): Promise<SalesAgentMessageResult> {
@@ -497,7 +501,7 @@ export class SalesAgentService {
     outbound?: OutboundWhatsAppMessage;
     now: string;
     ragHits: number;
-  }): Promise<void> {
+  }): Promise<BbcWebhookAgentResponse> {
     const updatedMessages: ChatMessage[] = [
       ...params.history,
       { role: 'user', content: params.userText, at: params.now },
@@ -512,8 +516,43 @@ export class SalesAgentService {
       updatedAt: params.now,
     });
 
-    const phone = normalizeBuilderBotPhone(params.customerPhone);
     const outbound = params.outbound ?? { kind: 'text' as const, body: params.reply };
+    const useCloudRelay = resolveBuilderBotApiMode() === 'cloud-v2';
+
+    if (useCloudRelay) {
+      const route = resolveBbcUiRoute(outbound);
+      const bbcResponse: BbcWebhookAgentResponse =
+        route === 'text' ? { route: 'text', message: outbound.body } : { route, message: '' };
+
+      await this.audit.log({
+        tenantId: params.tenantId,
+        userId: AGENT_ACTOR,
+        action: 'BUILDERBOT_MESSAGE_SENT',
+        resource: 'whatsapp_message',
+        resourceId: params.messageId,
+        metadata: {
+          customerPhone: params.customerPhone,
+          replyPreview: params.reply.slice(0, 120),
+          ragHits: params.ragHits,
+          salesPhase: params.salesContext.phase,
+          bbcRoute: bbcResponse.route,
+        },
+      });
+
+      logger.info(
+        {
+          tenantId: params.tenantId,
+          customerPhone: params.customerPhone,
+          salesPhase: params.salesContext.phase,
+          bbcRoute: bbcResponse.route,
+        },
+        'Agente de ventas respondió por WhatsApp (relay BBC)'
+      );
+
+      return bbcResponse;
+    }
+
+    const phone = normalizeBuilderBotPhone(params.customerPhone);
 
     if (outbound.kind === 'buttons') {
       await this.builderBot.sendButtonsMessage({
@@ -553,6 +592,8 @@ export class SalesAgentService {
       },
       'Agente de ventas respondió por WhatsApp'
     );
+
+    return emptyBbcWebhookResponse();
   }
 
   private async sendAndSave(
@@ -563,17 +604,24 @@ export class SalesAgentService {
     salesContext: SalesContext
   ): Promise<void> {
     const now = new Date().toISOString();
-    await this.persistAndReply({
+    const updatedMessages: ChatMessage[] = [
+      ...history,
+      { role: 'user', content: userText, at: now },
+      { role: 'assistant', content: reply, at: now },
+    ];
+
+    await this.chatRepo.save({
       tenantId: input.tenantId,
-      deviceId: input.deviceId,
       customerPhone: input.customerPhone,
-      messageId: input.messageId,
-      history,
-      userText,
-      reply,
+      messages: updatedMessages,
       salesContext,
-      now,
-      ragHits: 0,
+      updatedAt: now,
+    });
+
+    await this.builderBot.sendTextMessage({
+      deviceId: input.deviceId,
+      phone: normalizeBuilderBotPhone(input.customerPhone),
+      message: reply,
     });
   }
 }

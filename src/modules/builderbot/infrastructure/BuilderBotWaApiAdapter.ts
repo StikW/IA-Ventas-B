@@ -133,21 +133,16 @@ export class BuilderBotWaApiAdapter implements IBuilderBotCloudService {
       id: btn.id ?? btn.body,
     }));
 
-    try {
-      await this.request('/messages', {
-        method: 'POST',
-        body: JSON.stringify({
-          device: input.deviceId,
-          phone: input.phone,
-          message: input.body.trim(),
-          footer: input.footer?.trim(),
-          buttons,
-        }),
-      });
-    } catch {
-      const fallback = [input.body.trim(), ...buttons.map((b, i) => `${i + 1}. ${b.body}`)].join('\n');
-      await this.sendTextMessage({ deviceId: input.deviceId, phone: input.phone, message: fallback });
-    }
+    await this.request('/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        device: input.deviceId,
+        phone: input.phone,
+        message: input.body.trim(),
+        footer: input.footer?.trim(),
+        buttons,
+      }),
+    });
   }
 
   async sendListMessage(input: SendListMessageInput): Promise<void> {

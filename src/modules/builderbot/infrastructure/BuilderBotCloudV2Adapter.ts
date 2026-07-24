@@ -727,19 +727,24 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
       id: (btn.id ?? btn.body).slice(0, 256),
     }));
 
-    const fallbackText = [input.body.trim(), ...buttons.map((b, i) => `${i + 1}. ${b.body}`)].join('\n');
-
-    try {
-      await this.postV2Message(input.deviceId, input.phone, {
-        messages: {
-          content: input.body.trim(),
-          footer: input.footer?.trim(),
-          buttons,
+    await this.postV2Message(input.deviceId, input.phone, {
+      messages: {
+        content: input.body.trim(),
+        footer: input.footer?.trim(),
+        buttons,
+        interactive: {
+          type: 'button',
+          body: { text: input.body.trim() },
+          footer: input.footer?.trim() ? { text: input.footer.trim() } : undefined,
+          action: {
+            buttons: buttons.map((btn) => ({
+              type: 'reply',
+              reply: { id: btn.id, title: btn.body },
+            })),
+          },
         },
-      });
-    } catch {
-      await this.sendTextMessage({ deviceId: input.deviceId, phone: input.phone, message: fallbackText });
-    }
+      },
+    });
   }
 
   async sendListMessage(input: SendListMessageInput): Promise<void> {
@@ -768,8 +773,10 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
       const lines = sections.flatMap((s) =>
         s.rows.map((r) => `- ${r.title}${r.description ? `: ${r.description}` : ''}`)
       );
-      const fallback = [input.body.trim(), ...lines].join('\n');
-      await this.sendTextMessage({ deviceId: input.deviceId, phone: input.phone, message: fallback });
+      throw new DomainError(
+        `No se pudo enviar la lista por BuilderBot Cloud: ${[input.body.trim(), ...lines].join('\n')}`,
+        'BUILDERBOT_ERROR'
+      );
     }
   }
 

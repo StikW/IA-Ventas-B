@@ -43,21 +43,12 @@ export function resolveButtonAction(text: string): string | null {
   return null;
 }
 
-const PAYMENT_NUMERIC: Record<string, string> = {
-  '1': WA_BTN.PAY_TRANSFER,
-  '2': WA_BTN.PAY_CASH,
-  '3': WA_BTN.MENU_BACK,
-};
-
-/** Interpreta texto libre o número cuando el cliente elige método de pago sin botones. */
+/** Interpreta click de botón o texto libre equivalente al elegir método de pago. */
 export function resolvePaymentMethodChoice(text: string): string | null {
   const fromButton = resolveButtonAction(text);
   if (fromButton === WA_BTN.PAY_TRANSFER || fromButton === WA_BTN.PAY_CASH || fromButton === WA_BTN.MENU_BACK) {
     return fromButton;
   }
-
-  const normalized = normalizeFlowText(text);
-  if (PAYMENT_NUMERIC[normalized]) return PAYMENT_NUMERIC[normalized];
 
   if (/transfer|bre-?b|consign|transferencia|pagar\s+(en\s+)?(su\s+)?totalidad|pagar\s+por\s+transfer/i.test(text)) {
     return WA_BTN.PAY_TRANSFER;
@@ -70,13 +61,4 @@ export function resolvePaymentMethodChoice(text: string): string | null {
   }
 
   return null;
-}
-
-export function formatPaymentMethodChoicesHint(): string {
-  return [
-    'Responde con el número o escribe la opción:',
-    `1️⃣ ${WA_BTN_LABEL.PAY_TRANSFER}`,
-    `2️⃣ ${WA_BTN_LABEL.PAY_CASH}`,
-    `3️⃣ ${WA_BTN_LABEL.MENU_BACK}`,
-  ].join('\n');
 }

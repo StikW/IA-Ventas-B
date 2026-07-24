@@ -13,6 +13,7 @@ import { WooCommerceRestAdapter } from '../../../modules/woocommerce/infrastruct
 import { MassiBotRestAdapter } from '../../../modules/massi-bot/infrastructure/MassiBotRestAdapter';
 import { BuilderBotCloudAdapter } from '../../../modules/builderbot/infrastructure/BuilderBotCloudAdapter';
 import { BuilderBotCloudWebhookRelay } from '../../../modules/builderbot/infrastructure/BuilderBotCloudWebhookRelay';
+import { BuilderBotCloudUiFlowsRelay } from '../../../modules/builderbot/infrastructure/BuilderBotCloudUiFlowsRelay';
 import { BuilderBotConfigRepositoryDynamo } from '../../../modules/builderbot/infrastructure/persistence/BuilderBotConfigRepositoryDynamo';
 import { BuilderBotWebhookParser } from '../../../modules/builderbot/application/services/BuilderBotWebhookParser';
 import { ChatSessionRepositoryDynamo } from '../../../modules/sales-agent/infrastructure/persistence/ChatSessionRepositoryDynamo';
@@ -64,6 +65,7 @@ export function registerDependencies(): void {
   container.registerSingleton('IWooCommerceService', WooCommerceRestAdapter);
   container.registerSingleton('IMassiBotService', MassiBotRestAdapter);
 
+  container.registerSingleton(BuilderBotCloudUiFlowsRelay, BuilderBotCloudUiFlowsRelay);
   container.registerSingleton(BuilderBotCloudWebhookRelay, BuilderBotCloudWebhookRelay);
   container.registerSingleton('IBuilderBotCloudService', BuilderBotCloudAdapter);
   container.registerSingleton('IBuilderBotConfigRepository', BuilderBotConfigRepositoryDynamo);

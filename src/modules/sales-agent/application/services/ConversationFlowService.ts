@@ -3,7 +3,6 @@ import { BuilderBotButtonOption } from '../../../builderbot/domain/IBuilderBotCl
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 import {
-  formatPaymentMethodChoicesHint,
   isMenuGreeting,
   resolveButtonAction,
   resolvePaymentMethodChoice,
@@ -117,13 +116,7 @@ export class ConversationFlowService {
   }
 
   buildPaymentMethodPrompt(salesContext: SalesContext, totalHint?: string): ConversationFlowResult {
-    const body = [
-      'Perfecto. Elige cómo deseas pagar:',
-      totalHint ? `\n${totalHint}` : '',
-      `\n${formatPaymentMethodChoicesHint()}`,
-    ]
-      .filter(Boolean)
-      .join('\n');
+    const body = ['Perfecto. Elige cómo deseas pagar:', totalHint ? `\n${totalHint}` : ''].filter(Boolean).join('\n');
 
     return {
       replyText: body,

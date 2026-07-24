@@ -1,7 +1,8 @@
-import { injectable } from 'tsyringe';
+import { inject, injectable } from 'tsyringe';
 import { DomainError } from '../../../shared/domain/errors/DomainError';
 import { env } from '../../../shared/infrastructure/config/env';
 import { callBuilderBotMcpTool, rebootBuilderBotCloudDeploy } from './BuilderBotMcpHttpClient';
+import { BuilderBotCloudUiFlowsRelay, BuilderBotUiFlowIds } from './BuilderBotCloudUiFlowsRelay';
 
 const RELAY_FLOW_LABEL = 'ia_ventas_webhook_relay';
 const RELAY_FLOW_NAME = 'IA Ventas — Agente';
@@ -14,11 +15,23 @@ type AnswerRecord = {
   plugins?: { http?: { url?: string } | null };
 };
 
+type HttpRule = {
+  conditionRule: string;
+  conditionValue: string;
+  conditionFlowId: string;
+  condition: string;
+};
+
 @injectable()
 export class BuilderBotCloudWebhookRelay {
+  constructor(
+    @inject(BuilderBotCloudUiFlowsRelay) private readonly uiFlowsRelay: BuilderBotCloudUiFlowsRelay
+  ) {}
+
   async sync(projectId: string, webhookUrl: string): Promise<void> {
+    const uiFlows = await this.uiFlowsRelay.sync(projectId);
     const flowId = await this.ensureRelayFlow(projectId);
-    await this.ensureHttpAnswer(projectId, flowId, webhookUrl);
+    await this.ensureHttpAnswer(projectId, flowId, webhookUrl, uiFlows);
     await rebootBuilderBotCloudDeploy(projectId);
   }
 
@@ -53,10 +66,25 @@ export class BuilderBotCloudWebhookRelay {
     return flowId;
   }
 
-  private buildHttpPlugin(webhookUrl: string) {
+  private buildHttpPlugin(webhookUrl: string, uiFlows: BuilderBotUiFlowIds) {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const secret = env.BUILDERBOT_WEBHOOK_SECRET;
     if (secret) headers['x-webhook-secret'] = secret;
+
+    const rules: HttpRule[] = [
+      {
+        conditionRule: 'route',
+        conditionValue: 'menu',
+        conditionFlowId: uiFlows.menuFlowId,
+        condition: '===',
+      },
+      {
+        conditionRule: 'route',
+        conditionValue: 'payment',
+        conditionFlowId: uiFlows.paymentFlowId,
+        condition: '===',
+      },
+    ];
 
     return {
       url: webhookUrl,
@@ -69,18 +97,24 @@ export class BuilderBotCloudWebhookRelay {
         name: '{name}',
         text: '{body}',
       },
-      rules: [],
-      avoidResponse: true,
+      rules,
+      avoidResponse: false,
+      messageMapping: 'message',
     };
   }
 
-  private async ensureHttpAnswer(projectId: string, flowId: string, webhookUrl: string): Promise<void> {
+  private async ensureHttpAnswer(
+    projectId: string,
+    flowId: string,
+    webhookUrl: string,
+    uiFlows: BuilderBotUiFlowIds
+  ): Promise<void> {
     const listed = await callBuilderBotMcpTool<{ answers?: AnswerRecord[] }>('builderbot_list_answers', {
       projectId,
       flowId,
     });
 
-    const plugins = { http: this.buildHttpPlugin(webhookUrl) };
+    const plugins = { http: this.buildHttpPlugin(webhookUrl, uiFlows) };
     const answers = listed.answers ?? [];
     const relayHttp = answers.find(
       (answer) => answer.type === 'add_http' && answer.plugins?.http?.url === webhookUrl

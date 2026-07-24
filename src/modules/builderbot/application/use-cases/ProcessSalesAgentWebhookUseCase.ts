@@ -1,5 +1,6 @@
 import { inject, injectable } from 'tsyringe';
 import { UseCase } from '../../../../shared/application/UseCase';
+import { BbcWebhookAgentResponse, emptyBbcWebhookResponse } from '../../domain/BbcWebhookAgentResponse';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
 import { SalesAgentService } from '../../../sales-agent/application/services/SalesAgentService';
 
@@ -28,7 +29,7 @@ export class ProcessSalesAgentWebhookUseCase
         messages: IncomingWebhookMessage[];
         images: IncomingWebhookImage[];
       },
-      { processed: number; replied: number }
+      { processed: number; replied: number; bbcResponse: BbcWebhookAgentResponse }
     >
 {
   constructor(@inject(SalesAgentService) private readonly salesAgent: SalesAgentService) {}
@@ -38,9 +39,10 @@ export class ProcessSalesAgentWebhookUseCase
     deviceId: string;
     messages: IncomingWebhookMessage[];
     images: IncomingWebhookImage[];
-  }): Promise<{ processed: number; replied: number }> {
+  }): Promise<{ processed: number; replied: number; bbcResponse: BbcWebhookAgentResponse }> {
     let replied = 0;
     let processed = 0;
+    let bbcResponse = emptyBbcWebhookResponse();
 
     for (const message of input.messages) {
       if (!message.from || !message.text?.trim()) continue;
@@ -56,8 +58,10 @@ export class ProcessSalesAgentWebhookUseCase
           messageId: message.messageId,
         });
 
-        if (result.replied) replied += 1;
-        else {
+        if (result.replied) {
+          replied += 1;
+          if (result.bbcResponse) bbcResponse = result.bbcResponse;
+        } else {
           logger.warn(
             { tenantId: input.tenantId, customerPhone: message.from, reason: result.reason },
             'Agente no respondió al mensaje de WhatsApp'
@@ -104,6 +108,6 @@ export class ProcessSalesAgentWebhookUseCase
       }
     }
 
-    return { processed, replied };
+    return { processed, replied, bbcResponse };
   }
 }
