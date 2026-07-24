@@ -92,8 +92,8 @@ export class BuilderBotCloudWebhookRelay {
         text: '{body}',
       },
       rules,
-      avoidResponse: false,
-      messageMapping: 'reply',
+      // Texto lo envía IA Ventas vía API v2; el HTTP solo enruta route=payment al flow UI.
+      avoidResponse: true,
     };
   }
 

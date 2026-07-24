@@ -7,6 +7,6 @@ type OutboundWhatsAppMessage =
 
 /** Solo el paso de método de pago usa flow UI con botones en BuilderBot Cloud. */
 export function resolveBbcUiRoute(outbound: OutboundWhatsAppMessage): BbcUiRoute {
-  if (outbound.kind === 'text') return 'text';
-  return 'payment';
+  if (outbound.kind === 'buttons') return 'payment';
+  return 'none';
 }

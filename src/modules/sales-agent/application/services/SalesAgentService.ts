@@ -527,8 +527,42 @@ export class SalesAgentService {
 
     if (useCloudRelay) {
       const route = resolveBbcUiRoute(outbound);
-      const bbcResponse: BbcWebhookAgentResponse =
-        route === 'text' ? { route: 'text', reply: outbound.body } : { route: 'payment' };
+      const phone = normalizeBuilderBotPhone(params.customerPhone);
+
+      if (route === 'payment') {
+        await this.audit.log({
+          tenantId: params.tenantId,
+          userId: AGENT_ACTOR,
+          action: 'BUILDERBOT_MESSAGE_SENT',
+          resource: 'whatsapp_message',
+          resourceId: params.messageId,
+          metadata: {
+            customerPhone: params.customerPhone,
+            replyPreview: params.reply.slice(0, 120),
+            ragHits: params.ragHits,
+            salesPhase: params.salesContext.phase,
+            bbcRoute: 'payment',
+          },
+        });
+
+        logger.info(
+          {
+            tenantId: params.tenantId,
+            customerPhone: params.customerPhone,
+            salesPhase: params.salesContext.phase,
+            bbcRoute: 'payment',
+          },
+          'Agente enrutó selección de pago al flow UI de BuilderBot'
+        );
+
+        return { route: 'payment' };
+      }
+
+      await this.builderBot.sendTextMessage({
+        deviceId: params.deviceId,
+        phone,
+        message: outbound.body,
+      });
 
       await this.audit.log({
         tenantId: params.tenantId,
@@ -541,7 +575,7 @@ export class SalesAgentService {
           replyPreview: params.reply.slice(0, 120),
           ragHits: params.ragHits,
           salesPhase: params.salesContext.phase,
-          bbcRoute: bbcResponse.route,
+          bbcRoute: 'none',
         },
       });
 
@@ -550,12 +584,11 @@ export class SalesAgentService {
           tenantId: params.tenantId,
           customerPhone: params.customerPhone,
           salesPhase: params.salesContext.phase,
-          bbcRoute: bbcResponse.route,
         },
-        'Agente de ventas respondió por WhatsApp (relay BBC)'
+        'Agente de ventas respondió por WhatsApp (API v2)'
       );
 
-      return bbcResponse;
+      return { route: 'none' };
     }
 
     const phone = normalizeBuilderBotPhone(params.customerPhone);
