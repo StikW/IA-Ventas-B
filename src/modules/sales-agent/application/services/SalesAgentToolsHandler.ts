@@ -1,6 +1,7 @@
 import { inject, injectable } from 'tsyringe';
 import { RagSearchService } from '../../../knowledge/application/services/RagSearchService';
 import { OrderItem } from '../../../commerce/domain/entities/Order.types';
+import { IMassiBotService } from '../../../massi-bot/domain/IMassiBotService';
 import { IWooCommerceConfigRepository, IWooCommerceService, WooCommerceProduct } from '../../../woocommerce/domain/IWooCommerceService';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 
@@ -19,7 +20,8 @@ export class SalesAgentToolsHandler {
   constructor(
     @inject(RagSearchService) private readonly ragSearch: RagSearchService,
     @inject('IWooCommerceConfigRepository') private readonly wcConfigRepo: IWooCommerceConfigRepository,
-    @inject('IWooCommerceService') private readonly wcService: IWooCommerceService
+    @inject('IWooCommerceService') private readonly wcService: IWooCommerceService,
+    @inject('IMassiBotService') private readonly massiBot: IMassiBotService
   ) {}
 
   async searchDocuments(tenantId: string, query: string): Promise<string> {
@@ -108,13 +110,113 @@ export class SalesAgentToolsHandler {
     return { ok: true, message: 'Todos los productos tienen stock disponible.' };
   }
 
-  buildAwaitingPaymentContext(salesContext: SalesContext, items: OrderItem[], customerName: string): SalesContext {
+  buildAwaitingPaymentContext(
+    salesContext: SalesContext,
+    items: OrderItem[],
+    customerName: string,
+    massiOrder?: { orderId: number; orderNumber: string; ticketCode?: string; paymentMethod?: string }
+  ): SalesContext {
     return {
       phase: 'awaiting_payment',
+      flowStep: undefined,
       cartItems: items,
       customerName,
       lastOrderId: salesContext.lastOrderId,
+      massiWooOrderId: massiOrder?.orderId,
+      massiWooOrderNumber: massiOrder?.orderNumber,
+      massiTicketCode: massiOrder?.ticketCode,
+      paymentMethod: massiOrder?.paymentMethod,
     };
+  }
+
+  async createMassiOrder(
+    tenantId: string,
+    customerPhone: string,
+    customerName: string,
+    items: OrderItem[],
+    paymentMethod = 'mdp_788'
+  ): Promise<{ ok: boolean; message: string; order?: { orderId: number; orderNumber: string; ticketCode: string } }> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected || !this.massiBot.isConfigured(config)) {
+      return { ok: false, message: 'MASSI Bot API no configurada para crear pedidos completos.' };
+    }
+
+    try {
+      const order = await this.massiBot.createOrder(config, {
+        phone: customerPhone,
+        customerName,
+        paymentMethod,
+        deliveryType: 'pickup',
+        lineItems: items.map((item) => ({
+          productId: item.variationId ? item.productId : item.productId,
+          variationId: item.variationId,
+          quantity: item.quantity,
+        })),
+        idempotencyKey: `wa-${tenantId}-${customerPhone}-${items.map((i) => `${i.productId}x${i.quantity}`).join('-')}`,
+      });
+      return {
+        ok: true,
+        message: `Pedido MASSI #${order.number} creado. Ticket: ${order.ticketCode || 'pendiente'}.`,
+        order: {
+          orderId: order.id,
+          orderNumber: order.number,
+          ticketCode: order.ticketCode,
+        },
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error al crear pedido MASSI';
+      return { ok: false, message: msg };
+    }
+  }
+
+  async listMassiOrders(tenantId: string, phone: string): Promise<string> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected || !this.massiBot.isConfigured(config)) {
+      return 'Consulta de pedidos MASSI no disponible.';
+    }
+
+    const orders = await this.massiBot.listOrdersByPhone(config, phone, 5);
+    if (!orders.length) return 'No hay pedidos recientes para este teléfono.';
+
+    return orders
+      .map(
+        (o) =>
+          `- Pedido #${o.number} | Ticket ${o.ticketCode || '—'} | ${o.operationalLabel || o.operationalStatus} | Total ${o.total} ${o.currency}`
+      )
+      .join('\n');
+  }
+
+  async submitMassiPaymentProof(
+    tenantId: string,
+    phone: string,
+    orderId: number,
+    proofUrl: string
+  ): Promise<{ ok: boolean; message: string; ticketCode?: string }> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected || !this.massiBot.isConfigured(config)) {
+      return { ok: false, message: 'MASSI Bot API no configurada.' };
+    }
+
+    try {
+      const result = await this.massiBot.submitPaymentReport(config, {
+        orderId,
+        phone,
+        proofUrl,
+        note: 'Comprobante enviado por WhatsApp',
+      });
+      return {
+        ok: true,
+        message: `Comprobante registrado. Estado: ${result.operationalLabel || result.operationalStatus}.`,
+        ticketCode: result.ticketCode,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error al registrar comprobante';
+      return { ok: false, message: msg };
+    }
+  }
+
+  massiBotEnabled(tenantId: string): Promise<boolean> {
+    return this.wcConfigRepo.findByTenantId(tenantId).then((c) => !!(c && this.massiBot.isConfigured(c)));
   }
 
   private isProductAvailable(product: WooCommerceProduct, quantity: number): boolean {

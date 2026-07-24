@@ -1,3 +1,5 @@
+import http from 'node:http';
+import https from 'node:https';
 import { injectable } from 'tsyringe';
 import {
   IWooCommerceService,
@@ -8,6 +10,9 @@ import {
   WooCommerceProduct,
 } from '../domain/IWooCommerceService';
 import { DomainError } from '../../../shared/domain/errors/DomainError';
+import { env } from '../../../shared/infrastructure/config/env';
+
+const localDevHttpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 @injectable()
 export class WooCommerceRestAdapter implements IWooCommerceService {
@@ -15,28 +20,96 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     return config.storeUrl.replace(/\/$/, '') + '/wp-json/wc/v3';
   }
 
-  private authHeader(config: WooCommerceConfigData): string {
-    const token = Buffer.from(`${config.consumerKey}:${config.consumerSecret}`).toString('base64');
-    return `Basic ${token}`;
+  private isLocalDevStore(storeUrl: string): boolean {
+    try {
+      const { hostname } = new URL(storeUrl);
+      return hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.local');
+    } catch {
+      return false;
+    }
+  }
+
+  private buildFetchInit(url: string, options?: RequestInit): RequestInit {
+    return {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options?.headers as Record<string, string> | undefined),
+      },
+    };
+  }
+
+  private httpRequest(url: string, options?: RequestInit): Promise<{ status: number; body: string }> {
+    const parsed = new URL(url);
+    const isHttps = parsed.protocol === 'https:';
+    const lib = isHttps ? https : http;
+    const method = options?.method ?? 'GET';
+    const headers = (options?.headers as Record<string, string> | undefined) ?? {};
+    const body = typeof options?.body === 'string' ? options.body : undefined;
+
+    const useInsecureLocalTls =
+      isHttps && env.NODE_ENV !== 'production' && this.isLocalDevStore(parsed.origin);
+
+    return new Promise((resolve, reject) => {
+      const req = lib.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port || (isHttps ? 443 : 80),
+          path: `${parsed.pathname}${parsed.search}`,
+          method,
+          headers: {
+            ...headers,
+            ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
+          },
+          agent: useInsecureLocalTls ? localDevHttpsAgent : undefined,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk) => chunks.push(chunk as Buffer));
+          res.on('end', () => {
+            resolve({
+              status: res.statusCode ?? 500,
+              body: Buffer.concat(chunks).toString('utf8'),
+            });
+          });
+        }
+      );
+
+      req.on('error', reject);
+      if (body) req.write(body);
+      req.end();
+    });
+  }
+
+  /**
+   * Query string auth: compatible con HTTP local y HTTPS cuando nginx/Apache
+   * no reenvía el header Authorization (común en Local WP).
+   */
+  private buildRequestUrl(config: WooCommerceConfigData, path: string): string {
+    const url = `${this.baseUrl(config)}${path}`;
+    const separator = path.includes('?') ? '&' : '?';
+    const key = encodeURIComponent(config.consumerKey);
+    const secret = encodeURIComponent(config.consumerSecret);
+    return `${url}${separator}consumer_key=${key}&consumer_secret=${secret}`;
   }
 
   private async request<T>(config: WooCommerceConfigData, path: string, options?: RequestInit): Promise<T> {
-    const url = `${this.baseUrl(config)}${path}`;
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: this.authHeader(config),
-        'Content-Type': 'application/json',
-        ...(options?.headers ?? {}),
-      },
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new DomainError(`WooCommerce error ${response.status}: ${body}`, 'WOOCOMMERCE_ERROR');
+    if (!config.consumerKey?.trim() || !config.consumerSecret?.trim()) {
+      throw new DomainError(
+        'WooCommerce sin credenciales. Vuelve a guardar Consumer Key y Consumer Secret.',
+        'WOOCOMMERCE_NOT_CONFIGURED'
+      );
     }
 
-    return response.json() as Promise<T>;
+    const url = this.buildRequestUrl(config, path);
+    const init = this.buildFetchInit(url, options);
+    const { status, body } = await this.httpRequest(url, init);
+
+    if (status < 200 || status >= 300) {
+      throw new DomainError(`WooCommerce error ${status}: ${body}`, 'WOOCOMMERCE_ERROR');
+    }
+
+    return JSON.parse(body) as T;
   }
 
   async testConnection(config: WooCommerceConfigData): Promise<boolean> {

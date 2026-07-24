@@ -10,6 +10,7 @@ import { DocumentRepositoryDynamo } from '../../../modules/knowledge/infrastruct
 import { OrderRepositoryDynamo } from '../../../modules/commerce/infrastructure/persistence/OrderRepositoryDynamo';
 import { WooCommerceConfigRepositoryDynamo } from '../../../modules/woocommerce/infrastructure/persistence/WooCommerceConfigRepositoryDynamo';
 import { WooCommerceRestAdapter } from '../../../modules/woocommerce/infrastructure/WooCommerceRestAdapter';
+import { MassiBotRestAdapter } from '../../../modules/massi-bot/infrastructure/MassiBotRestAdapter';
 import { BuilderBotCloudAdapter } from '../../../modules/builderbot/infrastructure/BuilderBotCloudAdapter';
 import { BuilderBotCloudWebhookRelay } from '../../../modules/builderbot/infrastructure/BuilderBotCloudWebhookRelay';
 import { BuilderBotConfigRepositoryDynamo } from '../../../modules/builderbot/infrastructure/persistence/BuilderBotConfigRepositoryDynamo';
@@ -29,6 +30,7 @@ import {
   SyncBuilderBotWebhookUseCase,
 } from '../../../modules/builderbot/application/use-cases/BuilderBotUseCases';
 import { SalesAgentToolsHandler } from '../../../modules/sales-agent/application/services/SalesAgentToolsHandler';
+import { ConversationFlowService } from '../../../modules/sales-agent/application/services/ConversationFlowService';
 import { OrderNotificationService } from '../../../modules/commerce/application/services/OrderNotificationService';
 import { CreateOrderUseCase, UpdateOrderStatusUseCase } from '../../../modules/commerce/application/use-cases/OrderUseCases';
 import { PlatformTenantCleanupService } from '../../../modules/tenant/infrastructure/persistence/PlatformTenantCleanupService';
@@ -60,6 +62,7 @@ export function registerDependencies(): void {
   container.registerSingleton('IOrderRepository', OrderRepositoryDynamo);
   container.registerSingleton('IWooCommerceConfigRepository', WooCommerceConfigRepositoryDynamo);
   container.registerSingleton('IWooCommerceService', WooCommerceRestAdapter);
+  container.registerSingleton('IMassiBotService', MassiBotRestAdapter);
 
   container.registerSingleton(BuilderBotCloudWebhookRelay, BuilderBotCloudWebhookRelay);
   container.registerSingleton('IBuilderBotCloudService', BuilderBotCloudAdapter);
@@ -68,6 +71,7 @@ export function registerDependencies(): void {
   container.registerSingleton('IChatSessionRepository', ChatSessionRepositoryDynamo);
   container.registerSingleton(OpenAIChatAdapter, OpenAIChatAdapter);
   container.registerSingleton(SalesAgentToolsHandler, SalesAgentToolsHandler);
+  container.registerSingleton(ConversationFlowService, ConversationFlowService);
   container.registerSingleton(SalesAgentService, SalesAgentService);
   container.registerSingleton(OrderNotificationService, OrderNotificationService);
   container.registerSingleton(PlatformTenantCleanupService, PlatformTenantCleanupService);

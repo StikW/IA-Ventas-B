@@ -8,8 +8,11 @@ export interface ChatMessage {
 
 export type SalesPhase = 'browsing' | 'awaiting_payment' | 'order_created';
 
+export type ConversationFlowStep = 'menu' | 'buying' | 'payment_select' | 'help';
+
 export interface PendingCartItem {
   productId: number;
+  variationId?: number;
   sku: string;
   name: string;
   quantity: number;
@@ -18,9 +21,15 @@ export interface PendingCartItem {
 
 export interface SalesContext {
   phase: SalesPhase;
+  flowStep?: ConversationFlowStep;
   cartItems?: PendingCartItem[];
   customerName?: string;
   lastOrderId?: string;
+  /** Pedido WooCommerce MASSI creado vía massi-bot-api */
+  massiWooOrderId?: number;
+  massiWooOrderNumber?: string;
+  massiTicketCode?: string;
+  paymentMethod?: string;
 }
 
 export interface ChatSession {

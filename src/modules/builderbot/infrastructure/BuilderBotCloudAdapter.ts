@@ -6,6 +6,8 @@ import {
   CreateBuilderBotDeviceInput,
   IBuilderBotCloudService,
   SendTextMessageInput,
+  SendButtonsMessageInput,
+  SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
 import { resolveBuilderBotApiMode } from './builderBotApiMode';
 import { BuilderBotCloudV2Adapter } from './BuilderBotCloudV2Adapter';
@@ -54,6 +56,14 @@ export class BuilderBotCloudAdapter implements IBuilderBotCloudService {
 
   sendTextMessage(input: SendTextMessageInput): Promise<void> {
     return this.delegate().sendTextMessage(input);
+  }
+
+  sendButtonsMessage(input: SendButtonsMessageInput): Promise<void> {
+    return this.delegate().sendButtonsMessage(input);
+  }
+
+  sendListMessage(input: SendListMessageInput): Promise<void> {
+    return this.delegate().sendListMessage(input);
   }
 
   deleteDevice(deviceId: string): Promise<void> {

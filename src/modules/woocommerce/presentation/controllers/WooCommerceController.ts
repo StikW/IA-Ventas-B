@@ -31,7 +31,11 @@ export class WooCommerceController {
   async testConnection(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const useCase = container.resolve(TestWooCommerceConnectionUseCase);
-      const result = await useCase.execute({ actor: req.user! });
+      const result = await useCase.execute({
+        actor: req.user!,
+        botApiUser: req.body?.botApiUser,
+        botApiPassword: req.body?.botApiPassword,
+      });
       res.json({ data: result });
     } catch (err) {
       next(err);

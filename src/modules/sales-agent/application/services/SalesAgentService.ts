@@ -12,6 +12,7 @@ import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRe
 import { ChatMessage, IChatSessionRepository, SalesContext } from '../../domain/IChatSessionRepository';
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
+import { ConversationFlowService, OutboundWhatsAppMessage } from './ConversationFlowService';
 
 const AGENT_ACTOR = 'system:sales-agent';
 
@@ -58,25 +59,35 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'consultar_pedidos',
+      description: 'Lista pedidos recientes del cliente en MASSI por su teléfono WhatsApp.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'preparar_pago',
       description:
-        'Valida stock y deja el pedido listo para recibir comprobante de pago. Usar cuando el cliente confirma qué quiere comprar.',
+        'Valida stock y crea el pedido en MASSI listo para recibir comprobante. Usar cuando el cliente confirma compra por transferencia (Bre-B).',
       parameters: {
         type: 'object',
         properties: {
           nombre_cliente: { type: 'string' },
+          metodo_pago: { type: 'string', description: 'mdp_788 transferencia Bre-B, mdp_789 efectivo en tienda' },
           productos: {
             type: 'array',
             items: {
               type: 'object',
               properties: {
                 productId: { type: 'number' },
+                variationId: { type: 'number' },
                 sku: { type: 'string' },
                 name: { type: 'string' },
                 quantity: { type: 'number' },
                 unitPrice: { type: 'number' },
               },
-              required: ['productId', 'sku', 'name', 'quantity', 'unitPrice'],
+              required: ['productId', 'name', 'quantity', 'unitPrice'],
             },
           },
         },
@@ -118,6 +129,7 @@ export class SalesAgentService {
     @inject('IChatSessionRepository') private readonly chatRepo: IChatSessionRepository,
     @inject(OpenAIChatAdapter) private readonly chat: OpenAIChatAdapter,
     @inject(SalesAgentToolsHandler) private readonly tools: SalesAgentToolsHandler,
+    @inject(ConversationFlowService) private readonly conversationFlow: ConversationFlowService,
     @inject(CreateOrderUseCase) private readonly createOrder: CreateOrderUseCase,
     @inject(AuditService) private readonly audit: AuditService
   ) {}
@@ -136,6 +148,33 @@ export class SalesAgentService {
     const history = session?.messages ?? [];
     const salesContext: SalesContext = session?.salesContext ?? { phase: 'browsing' };
 
+    const flowResult = await this.conversationFlow.tryHandle({
+      tenantId: input.tenantId,
+      customerPhone: input.customerPhone,
+      text,
+      businessName,
+      salesContext,
+      historyLength: history.length,
+    });
+
+    if (flowResult) {
+      const now = new Date().toISOString();
+      await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: flowResult.replyText,
+        salesContext: flowResult.salesContext,
+        outbound: flowResult.outbound,
+        now,
+        ragHits: 0,
+      });
+      return { replied: true, reply: flowResult.replyText };
+    }
+
     const systemPrompt = this.buildSystemPrompt({
       businessName,
       businessProfile: tenantConfig?.business,
@@ -153,6 +192,27 @@ export class SalesAgentService {
     });
 
     const now = new Date().toISOString();
+
+    if (mutableContext.flowStep === 'payment_select') {
+      const total = mutableContext.cartItems?.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+      const totalHint = total ? `Total estimado: *$${total.toLocaleString('es-CO')}*` : undefined;
+      const paymentPrompt = this.conversationFlow.buildPaymentMethodPrompt(mutableContext, totalHint);
+      await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: paymentPrompt.replyText,
+        salesContext: { ...mutableContext, ...paymentPrompt.salesContext },
+        outbound: paymentPrompt.outbound,
+        now,
+        ragHits: 0,
+      });
+      return { replied: true, reply: paymentPrompt.replyText };
+    }
+
     await this.persistAndReply({
       tenantId: input.tenantId,
       deviceId: input.deviceId,
@@ -177,7 +237,58 @@ export class SalesAgentService {
     const salesContext = session?.salesContext ?? { phase: 'browsing' };
     const history = session?.messages ?? [];
 
-    if (salesContext.phase !== 'awaiting_payment' || !salesContext.cartItems?.length) {
+    if (salesContext.phase !== 'awaiting_payment') {
+      const reply =
+        'Recibí tu imagen. Si deseas comprar, primero dime qué productos necesitas y te indicaré cómo realizar el pago.';
+      await this.sendAndSave(input, history, '[Imagen enviada]', reply, salesContext);
+      return { replied: true, reply };
+    }
+
+    const massiEnabled = await this.tools.massiBotEnabled(input.tenantId);
+
+    if (massiEnabled && salesContext.massiWooOrderId) {
+      if (!input.imageUrl) {
+        const reply = 'Recibí tu mensaje, pero no pude obtener la imagen del comprobante. Intenta enviarla de nuevo.';
+        await this.sendAndSave(input, history, '[Comprobante sin URL]', reply, salesContext);
+        return { replied: true, reply };
+      }
+
+      const proof = await this.tools.submitMassiPaymentProof(
+        input.tenantId,
+        input.customerPhone,
+        salesContext.massiWooOrderId,
+        input.imageUrl
+      );
+
+      if (!proof.ok) {
+        await this.sendAndSave(input, history, '[Comprobante de pago]', proof.message, salesContext);
+        return { replied: true, reply: proof.message };
+      }
+
+      const invoice = salesContext.massiWooOrderNumber ?? String(salesContext.massiWooOrderId);
+      const ticket = proof.ticketCode ?? salesContext.massiTicketCode;
+      const reply = [
+        '¡Gracias! Recibimos tu comprobante de pago.',
+        `Pedido *#${invoice}*${ticket ? ` | Ticket *${ticket}*` : ''}.`,
+        'Un asesor validará el pago. Te avisaremos por este chat cuando esté confirmado para que puedas recoger en la joyería.',
+      ].join('\n');
+
+      const updatedContext: SalesContext = { phase: 'order_created', lastOrderId: String(salesContext.massiWooOrderId) };
+      await this.sendAndSave(input, history, '[Comprobante de pago recibido]', reply, updatedContext);
+
+      await this.audit.log({
+        tenantId: input.tenantId,
+        userId: AGENT_ACTOR,
+        action: 'MASSI_PAYMENT_PROOF_SUBMITTED',
+        resource: 'woocommerce_order',
+        resourceId: String(salesContext.massiWooOrderId),
+        metadata: { customerPhone: input.customerPhone, ticketCode: ticket },
+      });
+
+      return { replied: true, reply };
+    }
+
+    if (!salesContext.cartItems?.length) {
       const reply =
         'Recibí tu imagen. Si deseas comprar, primero dime qué productos necesitas y te indicaré cómo realizar el pago.';
       await this.sendAndSave(input, history, '[Imagen enviada]', reply, salesContext);
@@ -256,6 +367,24 @@ export class SalesAgentService {
         if (!stockCheck.ok) return stockCheck.message;
 
         const customerName = String(args.nombre_cliente ?? input.customerPhone).trim();
+        const massiEnabled = await this.tools.massiBotEnabled(input.tenantId);
+
+        if (massiEnabled) {
+          Object.assign(salesContext, {
+            phase: 'browsing' as const,
+            flowStep: 'payment_select' as const,
+            cartItems: items,
+            customerName,
+          });
+
+          const total = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+          return [
+            'Stock validado correctamente.',
+            `Total estimado: $${total.toLocaleString('es-CO')}.`,
+            'El cliente elegirá transferencia o efectivo con los botones de WhatsApp.',
+          ].join('\n');
+        }
+
         Object.assign(salesContext, this.tools.buildAwaitingPaymentContext(salesContext, items, customerName));
 
         const tenantConfig = await this.configRepo.findByTenantId(input.tenantId);
@@ -265,6 +394,9 @@ export class SalesAgentService {
           `Datos para transferencia:\n${bankInfo}`,
           'Indica al cliente que envíe una captura o foto del comprobante de pago por este chat.',
         ].join('\n');
+      }
+      case 'consultar_pedidos': {
+        return this.tools.listMassiOrders(input.tenantId, input.customerPhone);
       }
       default:
         return `Herramienta desconocida: ${name}`;
@@ -278,13 +410,14 @@ export class SalesAgentService {
         const row = item as Record<string, unknown>;
         return {
           productId: Number(row.productId),
+          variationId: row.variationId ? Number(row.variationId) : undefined,
           sku: String(row.sku ?? ''),
           name: String(row.name ?? ''),
           quantity: Number(row.quantity ?? 1),
           unitPrice: Number(row.unitPrice ?? 0),
         };
       })
-      .filter((item) => item.productId > 0 && item.sku && item.name && item.quantity > 0);
+      .filter((item) => item.productId > 0 && item.name && item.quantity > 0);
   }
 
   private buildSystemPrompt(input: {
@@ -317,7 +450,7 @@ export class SalesAgentService {
       `Eres el asistente de ventas por WhatsApp de "${input.businessName}".`,
       'Responde en español, amable y conciso (máximo 3 párrafos).',
       'FLUJO DE VENTA:',
-      '1) Saluda y ayuda al cliente.',
+      '1) Saluda y ayuda al cliente. Si escribe *menú* o *hola*, puede usar los botones del menú principal.',
       '2) Si busca productos, usa buscar_en_documentos y buscar_productos_tienda. Muestra opciones reales con SKU y precio.',
       '3) Si pide algo específico, usa verificar_stock antes de confirmar disponibilidad.',
       '4) Cuando confirme compra (producto, cantidad, nombre), usa preparar_pago.',
@@ -339,6 +472,7 @@ export class SalesAgentService {
     userText: string;
     reply: string;
     salesContext: SalesContext;
+    outbound?: OutboundWhatsAppMessage;
     now: string;
     ragHits: number;
   }): Promise<void> {
@@ -356,11 +490,24 @@ export class SalesAgentService {
       updatedAt: params.now,
     });
 
-    await this.builderBot.sendTextMessage({
-      deviceId: params.deviceId,
-      phone: normalizeBuilderBotPhone(params.customerPhone),
-      message: params.reply,
-    });
+    const phone = normalizeBuilderBotPhone(params.customerPhone);
+    const outbound = params.outbound ?? { kind: 'text' as const, body: params.reply };
+
+    if (outbound.kind === 'buttons') {
+      await this.builderBot.sendButtonsMessage({
+        deviceId: params.deviceId,
+        phone,
+        body: outbound.body,
+        footer: outbound.footer,
+        buttons: outbound.buttons,
+      });
+    } else {
+      await this.builderBot.sendTextMessage({
+        deviceId: params.deviceId,
+        phone,
+        message: outbound.body,
+      });
+    }
 
     await this.audit.log({
       tenantId: params.tenantId,

@@ -17,7 +17,8 @@ import {
   IBuilderBotCloudService,
 
   SendTextMessageInput,
-
+  SendButtonsMessageInput,
+  SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
 
 import { resolveBuilderBotApiUrl, resolveBuilderBotCloudMessagesUrl } from './builderBotApiMode';
@@ -680,12 +681,109 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
       throw new DomainError('BuilderBot no está configurado en el servidor', 'BUILDERBOT_NOT_CONFIGURED');
     }
 
-    const number = input.phone.replace(/\D/g, '');
     const content = input.message.trim();
     const projectId = input.deviceId;
 
+    try {
+      await this.postV2Message(projectId, input.phone, { messages: { content } });
+      return;
+    } catch (v2Error) {
+      const legacyPayload = {
+        projectId,
+        phone: input.phone,
+        to: input.phone,
+        number: input.phone,
+        message: content,
+        text: content,
+      };
+
+      const paths = [
+        {
+          path: `/deploys/${encodeURIComponent(projectId)}/messages`,
+          init: { method: 'POST', body: JSON.stringify(legacyPayload) },
+        },
+        { path: '/messages', init: { method: 'POST', body: JSON.stringify(legacyPayload) } },
+      ];
+
+      let lastError: DomainError | null = v2Error instanceof DomainError ? v2Error : null;
+
+      for (const candidate of paths) {
+        try {
+          await this.request(candidate.path, candidate.init);
+          return;
+        } catch (error) {
+          if (error instanceof DomainError) lastError = error;
+          else throw error;
+        }
+      }
+
+      throw lastError ?? new DomainError('No se pudo enviar el mensaje por BuilderBot Cloud', 'BUILDERBOT_ERROR');
+    }
+  }
+
+  async sendButtonsMessage(input: SendButtonsMessageInput): Promise<void> {
+    const buttons = input.buttons.slice(0, 3).map((btn) => ({
+      body: btn.body,
+      id: btn.id ?? btn.body,
+    }));
+
+    try {
+      await this.postV2Message(input.deviceId, input.phone, {
+        messages: {
+          content: input.body.trim(),
+          footer: input.footer?.trim(),
+          buttons,
+        },
+      });
+    } catch {
+      const fallback = [input.body.trim(), ...buttons.map((b, i) => `${i + 1}. ${b.body}`)].join('\n');
+      await this.sendTextMessage({ deviceId: input.deviceId, phone: input.phone, message: fallback });
+    }
+  }
+
+  async sendListMessage(input: SendListMessageInput): Promise<void> {
+    const sections = input.sections.map((section) => ({
+      title: section.title,
+      rows: section.rows.slice(0, 10).map((row) => ({
+        id: row.id,
+        title: row.title,
+        description: row.description,
+      })),
+    }));
+
+    try {
+      await this.postV2Message(input.deviceId, input.phone, {
+        messages: {
+          content: input.body.trim(),
+          footer: input.footer?.trim(),
+          list: {
+            title: input.title?.trim(),
+            buttonText: input.buttonText.trim(),
+            sections,
+          },
+        },
+      });
+    } catch {
+      const lines = sections.flatMap((s) =>
+        s.rows.map((r) => `- ${r.title}${r.description ? `: ${r.description}` : ''}`)
+      );
+      const fallback = [input.body.trim(), ...lines].join('\n');
+      await this.sendTextMessage({ deviceId: input.deviceId, phone: input.phone, message: fallback });
+    }
+  }
+
+  private async postV2Message(
+    projectId: string,
+    phone: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    if (!hasBuilderBot) {
+      throw new DomainError('BuilderBot no está configurado en el servidor', 'BUILDERBOT_NOT_CONFIGURED');
+    }
+
+    const number = phone.replace(/\D/g, '');
     const v2Payload = {
-      messages: { content },
+      ...payload,
       number,
       checkIfExists: false,
     };
@@ -700,43 +798,11 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
     if (v2Response.ok) return;
 
     const v2ErrorBody = await v2Response.text();
-
-    const legacyPayload = {
-      projectId,
-      phone: input.phone,
-      to: input.phone,
-      number: input.phone,
-      message: content,
-      text: content,
-    };
-
-    const paths = [
-      { path: `/deploys/${encodeURIComponent(projectId)}/messages`, init: { method: 'POST', body: JSON.stringify(legacyPayload) } },
-      { path: '/messages', init: { method: 'POST', body: JSON.stringify(legacyPayload) } },
-    ];
-
-    let lastError: DomainError | null = null;
-    if (v2Response.status !== 404) {
-      lastError = new DomainError(
-        `BuilderBot Cloud API error ${v2Response.status}: ${v2ErrorBody}`,
-        'BUILDERBOT_ERROR'
-      );
-    }
-
-    for (const candidate of paths) {
-      try {
-        await this.request(candidate.path, candidate.init);
-        return;
-      } catch (error) {
-        if (error instanceof DomainError) lastError = error;
-        else throw error;
-      }
-    }
-
-    throw lastError ?? new DomainError('No se pudo enviar el mensaje por BuilderBot Cloud', 'BUILDERBOT_ERROR');
+    throw new DomainError(
+      `BuilderBot Cloud API error ${v2Response.status}: ${v2ErrorBody}`,
+      'BUILDERBOT_ERROR'
+    );
   }
-
-
 
   async deleteDevice(deviceId: string): Promise<void> {
 

@@ -3,7 +3,11 @@ export interface WooCommerceConfigData {
   storeUrl: string;
   consumerKey: string;
   consumerSecret: string;
+  /** Usuario WP con Application Password para massi-bot/v1 */
+  botApiUser?: string;
+  botApiPassword?: string;
   connected: boolean;
+  botApiConnected?: boolean;
   lastSyncAt?: string;
   updatedAt: string;
 }

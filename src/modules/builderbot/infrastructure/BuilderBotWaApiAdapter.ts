@@ -8,6 +8,8 @@ import {
   CreateBuilderBotDeviceInput,
   IBuilderBotCloudService,
   SendTextMessageInput,
+  SendButtonsMessageInput,
+  SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
 import { resolveBuilderBotApiMode, resolveBuilderBotApiUrl } from './builderBotApiMode';
 
@@ -123,6 +125,59 @@ export class BuilderBotWaApiAdapter implements IBuilderBotCloudService {
         message: input.message.trim(),
       }),
     });
+  }
+
+  async sendButtonsMessage(input: SendButtonsMessageInput): Promise<void> {
+    const buttons = input.buttons.slice(0, 3).map((btn) => ({
+      body: btn.body,
+      id: btn.id ?? btn.body,
+    }));
+
+    try {
+      await this.request('/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          device: input.deviceId,
+          phone: input.phone,
+          message: input.body.trim(),
+          footer: input.footer?.trim(),
+          buttons,
+        }),
+      });
+    } catch {
+      const fallback = [input.body.trim(), ...buttons.map((b, i) => `${i + 1}. ${b.body}`)].join('\n');
+      await this.sendTextMessage({ deviceId: input.deviceId, phone: input.phone, message: fallback });
+    }
+  }
+
+  async sendListMessage(input: SendListMessageInput): Promise<void> {
+    const sections = input.sections.map((section) => ({
+      title: section.title,
+      rows: section.rows.slice(0, 10),
+    }));
+
+    try {
+      await this.request('/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          device: input.deviceId,
+          phone: input.phone,
+          message: input.body.trim(),
+          footer: input.footer?.trim(),
+          list: {
+            title: input.title?.trim(),
+            buttonText: input.buttonText.trim(),
+            sections,
+          },
+        }),
+      });
+    } catch {
+      const lines = sections.flatMap((s) =>
+        s.rows.map((r) => `- ${r.title}${r.description ? `: ${r.description}` : ''}`)
+      );
+      const fallback = [input.body.trim(), ...lines].join('\n');
+      await this.sendTextMessage({ deviceId: input.deviceId, phone: input.phone, message: fallback });
+    }
   }
 
   async deleteDevice(deviceId: string): Promise<void> {

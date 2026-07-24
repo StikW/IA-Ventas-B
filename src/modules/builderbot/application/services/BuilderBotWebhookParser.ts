@@ -12,11 +12,49 @@ function asArray(value: unknown): unknown[] {
 }
 
 function readText(message: Record<string, unknown>): string | undefined {
+  const interactive = readInteractiveReply(message);
+  if (interactive.text) return interactive.text;
+
   const text = asRecord(message.text);
   if (text?.body) return String(text.body);
   if (message.body) return String(message.body);
   if (typeof message.text === 'string') return message.text;
   return undefined;
+}
+
+function readInteractiveReply(message: Record<string, unknown>): { text?: string; buttonId?: string } {
+  const interactive = asRecord(message.interactive);
+  if (interactive) {
+    const buttonReply = asRecord(interactive.button_reply);
+    if (buttonReply?.title || buttonReply?.id) {
+      return {
+        text: String(buttonReply.title ?? buttonReply.id),
+        buttonId: buttonReply.id ? String(buttonReply.id) : undefined,
+      };
+    }
+    const listReply = asRecord(interactive.list_reply);
+    if (listReply?.title || listReply?.id) {
+      return {
+        text: String(listReply.title ?? listReply.id),
+        buttonId: listReply.id ? String(listReply.id) : undefined,
+      };
+    }
+  }
+
+  const button = asRecord(message.button);
+  if (button?.text || button?.payload) {
+    return {
+      text: String(button.text ?? button.payload),
+      buttonId: button.payload ? String(button.payload) : undefined,
+    };
+  }
+
+  const selected = message.selectedButtonId ?? message.selectedId ?? message.buttonId;
+  if (selected) {
+    return { text: String(selected), buttonId: String(selected) };
+  }
+
+  return {};
 }
 
 function readMediaUrl(message: Record<string, unknown>): string | undefined {
@@ -41,6 +79,9 @@ function readFrom(root: Record<string, unknown>): string | undefined {
 }
 
 function readIncomingText(root: Record<string, unknown>): string | undefined {
+  const interactive = readInteractiveReply(root);
+  if (interactive.text && !isBuilderBotTemplateLiteral(interactive.text)) return interactive.text;
+
   const direct = readText(root);
   if (direct && !isBuilderBotTemplateLiteral(direct)) return direct;
   if (typeof root.text === 'string' && !isBuilderBotTemplateLiteral(root.text)) return root.text;

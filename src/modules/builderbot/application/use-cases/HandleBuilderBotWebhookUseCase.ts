@@ -13,6 +13,13 @@ import { BuilderBotWebhookParser } from '../services/BuilderBotWebhookParser';
 
 const WEBHOOK_ACTOR = 'system:builderbot-webhook';
 
+const INCOMING_TEXT_TYPES = new Set(['text', 'interactive', 'button', 'buttons_response', 'list_response']);
+
+function isIncomingTextMessage(messageType?: string): boolean {
+  if (!messageType) return true;
+  return INCOMING_TEXT_TYPES.has(messageType.toLowerCase());
+}
+
 function payloadKeys(payload: unknown): string[] {
   return payload && typeof payload === 'object' && !Array.isArray(payload)
     ? Object.keys(payload as Record<string, unknown>)
@@ -122,7 +129,7 @@ export class HandleBuilderBotWebhookUseCase
             !!event.text?.trim() &&
             !isBuilderBotTemplateLiteral(event.from) &&
             !isBuilderBotTemplateLiteral(event.text) &&
-            (!event.messageType || event.messageType === 'text')
+            (!event.messageType || isIncomingTextMessage(event.messageType))
         )
         .map((event) => ({
           from: event.from!,

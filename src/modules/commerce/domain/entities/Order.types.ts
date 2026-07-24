@@ -8,6 +8,7 @@ export enum OrderStatus {
 
 export interface OrderItem {
   productId: number;
+  variationId?: number;
   sku: string;
   name: string;
   quantity: number;

@@ -44,7 +44,7 @@ export class ProcessSalesAgentWebhookUseCase
 
     for (const message of input.messages) {
       if (!message.from || !message.text?.trim()) continue;
-      if (message.messageType && message.messageType !== 'text') continue;
+      if (message.messageType && !['text', 'interactive', 'button', 'buttons_response', 'list_response'].includes(message.messageType.toLowerCase())) continue;
       processed += 1;
 
       try {

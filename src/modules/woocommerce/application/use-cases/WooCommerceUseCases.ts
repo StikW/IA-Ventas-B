@@ -7,6 +7,7 @@ import {
   IWooCommerceService,
   WooCommerceConfigData,
 } from '../../domain/IWooCommerceService';
+import { IMassiBotService } from '../../../massi-bot/domain/IMassiBotService';
 
 function resolveTenantId(actor: TenantContext, explicit?: string): string {
   if (actor.role === UserRole.ADMIN && explicit) return explicit;
@@ -17,9 +18,11 @@ function resolveTenantId(actor: TenantContext, explicit?: string): string {
 export interface WooCommerceConfigPublic {
   storeUrl: string;
   connected: boolean;
+  botApiConnected: boolean;
   lastSyncAt?: string;
   updatedAt: string;
   hasCredentials: boolean;
+  hasBotApiCredentials: boolean;
 }
 
 @injectable()
@@ -32,6 +35,8 @@ export class UpdateWooCommerceConfigUseCase
         storeUrl: string;
         consumerKey: string;
         consumerSecret: string;
+        botApiUser?: string;
+        botApiPassword?: string;
       },
       WooCommerceConfigPublic
     >
@@ -44,16 +49,27 @@ export class UpdateWooCommerceConfigUseCase
     storeUrl: string;
     consumerKey: string;
     consumerSecret: string;
+    botApiUser?: string;
+    botApiPassword?: string;
   }) {
     const tenantId = resolveTenantId(input.actor, input.tenantId);
     const now = new Date().toISOString();
+    const existing = await this.configRepo.findByTenantId(tenantId);
+
+    const consumerKey = input.consumerKey.trim() || existing?.consumerKey || '';
+    const consumerSecret = input.consumerSecret.trim() || existing?.consumerSecret || '';
+    const botApiUser = input.botApiUser?.trim() || existing?.botApiUser || '';
+    const botApiPassword = input.botApiPassword?.trim() || existing?.botApiPassword || '';
 
     const config: WooCommerceConfigData = {
       tenantId,
       storeUrl: input.storeUrl.replace(/\/$/, ''),
-      consumerKey: input.consumerKey,
-      consumerSecret: input.consumerSecret,
+      consumerKey,
+      consumerSecret,
+      botApiUser: botApiUser || undefined,
+      botApiPassword: botApiPassword || undefined,
       connected: false,
+      botApiConnected: false,
       updatedAt: now,
     };
 
@@ -65,9 +81,11 @@ export class UpdateWooCommerceConfigUseCase
     return {
       storeUrl: config.storeUrl,
       connected: config.connected,
+      botApiConnected: !!config.botApiConnected,
       lastSyncAt: config.lastSyncAt,
       updatedAt: config.updatedAt,
       hasCredentials: !!(config.consumerKey && config.consumerSecret),
+      hasBotApiCredentials: !!(config.botApiUser && config.botApiPassword),
     };
   }
 }
@@ -86,35 +104,80 @@ export class GetWooCommerceConfigUseCase
     return {
       storeUrl: config.storeUrl,
       connected: config.connected,
+      botApiConnected: !!config.botApiConnected,
       lastSyncAt: config.lastSyncAt,
       updatedAt: config.updatedAt,
       hasCredentials: !!(config.consumerKey && config.consumerSecret),
+      hasBotApiCredentials: !!(config.botApiUser && config.botApiPassword),
     };
   }
 }
 
 @injectable()
-export class TestWooCommerceConnectionUseCase implements UseCase<{ actor: TenantContext; tenantId?: string }, { connected: boolean }> {
+export class TestWooCommerceConnectionUseCase
+  implements
+    UseCase<
+      { actor: TenantContext; tenantId?: string; botApiUser?: string; botApiPassword?: string },
+      { connected: boolean; botApiConnected: boolean; botApiStatus: string }
+    >
+{
   constructor(
     @inject('IWooCommerceConfigRepository') private readonly configRepo: IWooCommerceConfigRepository,
-    @inject('IWooCommerceService') private readonly wcService: IWooCommerceService
+    @inject('IWooCommerceService') private readonly wcService: IWooCommerceService,
+    @inject('IMassiBotService') private readonly massiBot: IMassiBotService
   ) {}
 
-  async execute(input: { actor: TenantContext; tenantId?: string }) {
+  async execute(input: {
+    actor: TenantContext;
+    tenantId?: string;
+    botApiUser?: string;
+    botApiPassword?: string;
+  }) {
     const tenantId = resolveTenantId(input.actor, input.tenantId);
     const config = await this.configRepo.findByTenantId(tenantId);
     if (!config) throw new ForbiddenError('WooCommerce no configurado');
 
     await this.wcService.testConnection(config);
 
+    const botConfig: WooCommerceConfigData = {
+      ...config,
+      botApiUser: input.botApiUser?.trim() || config.botApiUser,
+      botApiPassword: input.botApiPassword?.trim() || config.botApiPassword,
+    };
+
+    let botApiConnected = false;
+    let botApiStatus: 'connected' | 'missing_credentials' | 'auth_failed' = 'missing_credentials';
+
+    if (this.massiBot.isConfigured(botConfig)) {
+      try {
+        await this.massiBot.ping(botConfig);
+        botApiConnected = true;
+        botApiStatus = 'connected';
+        await this.configRepo.save({
+          ...config,
+          botApiUser: botConfig.botApiUser,
+          botApiPassword: botConfig.botApiPassword,
+          connected: true,
+          botApiConnected: true,
+          lastSyncAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        return { connected: true, botApiConnected: true, botApiStatus };
+      } catch {
+        botApiStatus = 'auth_failed';
+      }
+    }
+
+    const now = new Date().toISOString();
     await this.configRepo.save({
       ...config,
       connected: true,
-      lastSyncAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      botApiConnected,
+      lastSyncAt: now,
+      updatedAt: now,
     });
 
-    return { connected: true };
+    return { connected: true, botApiConnected, botApiStatus };
   }
 }
 

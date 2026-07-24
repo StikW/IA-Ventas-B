@@ -19,6 +19,41 @@ export interface SendTextMessageInput {
   message: string;
 }
 
+export interface BuilderBotButtonOption {
+  /** ID estable para button_reply (WhatsApp Cloud). Si no se envía, se usa body. */
+  id?: string;
+  body: string;
+}
+
+export interface BuilderBotListRow {
+  id: string;
+  title: string;
+  description?: string;
+}
+
+export interface BuilderBotListSection {
+  title: string;
+  rows: BuilderBotListRow[];
+}
+
+export interface SendButtonsMessageInput {
+  deviceId: string;
+  phone: string;
+  body: string;
+  footer?: string;
+  buttons: BuilderBotButtonOption[];
+}
+
+export interface SendListMessageInput {
+  deviceId: string;
+  phone: string;
+  body: string;
+  buttonText: string;
+  sections: BuilderBotListSection[];
+  title?: string;
+  footer?: string;
+}
+
 export interface CreateBuilderBotDeviceInput {
   /** Identificador del deploy en BuilderBot Cloud (POST /manager/deploys). */
   projectId: string;
@@ -53,6 +88,8 @@ export interface IBuilderBotCloudService {
   requestPairingCode(deviceId: string, phone: string): Promise<{ pairingCode?: string }>;
   updateDevice(deviceId: string, payload: Record<string, unknown>): Promise<void>;
   sendTextMessage(input: SendTextMessageInput): Promise<void>;
+  sendButtonsMessage(input: SendButtonsMessageInput): Promise<void>;
+  sendListMessage(input: SendListMessageInput): Promise<void>;
   deleteDevice(deviceId: string): Promise<void>;
   /** Elimina el proyecto completo en BuilderBot Cloud (cloud-v2). No-op en wa-api. */
   deleteProject(projectId: string): Promise<void>;
