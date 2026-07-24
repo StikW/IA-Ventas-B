@@ -9,6 +9,7 @@ import { DomainError } from '../../../../shared/domain/errors/DomainError';
 import {
   extractQuantityFromText,
   extractVariantHint,
+  cartItemMatchesVariantHint,
   isCartSiblingVariantIntent,
   isSameProductReference,
   looksLikeSku,
@@ -594,20 +595,67 @@ export class SalesAgentToolsHandler {
     const cartHasItems = !!context?.cartItems?.length;
     let siblingAttempt: { ok: boolean; message: string; item?: OrderItem } | null = null;
 
-    if (
-      (isSameProductReference(trimmed) || isCartSiblingVariantIntent(trimmed, cartHasItems)) &&
+    const anchor = cartHasItems ? context!.cartItems![context!.cartItems!.length - 1] : undefined;
+    const anchorBase = anchor ? normalizeProductText(anchor.name.split(' - ')[0] || anchor.name) : '';
+    const queryNorm = normalizeProductText(parsed.productQuery);
+    const sameProductFamily =
+      !queryNorm ||
+      tokenizeProductQuery(parsed.productQuery).every((token) => anchorBase.includes(token)) ||
+      anchorBase.split(' ').filter((t) => t.length >= 4).every((t) => queryNorm.includes(t));
+
+    const useSiblingPath =
       cartHasItems &&
-      variantHint
-    ) {
-      const anchor = context!.cartItems![context!.cartItems!.length - 1];
-      siblingAttempt = await this.resolveSiblingVariation(tenantId, anchor, variantHint, qty);
-      if (siblingAttempt.ok) return siblingAttempt;
+      anchor &&
+      (isSameProductReference(trimmed) ||
+        (isCartSiblingVariantIntent(trimmed, cartHasItems) && sameProductFamily));
+
+    if (useSiblingPath) {
+      if (variantHint && cartItemMatchesVariantHint(anchor, variantHint)) {
+        return await this.buildOrderItemBySku(tenantId, anchor.sku, qty);
+      }
+
+      if (!variantHint && isSameProductReference(trimmed)) {
+        return await this.buildOrderItemBySku(tenantId, anchor.sku, qty);
+      }
+
+      if (variantHint) {
+        siblingAttempt = await this.resolveSiblingVariation(tenantId, anchor, variantHint, qty);
+        if (siblingAttempt.ok) return siblingAttempt;
+
+        const siblingSearch = await this.resolveFromCatalogSearch(
+          config,
+          tenantId,
+          `${anchor.name.split(' - ')[0]} ${variantHint}`,
+          userText,
+          variantHint,
+          qty
+        );
+        if (siblingSearch.ok) return siblingSearch;
+      }
     }
 
     const searchQuery = this.buildSearchQuery(trimmed, parsed.productQuery, context?.cartItems);
     const products = await this.searchProductsWithFallback(config, searchQuery);
 
     if (!products.length) {
+      const catalogFallback = await this.resolveFromCatalogSearch(
+        config,
+        tenantId,
+        searchQuery,
+        userText,
+        variantHint,
+        qty
+      );
+      if (catalogFallback.ok) return catalogFallback;
+
+      if (siblingAttempt?.ok) return siblingAttempt;
+
+      if (useSiblingPath && anchor) {
+        if (!variantHint || cartItemMatchesVariantHint(anchor, variantHint)) {
+          return await this.buildOrderItemBySku(tenantId, anchor.sku, qty);
+        }
+      }
+
       if (siblingAttempt && !siblingAttempt.ok) {
         return siblingAttempt;
       }
@@ -706,7 +754,7 @@ export class SalesAgentToolsHandler {
       }
 
       if (matched.sku === anchor.sku) {
-        return { ok: false, message: 'Esa variación ya está en tu pedido.' };
+        return await this.buildOrderItemBySku(tenantId, matched.sku, quantity);
       }
 
       return await this.buildOrderItemBySku(tenantId, matched.sku, quantity);
@@ -737,8 +785,20 @@ export class SalesAgentToolsHandler {
       .replace(/^(agregar|a[nñ]adir)\s+/i, '')
       .replace(/\s+de\s*$/i, '')
       .trim();
-    if (cleaned.length >= 3 && !SELECTION_NOISE_WORDS.test(cleaned)) {
-      return cleaned;
+
+    const tokens = tokenizeProductQuery(cleaned);
+    if (tokens.length >= 2) {
+      return tokens.join(' ');
+    }
+    if (tokens.length === 1 && tokens[0].length >= 3) {
+      return tokens[0];
+    }
+
+    const fallbackTokens = tokenizeProductQuery(
+      userText.replace(/^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|tambi[eé]n|agregar|a[nñ]adir)\s+/gi, '')
+    );
+    if (fallbackTokens.length >= 2) {
+      return fallbackTokens.slice(0, 5).join(' ');
     }
 
     if (cartItems?.length) {
@@ -748,6 +808,87 @@ export class SalesAgentToolsHandler {
     }
 
     return userText;
+  }
+
+  private async resolveFromCatalogSearch(
+    config: WooCommerceConfigData,
+    tenantId: string,
+    searchQuery: string,
+    userText: string,
+    variantHint: string | undefined,
+    qty: number
+  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+    const query = searchQuery.trim();
+    if (!query) {
+      return { ok: false, message: 'Consulta de producto vacía.' };
+    }
+
+    const products = await this.searchProductsWithFallback(config, query);
+    if (!products.length) {
+      return { ok: false, message: `No encontré productos en la tienda para "${userText}".` };
+    }
+
+    let bestVariation: MassiBotVariation | null = null;
+    let bestParentId = 0;
+    let bestScore = 0;
+
+    for (const product of products.slice(0, 5)) {
+      if (product.type === 'variable' && this.massiBot.isConfigured(config)) {
+        try {
+          const variations = await this.massiBot.getProductVariations(config, product.id);
+          for (const variation of variations) {
+            const score = this.scoreVariationMatch(variation, product.name, userText, variantHint);
+            if (score > bestScore) {
+              bestScore = score;
+              bestVariation = variation;
+              bestParentId = product.id;
+            }
+          }
+        } catch {
+          continue;
+        }
+      } else if (product.sku) {
+        const score = this.scoreSimpleProductMatch(product.name, userText);
+        if (score > bestScore) {
+          bestScore = score;
+          bestVariation = {
+            id: product.id,
+            parentId: product.id,
+            name: product.name,
+            sku: product.sku,
+            price: product.price,
+            stockStatus: product.stockStatus,
+            stockQuantity: product.stockQuantity,
+            attributes: [],
+          };
+          bestParentId = product.id;
+        }
+      }
+    }
+
+    const minScore = variantHint ? 6 : 8;
+    if (!bestVariation || bestScore < minScore) {
+      return {
+        ok: false,
+        message: variantHint
+          ? `No encontré una variación que coincida con "${variantHint}".`
+          : `No pude identificar el producto exacto en "${userText}". Indica SKU si lo tienes.`,
+      };
+    }
+
+    if (!bestVariation.sku?.trim()) {
+      return { ok: false, message: `Encontré "${bestVariation.name}" pero no tiene SKU en WooCommerce.` };
+    }
+
+    const itemResult = await this.buildOrderItemBySku(tenantId, bestVariation.sku, qty);
+    if (!itemResult.ok || !itemResult.item) return itemResult;
+
+    if (bestVariation.id !== bestParentId && !itemResult.item.variationId) {
+      itemResult.item.variationId = bestVariation.id;
+      itemResult.item.productId = bestParentId;
+    }
+
+    return itemResult;
   }
 
   private scoreVariationMatch(

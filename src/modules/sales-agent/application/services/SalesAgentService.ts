@@ -18,6 +18,7 @@ import { ConversationFlowService, OutboundWhatsAppMessage } from './Conversation
 import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent } from '../../domain/whatsappFlow.constants';
+import { hasConcreteProductSpec } from '../../domain/productSelection.utils';
 
 const AGENT_ACTOR = 'system:sales-agent';
 
@@ -354,7 +355,11 @@ export class SalesAgentService {
       }
     }
 
-    if (isProductSelectionIntent(text) && salesContext.phase !== 'awaiting_payment') {
+    const shouldResolveProduct =
+      salesContext.phase !== 'awaiting_payment' &&
+      (isProductSelectionIntent(text) || hasConcreteProductSpec(text));
+
+    if (shouldResolveProduct) {
       const selection = await this.tools.resolveSelectionsFromText(input.tenantId, text, 1, {
         cartItems: mutableContext.cartItems,
       });
@@ -383,16 +388,12 @@ export class SalesAgentService {
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
 
-      if (mutableContext.cartItems?.length && mutableContext.flowStep === 'buying') {
+      if (mutableContext.cartItems?.length) {
         const now = new Date().toISOString();
-        const reply = [
-          selection.message,
-          '',
-          'Tu pedido actual:',
-          this.conversationFlow.formatCartSummary(mutableContext.cartItems),
-          '',
-          '¿Deseas agregar algo más, probar con otra variante, o finalizar la compra?',
-        ].join('\n');
+        const cartPrompt = this.conversationFlow.buildCartActionPrompt(
+          mutableContext,
+          selection.message
+        );
         const bbcResponse = await this.persistAndReply({
           tenantId: input.tenantId,
           deviceId: input.deviceId,
@@ -400,12 +401,13 @@ export class SalesAgentService {
           messageId: input.messageId,
           history,
           userText: text,
-          reply,
-          salesContext: mutableContext,
+          reply: cartPrompt.replyText,
+          salesContext: { ...mutableContext, ...cartPrompt.salesContext },
+          outbound: cartPrompt.outbound,
           now,
           ragHits: 0,
         });
-        return { replied: true, reply, bbcResponse };
+        return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
     }
 

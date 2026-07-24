@@ -42,7 +42,7 @@ export function isCartFinalizeIntent(text: string): boolean {
     /^(eso\s+(?:es|ser[ií]a)\s+todo|es\s+todo|nada\s+m[aá]s|no\s+m[aá]s|listo|ya\s+est[aá]|finalizar(\s+(?:con\s+)?(?:la\s+)?compra)?|confirmar(\s+pedido)?)$/.test(
       t
     ) ||
-    /continuar\s+con\s+la\s+compra|proceder\s+con\s+la\s+compra|finalizar\s+(?:con\s+)?(?:la\s+)?compra|cerrar\s+(?:el\s+)?pedido|quiero\s+(seguir|comprar|pagar|finalizar)|seguir\s+con\s+la\s+compra|listo\s+para\s+pagar|ya\s+no\s+quiero\s+m[aá]s/.test(
+    /continuar\s+con\s+la\s+compra|proceder\s+con\s+la\s+compra|finalizar\s+(?:con\s+)?(?:la\s+)?compra|finalicemos?\s+(?:con\s+)?(?:la\s+)?compra|cerrar\s+(?:el\s+)?pedido|quiero\s+(seguir|comprar|pagar|finalizar)|seguir\s+con\s+la\s+compra|listo\s+para\s+pagar|ya\s+no\s+quiero\s+m[aá]s/.test(
       t
     )
   );

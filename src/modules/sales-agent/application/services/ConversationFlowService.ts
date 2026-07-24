@@ -144,7 +144,7 @@ export class ConversationFlowService {
 
     const cartNote =
       previousContext?.cartItems?.length ?
-        `\n\n🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido. Pulsa *Finalizar pedido* cuando quieras completar la compra.`
+        `\n\n🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido.\nPara completar escribe *es todo* o *finalizar pedido*.\nPara agregar más, cuéntame el producto (nombre, medida o SKU).`
       : null;
 
     const body = [

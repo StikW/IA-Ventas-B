@@ -152,6 +152,26 @@ export function looksLikeSku(text: string): boolean {
   return SKU_LIKE_PATTERN.test(trimmed) && !/\s/.test(trimmed);
 }
 
+/** Compara medidas/variantes tolerando "45 cm" vs "45cm". */
+export function variantHintsMatch(a: string, b: string): boolean {
+  const compact = (value: string) =>
+    value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .replace(/\s+/g, '')
+      .replace(/[^\da-z#]/gi, '');
+  const left = compact(a);
+  const right = compact(b);
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+export function cartItemMatchesVariantHint(item: { name: string; sku: string }, hint: string): boolean {
+  const blob = normalizeProductText(`${item.name} ${item.sku}`);
+  return variantHintsMatch(blob, hint);
+}
+
 export function tokenizeProductQuery(text: string): string[] {
   return normalizeProductText(text)
     .split(/\s+/)
