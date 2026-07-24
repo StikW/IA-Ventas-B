@@ -190,7 +190,15 @@ export class ConversationFlowService {
   buildCartActionPrompt(salesContext: SalesContext, introLine: string): ConversationFlowResult {
     const items = salesContext.cartItems ?? [];
     const summary = items.length ? CartService.formatSummary(items) : '';
-    const body = [introLine, '', summary, '', '¿Qué deseas hacer?'].filter(Boolean).join('\n');
+    const body = [
+      introLine,
+      '',
+      summary,
+      '',
+      '¿Quieres *finalizar con la compra* o *agregar más productos* al carrito?',
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     return {
       replyText: body,
