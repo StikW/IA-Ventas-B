@@ -15,6 +15,9 @@ import {
   looksLikeSku,
   normalizeProductText,
   parseMultiVariantSelection,
+  parseMultiProductSelection,
+  normalizeUserTypos,
+  isCatalogBrowseIntent,
   parseProductSelectionQuery,
   SELECTION_NOISE_WORDS,
   tokenizeProductQuery,
@@ -73,6 +76,53 @@ export class SalesAgentToolsHandler {
     return [format(primary.results, 'Resultados principales'), format(related, 'Productos o temas relacionados')].join(
       '\n\n'
     );
+  }
+
+  /** Catálogo legible para WhatsApp — solo productos publicados en WooCommerce. */
+  async formatStoreCatalogForWhatsApp(tenantId: string): Promise<string> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) {
+      return 'No pude consultar la tienda en este momento. Intenta de nuevo en unos segundos.';
+    }
+
+    try {
+      const products = await this.wcService.listProducts(config, 1);
+      if (!products.length) {
+        return 'No hay productos publicados en la tienda online en este momento.';
+      }
+
+      const lines: string[] = ['Estos son los productos disponibles en nuestra tienda online:\n'];
+      let index = 1;
+
+      for (const product of products.slice(0, 8)) {
+        if (product.type === 'variable' && this.massiBot.isConfigured(config)) {
+          try {
+            const variations = await this.massiBot.getProductVariations(config, product.id);
+            lines.push(`${index}. *${product.name}*`);
+            for (const variation of variations.slice(0, 12)) {
+              const label = variation.name.replace(product.name, '').trim() || variation.name;
+              const price = Number.parseFloat(variation.price);
+              const priceLabel = Number.isFinite(price) ? `$${price.toLocaleString('es-CO')}` : variation.price;
+              lines.push(`   - ${label || variation.name}: ${priceLabel}`);
+            }
+          } catch {
+            lines.push(`${index}. *${product.name}* (consulta variaciones en tienda)`);
+          }
+        } else {
+          const price = Number.parseFloat(product.price);
+          const priceLabel = Number.isFinite(price) ? `$${price.toLocaleString('es-CO')}` : product.price;
+          lines.push(`${index}. *${product.name}* — ${priceLabel}`);
+        }
+        index += 1;
+      }
+
+      lines.push(
+        '\nSi te interesa alguno, indícame cuál y la variante (medida, talla, etc.) y lo agrego a tu pedido.'
+      );
+      return lines.join('\n');
+    } catch (err) {
+      return this.formatStoreError(err);
+    }
   }
 
   async searchStoreProducts(tenantId: string, query: string): Promise<string> {
@@ -667,10 +717,43 @@ export class SalesAgentToolsHandler {
     context?: { cartItems?: PendingCartItem[] }
   ): Promise<{ ok: boolean; message: string; items?: OrderItem[] }> {
     try {
-      const trimmed = userText.trim();
+      const trimmed = normalizeUserTypos(userText.trim());
 
       if (isCartCorrectionIntent(trimmed) || isCartRemoveIntent(trimmed) || isCartClearIntent(trimmed) || isCartSetQuantityIntent(trimmed)) {
         return { ok: false, message: 'Operación de carrito no aplicable aquí.' };
+      }
+
+      const multiProducts = parseMultiProductSelection(trimmed);
+      if (multiProducts && multiProducts.length >= 2) {
+        const items: OrderItem[] = [];
+        const errors: string[] = [];
+
+        for (const segment of multiProducts) {
+          const result = await this.resolveSelectionFromTextInner(tenantId, segment, quantity, {
+            cartItems: [...(context?.cartItems ?? []), ...items],
+          });
+          if (result.ok && result.item) {
+            const duplicate = items.some((row) => row.sku === result.item!.sku);
+            if (!duplicate) items.push(result.item);
+          } else {
+            errors.push(result.message);
+          }
+        }
+
+        if (!items.length) {
+          return {
+            ok: false,
+            message:
+              errors[0] ??
+              'No pude identificar los productos en la tienda. Solo agrego productos publicados en WooCommerce.',
+          };
+        }
+
+        const note =
+          errors.length ?
+            ` ${errors.join(' ')}`
+          : '';
+        return { ok: true, message: note.trim(), items };
       }
 
       const multi = parseMultiVariantSelection(trimmed);
@@ -801,7 +884,7 @@ export class SalesAgentToolsHandler {
       }
       return {
         ok: false,
-        message: `No encontré productos en la tienda para "${userText}".`,
+        message: `No encontré "${userText}" en la tienda WooCommerce. Solo puedo agregar productos publicados en la tienda online.`,
       };
     }
 
@@ -991,7 +1074,10 @@ export class SalesAgentToolsHandler {
 
     const products = await this.searchProductsWithFallback(config, query);
     if (!products.length) {
-      return { ok: false, message: `No encontré productos en la tienda para "${userText}".` };
+      return {
+        ok: false,
+        message: `No encontré "${userText}" en la tienda WooCommerce. Solo puedo agregar productos publicados en la tienda online.`,
+      };
     }
 
     let bestVariation: MassiBotVariation | null = null;
@@ -1244,7 +1330,7 @@ export class SalesAgentToolsHandler {
 
     const withoutIntent = q
       .replace(
-        /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|agregar|a[nñ]adir|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+)/gi,
+        /^(me gustar[ií]a|quisiera|quiero|busco|necesito|dame|comprar|llevar|tomar|pedir|solicito|agregar|a[nñ]adir|agreagar|una?\s+|un\s+|la\s+|el\s+|los\s+|las\s+)/gi,
         ''
       )
       .replace(/\s+de\s*$/i, '')

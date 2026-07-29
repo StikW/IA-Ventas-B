@@ -2,7 +2,7 @@
 
 > **Propósito:** Documentar la lógica de negocio real (joyería + WooCommerce + WhatsApp), qué hace cada sistema y qué falta implementar en **IA Ventas**.  
 > **Complementa:** [`whatsapp-massi.md`](./whatsapp-massi.md) (integración técnica WhatsApp/BBC).  
-> **Última actualización:** 24 julio 2026.
+> **Última actualización:** 29 julio 2026 (catálogo WC, multi-producto, prod massijoyeria.com).
 
 ---
 
@@ -62,10 +62,11 @@ flowchart LR
 
 | Paso | Responsable | Estado en IA Ventas |
 |------|-------------|---------------------|
-| Saludo, preguntas, catálogo | Agente LLM + `buscar_productos_tienda` | ✅ Implementado |
-| Identificación por **SKU** (simple o variación) | Atajos deterministas + herramientas | ✅ Implementado |
+| Saludo, preguntas, catálogo | Agente: catálogo **determinista WC** + LLM con `buscar_productos_tienda` | ✅ Implementado |
+| Identificación por **SKU** (simple o variación) | Atajos deterministas + herramientas; multi-producto en un mensaje | ✅ Implementado |
 | Carrito en sesión (`flowStep: buying`) | `SalesAgentService` / DynamoDB | ✅ Implementado |
-| Cliente confirma (“eso es todo”) | `finalizar_compra` → **enlace formulario WC** (modo `link`, default) | ✅ Implementado |
+| Modificar carrito (quitar/corregir/vaciar/ajustar qty) | Atajos deterministas genéricos por SKU/nombre/variante | ✅ Implementado |
+| Cliente confirma (“finalizar con la compra”, “eso es todo”) | `finalizeCart` → **enlace formulario WC** (modo `link`, default) | ✅ Implementado |
 | Cliente confirma (modo legacy) | Botones pago WhatsApp → `POST /orders` | ✅ `checkoutMode: whatsapp` |
 
 ### 2.3 Datos del pedido y modalidad (formulario WooCommerce)
@@ -86,10 +87,10 @@ Cuando el cliente **ya sabe qué comprar**, el negocio necesita capturar según 
 | Link formulario WC | Una sola fuente de verdad; recoger/domicilio/pago en WC | ✅ Modo `link` (default) |
 | Captura por chat + API MASSI | Experiencia 100% WhatsApp | ❌ Roadmap |
 
-**Tras “eso es todo” (modo link):**
+**Tras “finalizar con la compra” (modo link):**
 
 1. Valida stock del carrito WhatsApp.
-2. Genera URL: `{checkoutFormUrl \|\| storeUrl/checkout/}?phone=…&source=whatsapp&items=SKU:qty,…`
+2. Genera URL: `{checkoutFormUrl || checkoutPagePath || storeUrl/checkout/}?phone=…&source=whatsapp&public_store=…&items=SKU:qty,…`
 3. Envía mensaje con el enlace; sesión → `flowStep: checkout_redirect`.
 4. Cliente completa en WC: recoger, domicilio, transferencia, efectivo.
 5. Staff valida pago en WC → ticket prioritario → email (WhatsApp proactivo: roadmap).
@@ -99,9 +100,10 @@ Cuando el cliente **ya sabe qué comprar**, el negocio necesita capturar según 
 | Campo | Uso |
 |-------|-----|
 | `checkoutFormUrl` | URL absoluta del formulario MASSI/WC (opcional) |
+| `checkoutPagePath` | Auto-detectada al probar WC (ej. `/finalizar-compra/`) |
 | `checkoutMode` | `link` (default) \| `whatsapp` (botones legacy en chat) |
 
-**Plugin WP:** debe leer query params `phone`, `source`, `items` para pre-cargar carrito (pendiente en plugin si aún no existe).
+**Plugin WP:** ✅ lee `phone`, `source`, `items`, `public_store` para pre-cargar carrito (`class-massi-bot-checkout-link.php`).
 
 **Setup WC:** [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) · **BuilderBot (modo link):** misma guía §11 — sin cambios obligatorios en BBC.
 
@@ -203,24 +205,29 @@ Reglas de negocio descritas por el equipo:
 
 ### ✅ Implementado en IA Ventas (jul 2026)
 
-- Agente ventas WhatsApp (texto libre + carrito SKU).
+- Agente ventas WhatsApp (texto libre + carrito SKU multi-producto).
+- **Catálogo WhatsApp solo desde WooCommerce** (no inventa productos).
+- **Multi-producto:** `cadena 45cm y balín #3` en un mensaje.
 - Catálogo/stock vía WC REST + variaciones/SKU vía MASSI.
-- Finalizar compra → botones Transferencia / Efectivo (BBC).
+- **Modificar carrito:** quitar, corregir, vaciar, ajustar cantidad (genérico, cualquier catálogo).
+- **Finalizar compra (modo link):** URL formulario WC con `items=SKU:qty` + plugin pre-carga carrito.
+- Finalizar compra (modo legacy) → botones Transferencia / Efectivo (BBC).
 - Creación pedido MASSI (`mdp_788` / `mdp_789`), `delivery_type: pickup` fijo.
 - Comprobante imagen → `payment-report`.
 - Consulta pedidos recientes por teléfono.
 - Saludo configurable por perfil negocio.
+- Tras agregar al carrito: *¿finalizar con la compra o agregar más productos?*
 
 ### ⚠️ Parcial / en prueba
 
-- E2E completo con tienda local + ngrok + EC2.
+- E2E completo checkout link con tienda local + ngrok + EC2 (verificado en dev local).
 - Sincronización estados MASSI ↔ mensajes al cliente (solo textos estáticos post-comprobante).
 
 ### ❌ Roadmap (prioridad sugerida para el negocio)
 
 | # | Feature | Notas |
 |---|---------|-------|
-| 1 | **Plugin WP: leer `phone` + `items` en URL checkout** | Pre-cargar carrito desde WhatsApp |
+| 1 | ~~Plugin WP: leer `phone` + `items` en URL checkout~~ | ✅ Implementado (`class-massi-bot-checkout-link.php`) |
 | 2 | **Captura conversacional (modo chat)** | Alternativa a link; reutilizar `createMassiOrder` + delivery |
 | 3 | **Perfil cliente por teléfono** | `GET /clients?phone=` al iniciar compra |
 | 4 | **Webhook estado operacional → WhatsApp** | `_massi_operational_status` |
@@ -249,6 +256,9 @@ Reglas de negocio descritas por el equipo:
 | Tema | Archivo |
 |------|---------|
 | Agente + carrito | `sales-agent/application/services/SalesAgentService.ts` |
+| Carrito (merge, quitar, qty) | `sales-agent/application/services/CartService.ts` |
+| Modificación carrito | `sales-agent/domain/cartModification.utils.ts` |
+| Link checkout | `sales-agent/domain/checkoutLink.utils.ts` |
 | Pago + tickets | `sales-agent/application/services/ConversationFlowService.ts` |
 | Pedidos/comprobantes MASSI | `sales-agent/application/services/SalesAgentToolsHandler.ts` |
 | Cliente REST MASSI | `massi-bot/infrastructure/MassiBotRestAdapter.ts` |
@@ -264,9 +274,9 @@ Reglas de negocio descritas por el equipo:
 
 1. Escanea QR → catálogo web.
 2. Abre WhatsApp → “quiero cadena lazo 60 cm”.
-3. Agente agrega al carrito → “¿algo más?” → “eso es todo”.
-4. Elige **Transferencia** → recibe datos Bre-B.
-5. Envía comprobante por chat.
+3. Agente agrega al carrito → *¿finalizar o agregar más?* → “finalizar con la compra”.
+4. Recibe **link al formulario WC** con productos pre-cargados.
+5. Completa recoger en tienda + transferencia en la web.
 6. Staff valida en WooCommerce → ticket prioritario.
 7. Cliente recibe **email** (hoy) o **WhatsApp** (roadmap): listo para recoger.
 8. Pasa por la joyería con ticket.

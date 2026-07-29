@@ -59,7 +59,7 @@ export class UpdateWooCommerceConfigUseCase
     const consumerKey = input.consumerKey.trim() || existing?.consumerKey || '';
     const consumerSecret = input.consumerSecret.trim() || existing?.consumerSecret || '';
     const botApiUser = input.botApiUser?.trim() || existing?.botApiUser || '';
-    const botApiPassword = input.botApiPassword?.trim() || existing?.botApiPassword || '';
+    const botApiPassword = (input.botApiPassword?.replace(/\s+/g, '') || existing?.botApiPassword || '').trim();
 
     const config: WooCommerceConfigData = {
       tenantId,
@@ -118,7 +118,7 @@ export class TestWooCommerceConnectionUseCase
   implements
     UseCase<
       { actor: TenantContext; tenantId?: string; botApiUser?: string; botApiPassword?: string },
-      { connected: boolean; botApiConnected: boolean; botApiStatus: string }
+      { connected: boolean; botApiConnected: boolean; botApiStatus: string; botApiDetail?: string }
     >
 {
   constructor(
@@ -142,11 +142,12 @@ export class TestWooCommerceConnectionUseCase
     const botConfig: WooCommerceConfigData = {
       ...config,
       botApiUser: input.botApiUser?.trim() || config.botApiUser,
-      botApiPassword: input.botApiPassword?.trim() || config.botApiPassword,
+      botApiPassword: input.botApiPassword?.replace(/\s+/g, '') || config.botApiPassword,
     };
 
     let botApiConnected = false;
-    let botApiStatus: 'connected' | 'missing_credentials' | 'auth_failed' = 'missing_credentials';
+    let botApiStatus: 'connected' | 'missing_credentials' | 'auth_failed' | 'forbidden' = 'missing_credentials';
+    let botApiDetail: string | undefined;
 
     if (this.massiBot.isConfigured(botConfig)) {
       try {
@@ -164,8 +165,9 @@ export class TestWooCommerceConnectionUseCase
           updatedAt: new Date().toISOString(),
         });
         return { connected: true, botApiConnected: true, botApiStatus };
-      } catch {
-        botApiStatus = 'auth_failed';
+      } catch (err) {
+        botApiDetail = err instanceof Error ? err.message : String(err);
+        botApiStatus = botApiDetail.includes('rest_forbidden') ? 'forbidden' : 'auth_failed';
       }
     }
 
@@ -179,7 +181,7 @@ export class TestWooCommerceConnectionUseCase
       updatedAt: now,
     });
 
-    return { connected: true, botApiConnected, botApiStatus };
+    return { connected: true, botApiConnected, botApiStatus, botApiDetail };
   }
 }
 

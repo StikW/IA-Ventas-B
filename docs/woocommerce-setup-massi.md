@@ -80,7 +80,8 @@ flowchart LR
 3. Nombre: ej. `IA Ventas`
 4. **Crear** → copiar la contraseña de **24 caracteres** (solo se muestra una vez)
 
-> **Importante:** en el panel IA Ventas va la **Application Password**, **no** la contraseña de login de WordPress.
+> **Importante:** en el panel IA Ventas va la **Application Password**, **no** la contraseña de login de WordPress.  
+> El backend **elimina espacios** al guardar/probar (WordPress muestra la clave con espacios cada 4 chars).
 
 ### 4.3 Auth que usa el backend
 
@@ -114,9 +115,9 @@ En local, las claves se envían por **query string** (`consumer_key` / `consumer
 | **Consumer Key** | `ck_…` | REST WC |
 | **Consumer Secret** | `cs_…` | REST WC |
 | **Usuario WP (Bot)** | `iaventas-bot` | Login WP, no email |
-| **Application Password** | 24 chars | No la contraseña de login |
+| **Application Password** | 24 chars | No la contraseña de login; espacios opcionales al pegar |
 
-Pulsar **Guardar** y luego **Probar conexión**. Resultado esperado:
+Pulsar **Guardar** y luego **Probar conexión** (las credenciales deben estar persistidas en DynamoDB antes de probar). Resultado esperado:
 
 - `WooCommerce: conectado`
 - `MASSI Bot API: conectado`
@@ -125,7 +126,7 @@ Pulsar **Guardar** y luego **Probar conexión**. Resultado esperado:
 
 | Mensaje | Causa |
 |---------|--------|
-| WC OK, MASSI auth failed | Usuario o Application Password incorrectos |
+| WC OK, MASSI auth failed | Usuario o Application Password incorrectos; en hosting compartido ver §13 (header `Authorization`) |
 | WC OK, faltan credenciales bot | No guardaste usuario + App Password |
 | 502 / timeout | Tienda caída, ngrok expirado, URL incorrecta |
 | Productos sin variaciones | MASSI Bot API no configurada (solo afecta variaciones) |
@@ -136,7 +137,7 @@ Pulsar **Guardar** y luego **Probar conexión**. Resultado esperado:
 
 | Campo | Uso |
 |-------|-----|
-| **URL formulario de compra** (`checkoutFormUrl`) | Opcional. Si vacío → `{storeUrl}/checkout/` |
+| **URL formulario de compra** (`checkoutFormUrl`) | Opcional. Si vacío → `{storeUrl}{checkoutPagePath}` (auto-detect, ej. `/finalizar-compra/`) |
 | **Modo cierre de compra** (`checkoutMode`) | `link` (default): enlace al formulario WC · `whatsapp`: botones pago en chat (legacy) |
 | **Datos bancarios** | Solo relevante en modo `whatsapp` o mensajes informativos |
 
@@ -165,6 +166,8 @@ ngrok http 10004 --host-header=massijoyeria.local
 
 Sin SKU el agente no puede resolver stock ni armar el link de checkout con `items=SKU:qty`.
 
+> **Solo se venden productos publicados en WC.** Si el cliente pide algo que no está en la tienda (ej. anillos no publicados), el agente avisa y no lo inventa.
+
 ---
 
 ## 10. Checklist de verificación
@@ -172,12 +175,12 @@ Sin SKU el agente no puede resolver stock ni armar el link de checkout con `item
 - [ ] WooCommerce activo
 - [ ] Plugin `massi-bot-api` activo (rol `massi_bot_service` creado)
 - [ ] Usuario bot creado (`iaventas-bot` o similar)
-- [ ] Application Password generada y guardada en panel
+- [ ] Application Password generada y guardada en panel (**Guardar** antes de **Probar conexión**)
 - [ ] REST API keys `ck_` / `cs_` creadas y guardadas
 - [ ] URL tienda accesible desde el servidor IA Ventas
 - [ ] **Probar conexión** → WC + MASSI OK
 - [ ] Productos/variaciones con SKU en la tienda
-- [ ] (Opcional) `checkoutFormUrl` si el formulario MASSI no es `/checkout/`
+- [ ] (Opcional) `checkoutFormUrl` si el formulario MASSI no es `/finalizar-compra/` ni `/checkout/`
 
 ---
 
@@ -234,7 +237,7 @@ Pasos: panel [app.builderbot.cloud](https://app.builderbot.cloud) → flow **IA 
 1. `git pull` + `npm run build` + `pm2 restart` en EC2
 2. Panel → WhatsApp → **Re-sincronizar webhook** (idempotente)
 3. Verificar en BBC que el relay apunta a `{APP_PUBLIC_URL}/api/v1/webhooks/builderbot/{tenantId}`
-4. Probar: hola → texto agente → carrito → “eso es todo” → **mensaje con link** (no botones)
+4. Probar: hola → **qué productos tienen** (solo WC) → carrito → **dos productos en un mensaje** → quitar/corregir → “finalizar con la compra” → **link con items=SKU:qty**
 
 ### 11.6 Roadmap BuilderBot (no implementado)
 
@@ -253,17 +256,66 @@ Pasos: panel [app.builderbot.cloud](https://app.builderbot.cloud) → flow **IA 
 Al abrir:
 
 ```
-https://{tienda}/checkout/?phone=573103534207&source=whatsapp&items=SKU-A:1,SKU-B:2
+https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-B:2
 ```
 
-El plugin:
+El plugin (`class-massi-bot-checkout-link.php`):
 
 1. Vacía el carrito WC y agrega productos/variaciones por **SKU**
 2. Guarda el teléfono en sesión → pre-rellena `billing_phone` en checkout (formulario woo-massi)
 3. No duplica carga si se recarga la misma URL (firma en sesión)
+4. Evita redirect a carrito vacío; soporta `public_store` para ngrok (`class-massi-bot-ngrok-url.php`)
 
-**Requisito:** SKUs deben existir en WooCommerce y productos deben ser comprables.
+**Requisito:** SKUs en variaciones; ruta `/finalizar-compra/` (MASSI) o configurar `checkoutFormUrl`.
 
 ---
 
-*Última actualización: 24 julio 2026 — setup WC + impacto BuilderBot modo link.*
+## 13. Instalar plugin en producción (zip)
+
+IA Ventas **no** instala el plugin en WordPress; se sube manualmente.
+
+| Artefacto | Ubicación |
+|-----------|-----------|
+| Zip listo para WP | `dist/massi-bot-api-ia-ventas.zip` |
+| Script empaquetado | `dist/build-plugin-zip.ps1` (rutas `/`, compatible Linux) |
+| Instrucciones | `dist/INSTALAR-PLUGIN-WORDPRESS.txt` |
+
+Pasos:
+
+1. WordPress Admin → **Plugins → Añadir nuevo → Subir plugin** → elegir el zip
+2. **Activar** MASSI Bot API
+3. Crear usuario bot + Application Password (§4)
+4. Panel IA Ventas → credenciales → **Guardar** → **Probar conexión**
+
+### Fix Authorization en hosting
+
+Algunos hostings (SiteGround, etc.) **no reenvían** el header `Authorization` a PHP. El plugin incluye `class-massi-bot-auth.php` → `fix_authorization_header()` que reconstruye `HTTP_AUTHORIZATION` desde `REDIRECT_HTTP_AUTHORIZATION` o `PHP_AUTH_USER`/`PHP_AUTH_PW`.
+
+Si MASSI falla con credenciales correctas:
+
+1. Verificar que el zip incluye `includes/class-massi-bot-auth.php`
+2. Probar `GET /wp-json/massi-bot/v1/ping` (público) y luego `/clients?phone=…` con Basic auth
+
+---
+
+## 14. Handoff producción (MASSI Joyería)
+
+Referencia verificada jul 2026:
+
+| Item | Valor |
+|------|--------|
+| Plataforma IA Ventas | `https://ventas.nedi.info` |
+| Tienda WC | `https://massijoyeria.com` |
+| Checkout link | `/finalizar-compra/?phone=…&items=SKU:qty` |
+| Plugin | `massi-bot-api` manual en WP (zip §13) |
+| Panel | `/business/woocommerce` — WC + MASSI Bot API conectados |
+
+Deploy backend tras cambios de agente:
+
+```bash
+cd ~/IA-Ventas-B && git pull && cd backend && npm run build && pm2 restart all
+```
+
+---
+
+*Última actualización: 29 julio 2026 — catálogo solo WC, multi-producto, plugin zip + auth header, handoff prod massijoyeria.com.*

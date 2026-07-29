@@ -19,7 +19,7 @@ import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent } from '../../domain/whatsappFlow.constants';
 import { isCartClearIntent, isCartCorrectionIntent, isCartRemoveIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
-import { hasConcreteProductSpec } from '../../domain/productSelection.utils';
+import { hasConcreteProductSpec, isCatalogBrowseIntent, normalizeUserTypos } from '../../domain/productSelection.utils';
 
 const AGENT_ACTOR = 'system:sales-agent';
 
@@ -198,7 +198,7 @@ export class SalesAgentService {
     if (!hasOpenAI) return { replied: false, reason: 'OPENAI_NOT_CONFIGURED' };
     if (!hasBuilderBot) return { replied: false, reason: 'BUILDERBOT_NOT_CONFIGURED' };
 
-    const text = input.text.trim();
+    const text = normalizeUserTypos(input.text.trim());
     if (!text) return { replied: false, reason: 'EMPTY_MESSAGE' };
 
     const business = await this.businessRepo.findById(input.tenantId);
@@ -385,6 +385,25 @@ export class SalesAgentService {
       }
     }
 
+    if (isCatalogBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
+      const catalogReply = await this.tools.formatStoreCatalogForWhatsApp(input.tenantId);
+      const now = new Date().toISOString();
+      mutableContext = { ...mutableContext, phase: 'browsing', flowStep: 'discovery' };
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: catalogReply,
+        salesContext: mutableContext,
+        now,
+        ragHits: 0,
+      });
+      return { replied: true, reply: catalogReply, bbcResponse };
+    }
+
     const shouldResolveProduct =
       salesContext.phase !== 'awaiting_payment' &&
       (isProductSelectionIntent(text) || hasConcreteProductSpec(text));
@@ -393,13 +412,16 @@ export class SalesAgentService {
       const selection = await this.tools.resolveSelectionsFromText(input.tenantId, text, 1, {
         cartItems: mutableContext.cartItems,
       });
-      if (selection.ok && selection.items?.length) {
+      if (selection.items?.length) {
         this.addItemsToCart(input, mutableContext, selection.items);
         const addedNames = selection.items.map((item) => `*${item.name}*`).join(', ');
-        const introLine =
+        let introLine =
           selection.items.length === 1 ?
             `¡Listo! Agregué ${addedNames} a tu pedido.`
           : `¡Listo! Agregué ${selection.items.length} productos a tu pedido: ${addedNames}.`;
+        if (selection.message) {
+          introLine = `${introLine} ${selection.message}`;
+        }
         const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, introLine);
         const now = new Date().toISOString();
         const bbcResponse = await this.persistAndReply({
@@ -915,7 +937,7 @@ export class SalesAgentService {
       'Responde en español, amable y conciso (máximo 3 párrafos).',
       'FLUJO DE VENTA:',
       '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
-      '2) Catálogo y precios: SIEMPRE buscar_productos_tienda (WooCommerce). Funciona para cualquier producto del catálogo con SKU.',
+      '2) Catálogo y precios: SIEMPRE buscar_productos_tienda (WooCommerce). NUNCA inventes productos: si no está en WooCommerce, no existe para venta.',
       '3) IDENTIFICADOR PRINCIPAL: SKU. Productos simples y variaciones (talla, medida, color, etc.) deben tener SKU en WooCommerce.',
       '4) Tras agregar al carrito, pregunta *¿Deseas agregar algo más o eso sería todo?* Cada producto se agrega individualmente; el total se acumula.',
       '5) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce (recoger, domicilio, pago). NO pidas método de pago en el chat.',

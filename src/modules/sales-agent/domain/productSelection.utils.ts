@@ -37,6 +37,54 @@ export function normalizeProductText(text: string): string {
     .trim();
 }
 
+/** Corrige typos frecuentes en WhatsApp antes de interpretar intents. */
+export function normalizeUserTypos(text: string): string {
+  return text
+    .replace(/\bagreag(?:ar|r)\b/gi, 'agregar')
+    .replace(/\banil[llo]+\b/gi, 'anillo')
+    .replace(/\bcadenas\b/gi, 'cadena');
+}
+
+export const PRODUCT_FAMILY_PATTERN =
+  /\b(cadena|cadenas|anillo|anillos|arete|aretes|collar|collares|pulsera|pulseras|bal[ií]n|balines|dije|dijes|argolla|argollas|aro|aros)\b/i;
+
+/** Varios productos distintos en un mensaje: "cadena 45cm y anillo talla 12". */
+export function parseMultiProductSelection(text: string): string[] | null {
+  const normalized = normalizeUserTypos(text);
+  if (!/\s+y\s+/i.test(normalized)) return null;
+
+  const segments = normalized
+    .split(/\s+y\s+/i)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length >= 3);
+
+  if (segments.length < 2) return null;
+
+  const families = segments.map((segment) => {
+    const match = segment.match(PRODUCT_FAMILY_PATTERN);
+    return match?.[1]?.toLowerCase().replace(/s$/, '');
+  });
+
+  const distinctFamilies = new Set(families.filter(Boolean));
+  if (distinctFamilies.size >= 2) return segments;
+
+  const allFamilies = [...normalized.matchAll(new RegExp(PRODUCT_FAMILY_PATTERN.source, 'gi'))].map((m) =>
+    m[1]!.toLowerCase().replace(/s$/, '')
+  );
+  if (new Set(allFamilies).size >= 2) return segments;
+
+  return null;
+}
+
+export function isCatalogBrowseIntent(text: string): boolean {
+  const t = normalizeProductText(normalizeUserTypos(text));
+  return (
+    /^(qu[eé]|cu[aá]les|cu[aá]nto|tienen|hay|muestr|list|inform|cat[aá]logo|precio\s+de|que\s+venden)/.test(t) ||
+    /qu[eé]\s+productos\s+(tienen|hay|venden)/.test(t) ||
+    /productos?\s+(tienen|hay|venden|disponibles)/.test(t)
+  );
+}
+
 export function extractVariantHint(text: string): string | undefined {
   const all = extractAllVariantHints(text);
   if (all.length) return all.at(-1);
@@ -60,8 +108,10 @@ export function extractAllVariantHints(text: string): string[] {
   return [...new Set(hints)];
 }
 
-/** Detecta pedido con varias medidas/variantes en un solo mensaje. */
+/** Detecta pedido con varias medidas/variantes en un solo mensaje (mismo producto). */
 export function parseMultiVariantSelection(text: string): { baseQuery: string; variantHints: string[] } | null {
+  if (parseMultiProductSelection(text)) return null;
+
   const variantHints = extractAllVariantHints(text);
   if (variantHints.length < 2) return null;
 

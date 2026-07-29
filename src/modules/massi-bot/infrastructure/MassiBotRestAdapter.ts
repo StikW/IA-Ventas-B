@@ -124,7 +124,7 @@ export class MassiBotRestAdapter implements IMassiBotService {
 
   private authHeader(config: WooCommerceConfigData): string {
     const user = config.botApiUser!.trim();
-    const pass = config.botApiPassword!.trim();
+    const pass = config.botApiPassword!.replace(/\s+/g, '');
     return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
   }
 
@@ -176,7 +176,16 @@ export class MassiBotRestAdapter implements IMassiBotService {
             const text = Buffer.concat(chunks).toString('utf8');
             const status = res.statusCode ?? 500;
             if (status < 200 || status >= 300) {
-              reject(new DomainError(`MASSI Bot API error ${status}: ${text}`, 'MASSI_BOT_ERROR'));
+              let detail = text.slice(0, 300);
+              try {
+                const parsed = JSON.parse(text) as { code?: string; message?: string };
+                if (parsed.code || parsed.message) {
+                  detail = [parsed.code, parsed.message].filter(Boolean).join(': ');
+                }
+              } catch {
+                // keep raw text
+              }
+              reject(new DomainError(`MASSI Bot API error ${status}: ${detail}`, 'MASSI_BOT_ERROR'));
               return;
             }
             try {

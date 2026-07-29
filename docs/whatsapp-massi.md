@@ -22,24 +22,25 @@ sequenceDiagram
   API->>WC: catálogo / stock (ck_/cs_)
   API->>MASSI: variaciones / pedidos (App Password)
   API->>IA: LLM + herramientas (si hace falta)
-  API->>BBC: API v2 sendTextMessage
+  API->>BBC: API v2 sendTextMessage (+ botones carrito)
   BBC->>C: Respuesta texto
 
-  C->>BBC: eso es todo / finalizar
+  C->>BBC: finalizar compra (modo link)
   BBC->>API: webhook
+  API->>BBC: API v2 texto + URL formulario WC
+  BBC->>C: Link /finalizar-compra/?items=SKU:qty
+  C->>WC: Completa formulario (recoger/envío/pago)
+
+  Note over C,MASSI: Modo whatsapp legacy
+  C->>BBC: eso es todo (checkoutMode whatsapp)
   API-->>BBC: {"route":"payment"}
   BBC->>C: Flow Pago UI (botones Reply)
-
-  C->>BBC: Transferencia / Efectivo
-  BBC->>API: webhook (click botón)
-  API->>MASSI: POST /orders
-  BBC->>C: Instrucciones de pago
 ```
 
 | Componente | Rol |
 |------------|-----|
 | **BuilderBot Cloud** | WhatsApp, relay webhook (`add_http`), flow **Pago UI** con botones |
-| **IA Ventas `sales-agent`** | Agente LLM + atajos deterministas (carrito, SKU); orquesta `payment_select` |
+| **IA Ventas `sales-agent`** | Agente LLM + atajos deterministas (carrito, SKU, modificar carrito); checkout link o pago legacy |
 | **WooCommerce REST** (`ck_`/`cs_`) | Búsqueda catálogo, productos simples, fallback stock por SKU |
 | **Plugin `massi-bot-api` (WordPress)** | Variaciones enriquecidas, lookup por SKU, pedidos MASSI, tickets, comprobantes |
 | **RAG (documentos panel)** | Info del negocio / políticas — **no** sustituye precios del catálogo WC |
@@ -48,8 +49,9 @@ sequenceDiagram
 
 | Tipo | Mecanismo |
 |------|-----------|
-| Texto (hola, productos, carrito, ayuda) | `POST /api/v2/{projectId}/messages` desde IA Ventas |
-| Botones de pago | Webhook responde `{ "route": "payment" }` → regla HTTP → flow **IA Ventas — Pago UI** |
+| Texto (hola, productos, carrito, link checkout) | `POST /api/v2/{projectId}/messages` desde IA Ventas |
+| Botones carrito (Agregar más / Finalizar pedido) | API v2 con `buttons` desde `SalesAgentService.persistAndReply` |
+| Botones de pago (modo `whatsapp` legacy) | Webhook `{ "route": "payment" }` → flow **IA Ventas — Pago UI** |
 
 **Importante:** la API v2 **no** envía botones en el payload (`buttons` se ignoran). **No** uses `messageMapping` en el relay HTTP (BBC envía literalmente el nombre del campo, p. ej. `"message"` o `"reply"`).
 
@@ -123,7 +125,10 @@ Ubicación local: `Local Sites/{sitio}/.../wp-content/plugins/massi-bot-api/`
 | `GET /massi-bot/v1/products/{id}/variations` | App Password | Variaciones con atributos y SKU |
 | `GET /massi-bot/v1/products/by-sku?sku=` | App Password | Producto o variación por SKU exacto |
 
-Auth: header `Authorization: Basic base64(user:application_password)` + capability `massi_bot_access`.
+Auth: header `Authorization: Basic base64(user:application_password)` + capability `massi_bot_access`.  
+En hostings que no reenvían `Authorization`, el plugin usa `class-massi-bot-auth.php` → `fix_authorization_header()`.
+
+**Instalación prod:** subir `dist/massi-bot-api-ia-ventas.zip` manualmente en WP (ver [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) §13).
 
 **Sin MASSI Bot API:** el agente puede buscar en WC REST, pero variaciones y pedidos MASSI completos no están disponibles.
 
@@ -136,8 +141,9 @@ Auth: header `Authorization: Basic base64(user:application_password)` + capabili
 | Fase / paso | Significado |
 |-------------|-------------|
 | `phase: browsing` | Exploración o armando pedido |
-| `flowStep: buying` | Carrito con al menos un ítem; cliente puede seguir agregando |
-| `flowStep: payment_select` | Carrito cerrado; esperando click en botón de pago |
+| `flowStep: buying` | Carrito con al menos un ítem; cliente puede agregar, quitar o corregir |
+| `flowStep: checkout_redirect` | Carrito cerrado (modo `link`); cliente debe completar formulario WC |
+| `flowStep: payment_select` | Carrito cerrado (modo `whatsapp` legacy); esperando botón de pago |
 | `phase: awaiting_payment` | Pedido MASSI creado; esperando comprobante (transferencia) |
 | `phase: order_created` | Pedido registrado (efectivo o pago confirmado) |
 
@@ -147,12 +153,15 @@ Auth: header `Authorization: Basic base64(user:application_password)` + capabili
 stateDiagram-v2
   [*] --> Browsing: hola
   Browsing --> Buying: elige producto (SKU)
-  Buying --> Buying: agrega más / otra variante
-  Buying --> PaymentSelect: "eso es todo"
+  Buying --> Buying: agrega más / otra variante / quita / corrige
+  Buying --> CheckoutRedirect: "finalizar" (modo link)
+  CheckoutRedirect --> Browsing: reenvío link / nueva búsqueda
+  Buying --> PaymentSelect: "eso es todo" (modo whatsapp)
   PaymentSelect --> AwaitingPayment: Transferencia
   PaymentSelect --> OrderCreated: Efectivo
   AwaitingPayment --> OrderCreated: imagen comprobante
   Browsing --> Browsing: menú / nueva búsqueda
+  CheckoutRedirect --> CheckoutRedirect: reenviar formulario
 ```
 
 ### 1. Saludo (determinista)
@@ -167,30 +176,53 @@ Sin botones. El LLM **no** debe repetir un saludo genérico si ya se envió.
 
 | Cliente | Sistema |
 |---------|---------|
-| `¿qué productos tienen?`, `busco zapatos`, `precio del SKU-123` | LLM → `buscar_productos_tienda` → lista con **SKU por variación** |
+| `¿qué productos tienen?`, `catálogo`, `qué venden` | **Determinista** → `formatStoreCatalogForWhatsApp` (solo productos **publicados en WC**) |
+| `busco zapatos`, `precio del SKU-123` | LLM → `buscar_productos_tienda` → lista con **SKU por variación** |
 
-Prioridad: **WooCommerce**, no documentos RAG, para precios y stock.
+**Regla:** el agente **nunca inventa** productos ni precios. Si un ítem no está en WooCommerce, no se ofrece ni se agrega al carrito. RAG/documentos = info del negocio, **no** catálogo.
 
 ### 3. Agregar al carrito
 
 | Cliente | Sistema |
 |---------|---------|
-| `quiero [producto] [variante]` | Atajo determinista o LLM → resuelve variación → agrega → resumen + *¿Deseas agregar algo más o eso sería todo?* |
+| `quiero [producto] [variante]` | Atajo determinista → resuelve variación → agrega → resumen + *¿Quieres finalizar con la compra o agregar más productos al carrito?* |
+| `cadena 45cm y balín #3` (varios productos) | `parseMultiProductSelection` → resuelve cada segmento; éxito parcial si uno no existe en WC |
 | `otra de 45 cm` (con carrito activo) | Misma familia de producto → variación hermana por atributo |
-| `quiero agregar una [producto] de 60cm` | **No** confundir con "agregar algo más" vago; se trata como producto concreto |
+| `quisiera agregar una [producto]` | Producto concreto; typos (`agreagar`) se normalizan |
 
 **Reglas del carrito:**
 
-- Un producto por mensaje en el atajo determinista; el total se acumula.
+- Varios productos distintos en un mensaje (`y cadena… y anillo…`) → una línea por SKU.
+- Varias medidas del **mismo** producto (`45cm y 50cm`) → `parseMultiVariantSelection`.
 - Mismo SKU en carrito → incrementa cantidad.
-- Variación distinta → nueva línea.
+- Producto no encontrado en WC → mensaje explícito; no se agrega.
+
+### 3b. Modificar carrito (determinista, cualquier catálogo)
+
+| Cliente | Sistema |
+|---------|---------|
+| `quitar 2 balines #3`, `eliminar anillo talla 6` | Quita cantidad del ítem que coincida (nombre + variante + SKU) |
+| `no quiero las de 50cm, solo una de 45cm` | Corrige: quita lo indicado y deja/agrega lo pedido |
+| `deja solo 2 balines` | Ajusta cantidad exacta |
+| `vaciar carrito`, `empezar de cero` | Limpia sesión de carrito |
+
+Matching contra **ítems ya en carrito** (no busca productos nuevos en tienda salvo corrección que requiere agregar).
 
 ### 4. Finalizar compra (modo link — default)
 
 | Cliente | Sistema |
 |---------|---------|
-| `eso es todo`, `eso sería todo`, `listo` | Valida stock → mensaje con **URL al formulario WC** + resumen carrito |
-| `reenvía el link` / `formulario` | Reenvía la misma URL |
+| `eso es todo`, `finalizar con la compra`, `listo para pagar` | Valida stock → mensaje con **URL al formulario WC** + resumen carrito |
+| `reenvía el link` / `formulario` | Reenvía la misma URL (`flowStep: checkout_redirect`) |
+
+URL generada (`checkoutLink.utils.ts`):
+
+```
+{checkoutFormUrl || checkoutPagePath || /checkout/}?phone=573…&source=whatsapp&public_store={storeUrl}&items=SKU:qty,SKU:qty
+```
+
+- `checkoutPagePath` se detecta al probar conexión WC (MASSI: `/finalizar-compra/`)
+- Plugin WP pre-carga carrito y teléfono (ver § Plugin checkout link abajo)
 
 El cliente elige en la **web**: recoger en tienda, domicilio, transferencia o efectivo.
 
@@ -236,22 +268,27 @@ Bot:     [lista desde WC con SKUs y variantes: S, M, L…]
 Cliente: quiero la camiseta básica talla M
 Bot:     ¡Listo! Agregué Camiseta Básica - M x1 — $45.000
          Total: $45.000
-         ¿Deseas agregar algo más o eso sería todo?
+         ¿Quieres finalizar con la compra o agregar más productos al carrito?
 
 Cliente: otra en talla L
 Bot:     ¡Listo! Agregué Camiseta Básica - L x1 …
          Total: $90.000
-         ¿Deseas agregar algo más o eso sería todo?
+         ¿Quieres finalizar con la compra o agregar más productos al carrito?
 
-Cliente: eso sería todo
-Bot:     [botones Transferencia / Efectivo / Menú]
+Cliente: quita la talla M
+Bot:     Quité 1 de Camiseta Básica - M.
+         Total: $45.000
+         ¿Quieres finalizar con la compra o agregar más productos al carrito?
 
-Cliente: [Transferencia]
-Bot:     Pedido #1234 | Ticket ABC | Datos Bre-B…
-         Envía captura del comprobante.
+Cliente: finalizar con la compra
+Bot:     ¡Perfecto! Tu selección está lista.
+         [resumen]
+         Link: https://tienda/finalizar-compra/?phone=…&items=SKU-M:1
 ```
 
 Misma lógica aplica a joyería (cm), calzado (talla), electrónica (modelo), etc.
+
+**Modo `whatsapp` legacy:** tras “eso es todo” → botones Transferencia / Efectivo → pedido MASSI en chat (ver §4b).
 
 ---
 
@@ -303,8 +340,12 @@ Modo **wa-api** (`console.builderbot.app`): botones vía `POST /messages` direct
 | Parser clicks de botones | `builderbot/application/services/BuilderBotWebhookParser.ts` |
 | Paso pago + botones | `sales-agent/application/services/ConversationFlowService.ts` |
 | Agente + carrito + SKU | `sales-agent/application/services/SalesAgentService.ts` |
+| Carrito (merge, quitar, qty) | `sales-agent/application/services/CartService.ts` |
+| Modificación carrito (intents) | `sales-agent/domain/cartModification.utils.ts` |
 | Resolución producto/variante | `sales-agent/application/services/SalesAgentToolsHandler.ts` |
-| Utilidades selección genérica | `sales-agent/domain/productSelection.utils.ts` |
+| Catálogo WC (WhatsApp) | `SalesAgentToolsHandler.formatStoreCatalogForWhatsApp` |
+| Multi-producto / variantes | `sales-agent/domain/productSelection.utils.ts` |
+| Link checkout WC | `sales-agent/domain/checkoutLink.utils.ts` |
 | IDs de botones | `sales-agent/domain/whatsappFlow.constants.ts` |
 | Adapter MASSI REST | `massi-bot/infrastructure/MassiBotRestAdapter.ts` |
 | Adapter WooCommerce REST | `woocommerce/infrastructure/WooCommerceRestAdapter.ts` |
@@ -332,10 +373,15 @@ Luego en panel → WhatsApp → **Re-sincronizar webhook**.
 - [ ] **Re-sincronizar webhook** tras cada deploy que toque relay/BBC
 - [ ] **hola** → un mensaje de texto (sin botones)
 - [ ] Buscar producto → listado con SKUs de variaciones
-- [ ] Elegir variante → carrito + *¿algo más o eso es todo?*
+- [ ] **qué productos tienen** → solo productos WC publicados (sin inventar)
+- [ ] Elegir variante → carrito + *¿finalizar o agregar más?*
+- [ ] **Dos productos** en un mensaje (`cadena y balín`) → ambos si existen en WC
 - [ ] Segunda variante del mismo producto (*otra de X*) → suma al carrito
-- [ ] **eso sería todo** → botones Transferencia / Efectivo / Menú
-- [ ] **Transferencia** → datos bancarios → imagen comprobante
+- [ ] Quitar / corregir / vaciar carrito → resumen actualizado
+- [ ] **finalizar con la compra** → link formulario WC con `items=SKU:qty`
+- [ ] Abrir link → productos pre-cargados (plugin checkout link)
+- [ ] (Legacy) **eso sería todo** con `checkoutMode: whatsapp` → botones Transferencia / Efectivo
+- [ ] **Transferencia** (legacy) → datos bancarios → imagen comprobante
 - [ ] Producto **simple** y **variable** (cualquier categoría WC)
 
 ---
@@ -347,7 +393,7 @@ Ver tabla completa y prioridades en [`business-flow-massi.md`](./business-flow-m
 | Item | Resumen |
 |------|---------|
 | Recoger vs domicilio | `delivery_type: delivery` + datos envío (hoy solo `pickup`) |
-| Formulario WC / link checkout | Tras carrito; formularios viven en WordPress |
+| Formulario WC / link checkout | ✅ Plugin pre-carga carrito; formularios en WordPress |
 | Perfil cliente por teléfono | `GET /clients?phone=` — adapter listo, agente no usa |
 | Webhook estado → WhatsApp | `_massi_operational_status`; hoy solo email WC |
 | OTP Mi cuenta vía WhatsApp | Misma línea BuilderBot; coordinar con plugin WP |
@@ -356,4 +402,25 @@ Ver tabla completa y prioridades en [`business-flow-massi.md`](./business-flow-m
 
 ---
 
-*Última actualización: 24 julio 2026 — flujo carrito + SKU genérico (cualquier catálogo WC), texto vía API v2, botones solo en pago.*
+## Plugin WP — pre-carga carrito desde link
+
+**Implementado** en `massi-bot-api` → `class-massi-bot-checkout-link.php` (+ `class-massi-bot-ngrok-url.php` para dev).
+
+Al abrir el link generado por IA Ventas:
+
+```
+https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-B:2
+```
+
+El plugin:
+
+1. Vacía el carrito WC y agrega productos/variaciones por **SKU**
+2. Guarda el teléfono en sesión → pre-rellena `billing_phone` en checkout
+3. Evita redirect a `/carrito/` con carrito vacío (filter `woocommerce_checkout_redirect_empty_cart`)
+4. `public_store` reescribe assets cuando la tienda se accede vía ngrok
+
+**Requisito:** SKUs en todas las variaciones publicadas; ruta checkout configurable (`checkoutFormUrl` o auto-detect `/finalizar-compra/`). Solo productos en WC se listan/venden por WhatsApp.
+
+---
+
+*Última actualización: 29 julio 2026 — catálogo determinista WC, multi-producto, modificación carrito, checkout link prod.*
