@@ -38,7 +38,7 @@ describe('PineconeVectorStore', () => {
 
   it('hace upsert de vectores en el namespace del tenant', async () => {
     upsertMock.mockResolvedValue(undefined);
-    const { PineconeVectorStore } = await import('./PineconeVectorStore');
+    const { PineconeVectorStore } = await import('./PineconeVectorStore.js');
     const store = new PineconeVectorStore();
 
     const vectors: VectorRecord[] = [
@@ -66,7 +66,7 @@ describe('PineconeVectorStore', () => {
 
   it('elimina vectores por documentId con deleteMany', async () => {
     deleteManyMock.mockResolvedValue(undefined);
-    const { PineconeVectorStore } = await import('./PineconeVectorStore');
+    const { PineconeVectorStore } = await import('./PineconeVectorStore.js');
     const store = new PineconeVectorStore();
 
     await store.deleteByDocument('tenant-1', 'doc-99');
@@ -77,7 +77,7 @@ describe('PineconeVectorStore', () => {
 
   it('elimina namespace completo con deleteAll', async () => {
     deleteAllMock.mockResolvedValue(undefined);
-    const { PineconeVectorStore } = await import('./PineconeVectorStore');
+    const { PineconeVectorStore } = await import('./PineconeVectorStore.js');
     const store = new PineconeVectorStore();
 
     await store.deleteNamespace('tenant-1');

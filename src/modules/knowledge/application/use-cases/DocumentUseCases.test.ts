@@ -10,7 +10,7 @@ import {
 } from './DocumentUseCases';
 
 const tenantId = 'tenant-abc';
-const actor = { tenantId, userId: 'user-1', role: UserRole.NEGOCIO };
+const actor = { tenantId, userId: 'user-1', role: UserRole.NEGOCIO, email: 'negocio@test.com' };
 
 function makeFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.File {
   return {
