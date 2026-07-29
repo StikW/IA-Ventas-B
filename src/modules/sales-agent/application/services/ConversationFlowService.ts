@@ -146,14 +146,14 @@ export class ConversationFlowService {
   ): Promise<ConversationFlowResult> {
     const tagline =
       profile?.description?.trim() ||
-      'Somos *fabricantes de joyas en oro 18K*. Estamos para ayudarte con tu compra.';
+      'Somos fabricantes de joyas en oro 18K.';
 
     const cartNote =
       previousContext?.cartItems?.length ?
-        `\n\n🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido.\nPara completar escribe *finalizar con la compra*.\nPara agregar más, envíame otro ID de producto.`
+        `\n\n🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido. Escribe *finalizar con la compra* para completar.`
       : null;
 
-    const intro = [`¡Hola! Bienvenido a *${businessName}*.`, '', tagline, cartNote].filter(Boolean).join('\n');
+    const intro = [`¡Hola! Bienvenido a *${businessName}*.`, tagline, cartNote].filter(Boolean).join('\n');
 
     return this.buildProductIdPrompt(tenantId, previousContext ?? { phase: 'browsing' }, intro);
   }
@@ -167,18 +167,10 @@ export class ConversationFlowService {
     const wcConfig = await this.wcConfigRepo.findByTenantId(tenantId);
     const catalogUrl = resolveStoreCatalogUrl(wcConfig?.storeUrl);
 
-    const bodyLines = [
-      introBlock,
-      introBlock ? '' : null,
-      'Estoy aquí para ayudarte a *realizar tu compra* por WhatsApp.',
-      '',
-      'Dime el *ID del producto* que te interesa (lo ves en nuestra tienda junto a cada producto), *o descríbeme qué buscas* (ej. balín diamantado #6, cadena de oro 50 cm). Puedes enviar uno o varios en un mismo mensaje.',
-      catalogUrl ?
-        'Si no conoces el ID, usa el botón de abajo para ver nuestro catálogo en la tienda.'
-      : 'Si no conoces el ID, visita nuestra tienda online para ver el catálogo y encontrar el ID de cada producto.',
-    ].filter((line) => line !== null) as string[];
+    const idPrompt =
+      'Dime el ID del producto o productos que te interesan. Si no los conoces, puedes revisar el catálogo a través del siguiente enlace.';
 
-    const body = bodyLines.join('\n');
+    const body = [introBlock, introBlock ? '' : null, idPrompt].filter((line) => line !== null).join('\n');
 
     const outbound: OutboundWhatsAppMessage =
       catalogUrl ?
@@ -191,7 +183,7 @@ export class ConversationFlowService {
       : { kind: 'text', body };
 
     return {
-      replyText: catalogUrl ? `${body}\n\n${CATALOG_CTA_LABEL}: ${catalogUrl}` : body,
+      replyText: body,
       outbound,
       salesContext: {
         ...salesContext,

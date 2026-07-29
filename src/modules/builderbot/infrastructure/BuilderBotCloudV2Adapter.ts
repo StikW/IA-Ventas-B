@@ -3,6 +3,7 @@ import { injectable } from 'tsyringe';
 import { env, hasBuilderBot } from '../../../shared/infrastructure/config/env';
 
 import { DomainError } from '../../../shared/domain/errors/DomainError';
+import { logger } from '../../../shared/infrastructure/logger/logger';
 
 import {
 
@@ -752,35 +753,75 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
     const body = input.body.trim();
     const displayText = input.displayText.trim().slice(0, 20);
     const url = input.url.trim();
+    const footer = input.footer?.trim();
 
-    try {
-      await this.postV2Message(input.deviceId, input.phone, {
+    // BuilderBot Cloud v2: botones dinámicos con URL (doc: hasta 10, incl. enlaces externos).
+    const payloadAttempts: Record<string, unknown>[] = [
+      {
         messages: {
           content: body,
-          footer: input.footer?.trim(),
+          footer,
+          buttons: [{ body: displayText, url }],
+        },
+      },
+      {
+        messages: {
+          content: body,
+          footer,
+          buttonUrl: { body: displayText, url },
+        },
+      },
+      {
+        messages: {
           interactive: {
             type: 'cta_url',
             body: { text: body },
-            footer: input.footer?.trim() ? { text: input.footer.trim() } : undefined,
+            footer: footer ? { text: footer } : undefined,
             action: {
               name: 'cta_url',
-              parameters: {
-                display_text: displayText,
-                url,
-              },
+              parameters: { display_text: displayText, url },
             },
           },
         },
-      });
-    } catch (error) {
-      const fallback = `${body}\n\n${displayText}: ${url}`;
-      await this.sendTextMessage({
-        deviceId: input.deviceId,
-        phone: input.phone,
-        message: fallback,
-      });
-      if (!(error instanceof DomainError)) throw error;
+      },
+      {
+        messages: {
+          content: body,
+          footer,
+          interactive: {
+            type: 'cta_url',
+            body: { text: body },
+            footer: footer ? { text: footer } : undefined,
+            action: {
+              name: 'cta_url',
+              parameters: { display_text: displayText, url },
+            },
+          },
+        },
+      },
+    ];
+
+    let lastError: DomainError | null = null;
+    for (const payload of payloadAttempts) {
+      try {
+        await this.postV2Message(input.deviceId, input.phone, payload);
+        return;
+      } catch (error) {
+        if (error instanceof DomainError) lastError = error;
+        else throw error;
+      }
     }
+
+    logger.warn(
+      { deviceId: input.deviceId, lastError: lastError?.message },
+      'CTA URL no enviado por API v2; fallback a texto con enlace'
+    );
+
+    await this.sendTextMessage({
+      deviceId: input.deviceId,
+      phone: input.phone,
+      message: `${body}\n\n${displayText}: ${url}`,
+    });
   }
 
   async sendListMessage(input: SendListMessageInput): Promise<void> {
