@@ -75,6 +75,14 @@ describe('PineconeVectorStore', () => {
     expect(deleteManyMock).toHaveBeenCalledWith({ documentId: 'doc-99' });
   });
 
+  it('ignora 404 al eliminar vectores inexistentes', async () => {
+    deleteManyMock.mockRejectedValue(new Error('returned HTTP status 404'));
+    const { PineconeVectorStore } = await import('./PineconeVectorStore.js');
+    const store = new PineconeVectorStore();
+
+    await expect(store.deleteByDocument('tenant-1', 'doc-missing')).resolves.toBeUndefined();
+  });
+
   it('elimina namespace completo con deleteAll', async () => {
     deleteAllMock.mockResolvedValue(undefined);
     const { PineconeVectorStore } = await import('./PineconeVectorStore.js');

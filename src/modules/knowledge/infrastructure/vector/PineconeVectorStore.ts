@@ -17,6 +17,11 @@ export class PineconeVectorStore implements IVectorStore {
     return this.client.index(this.indexName);
   }
 
+  private isNotFoundError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    return message.includes('404') || (err instanceof Error && err.name === 'PineconeNotFoundError');
+  }
+
   async upsert(namespace: string, vectors: VectorRecord[]): Promise<void> {
     const idx = this.index();
     await idx.namespace(namespace).upsert(
@@ -57,17 +62,19 @@ export class PineconeVectorStore implements IVectorStore {
   }
 
   async deleteByDocument(namespace: string, documentId: string): Promise<void> {
-    await this.index().namespace(namespace).deleteMany({ documentId });
+    try {
+      await this.index().namespace(namespace).deleteMany({ documentId });
+    } catch (err) {
+      if (this.isNotFoundError(err)) return;
+      throw err;
+    }
   }
 
   async deleteNamespace(namespace: string): Promise<void> {
     try {
       await this.index().namespace(namespace).deleteAll();
     } catch (err) {
-      const message = err instanceof Error ? err.message : '';
-      if (message.includes('404') || err instanceof Error && err.name === 'PineconeNotFoundError') {
-        return;
-      }
+      if (this.isNotFoundError(err)) return;
       throw err;
     }
   }
