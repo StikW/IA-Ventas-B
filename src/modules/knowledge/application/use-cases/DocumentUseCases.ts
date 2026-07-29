@@ -7,6 +7,7 @@ import { Document } from '../../domain/entities/Document';
 import { DocumentStatus, IStorageService, IVectorStore } from '../../domain/ports/KnowledgePorts';
 import { IDocumentRepository } from '../../domain/repositories/IDocumentRepository';
 import { DocumentProcessorService } from '../services/DocumentProcessorService';
+import { resolveDocumentStorageKey } from '../utils/resolveDocumentStorageKey';
 
 const ALLOWED_MIMES = [
   'application/pdf',
@@ -97,7 +98,10 @@ export class DeleteDocumentUseCase {
     if (!doc) throw new NotFoundError('Documento no encontrado');
 
     await this.vectorStore.deleteByDocument(tenantId, input.id);
-    await this.storage.delete(doc.storageKey);
+    const storageKey = resolveDocumentStorageKey(doc);
+    if (storageKey) {
+      await this.storage.delete(storageKey);
+    }
     await this.documentRepo.delete(tenantId, input.id);
   }
 }

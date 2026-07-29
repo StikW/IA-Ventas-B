@@ -65,6 +65,7 @@ export class Document extends Entity<DocumentProps> {
       filename: this.filename,
       mimeType: this.mimeType,
       size: this.size,
+      storageKey: this.storageKey,
       status: this.status,
       chunkCount: this.chunkCount,
       vectorCount: this.vectorCount,

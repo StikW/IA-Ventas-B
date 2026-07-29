@@ -7,6 +7,7 @@ import { DocumentStatus, IEmbeddingProvider, IStorageService, IVectorStore, Vect
 import { IDocumentRepository } from '../../domain/repositories/IDocumentRepository';
 import { DocumentParserFactory } from '../../infrastructure/parsers/DocumentParserFactory';
 import { chunkText } from '../utils/chunkText';
+import { resolveDocumentStorageKey } from '../utils/resolveDocumentStorageKey';
 
 @injectable()
 export class DocumentProcessorService {
@@ -30,7 +31,7 @@ export class DocumentProcessorService {
     await this.documentRepo.update(current);
 
     try {
-      const buffer = await this.storage.read(document.storageKey);
+      const buffer = await this.storage.read(resolveDocumentStorageKey(document));
       const parser = this.parserFactory.getParser(document.mimeType, document.filename);
       const text = await parser.extract(buffer, document.filename);
 

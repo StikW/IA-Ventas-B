@@ -53,6 +53,10 @@ export class S3StorageService implements IStorageService {
   }
 
   async read(key: string): Promise<Buffer> {
+    if (!key?.trim()) {
+      throw new Error('storageKey vacío: no se puede leer el archivo');
+    }
+
     const result = await this.client.send(
       new GetObjectCommand({
         Bucket: this.bucket,
@@ -67,6 +71,8 @@ export class S3StorageService implements IStorageService {
   }
 
   async delete(key: string): Promise<void> {
+    if (!key?.trim()) return;
+
     await this.client.send(
       new DeleteObjectCommand({
         Bucket: this.bucket,
