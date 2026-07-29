@@ -29,7 +29,7 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'buscar_en_documentos',
       description:
-        'Busca en PDFs subidos al panel. NO usar para catálogo/precios si WooCommerce está conectado; usa buscar_productos_tienda.',
+        'Busca en el catálogo vectorizado (PDF/TXT del panel) para interpretar qué producto pide el cliente y obtener SKU/ID. NO usar para stock ni precios finales; después valida con agregar_producto_por_sku o buscar_productos_tienda en WooCommerce.',
       parameters: {
         type: 'object',
         properties: { consulta: { type: 'string', description: 'Qué busca el cliente' } },
@@ -218,7 +218,7 @@ export class SalesAgentService {
     ) {
       salesContext = {
         phase: 'browsing',
-        flowStep: 'menu',
+        flowStep: 'discovery',
         cartItems: salesContext.cartItems,
         customerName: salesContext.customerName,
       };
@@ -929,7 +929,7 @@ export class SalesAgentService {
             : input.flowStep === 'buying'
               ? `FASE ACTUAL: carrito con ${input.cartItemCount} producto(s). El cliente tiene botones Finalizar/Agregar más. Si agrega por texto, usa agregar_producto_por_sku. NO llames finalizar_compra salvo confirmación explícita.`
               : input.flowStep === 'discovery' || input.flowStep === 'menu'
-                ? 'FASE ACTUAL: exploración. Recomienda productos según interés del cliente (catálogo WC + docs). Cuando elija, usa agregar_producto_por_sku con SKU exacto. No listes catálogo entero; sugiere 3-5 opciones relevantes.'
+                ? 'FASE ACTUAL: esperando ID de producto o descripción en lenguaje natural. El sistema intenta RAG→SKU automáticamente; si el LLM interviene, usa buscar_en_documentos para interpretar y luego agregar_producto_por_sku con el SKU. Stock/precio solo desde WooCommerce.'
                 : 'FASE ACTUAL: exploración y venta.';
 
     return [
@@ -937,13 +937,14 @@ export class SalesAgentService {
       'Responde en español, amable y conciso (máximo 3 párrafos).',
       'FLUJO DE VENTA:',
       '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
-      '2) Catálogo y precios: SIEMPRE buscar_productos_tienda (WooCommerce). NUNCA inventes productos: si no está en WooCommerce, no existe para venta.',
-      '3) IDENTIFICADOR PRINCIPAL: SKU. Productos simples y variaciones (talla, medida, color, etc.) deben tener SKU en WooCommerce.',
-      '4) Tras agregar al carrito, pregunta *¿Deseas agregar algo más o eso sería todo?* Cada producto se agrega individualmente; el total se acumula.',
-      '5) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce (recoger, domicilio, pago). NO pidas método de pago en el chat.',
-      '6) Si pide "otra de la misma" con otra variante, agrega SOLO la nueva variación.',
-      '7) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
-      '8) Usa la menor cantidad de herramientas posible por mensaje.',
+      '2) El cliente puede enviar el *ID del producto* (SKU) o describirlo en lenguaje natural (ej. "balín diamantado #6", "cadena de oro 50 cm").',
+      '3) Para interpretar descripciones: buscar_en_documentos (RAG del catálogo) → extrae SKU → agregar_producto_por_sku. El backend también intenta RAG→SKU antes del LLM.',
+      '4) Catálogo, stock y precios finales: SIEMPRE WooCommerce (buscar_productos_tienda, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
+      '5) IDENTIFICADOR PRINCIPAL: ID = SKU. Si envía varios IDs o productos, resuélvelos uno a uno.',
+      '6) Tras agregar al carrito, pregunta *¿Deseas agregar algo más o finalizar con la compra?*',
+      '7) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce.',
+      '8) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
+      '9) Usa la menor cantidad de herramientas posible por mensaje.',
       'No inventes productos ni precios. Usa las herramientas.',
       phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',
@@ -1023,6 +1024,15 @@ export class SalesAgentService {
           footer: outbound.footer,
           buttons: outbound.buttons,
         });
+      } else if (outbound.kind === 'cta_url') {
+        await this.builderBot.sendCtaUrlMessage({
+          deviceId: params.deviceId,
+          phone,
+          body: outbound.body,
+          displayText: outbound.displayText,
+          url: outbound.url,
+          footer: outbound.footer,
+        });
       } else {
         await this.builderBot.sendTextMessage({
           deviceId: params.deviceId,
@@ -1067,6 +1077,15 @@ export class SalesAgentService {
         body: outbound.body,
         footer: outbound.footer,
         buttons: outbound.buttons,
+      });
+    } else if (outbound.kind === 'cta_url') {
+      await this.builderBot.sendCtaUrlMessage({
+        deviceId: params.deviceId,
+        phone,
+        body: outbound.body,
+        displayText: outbound.displayText,
+        url: outbound.url,
+        footer: outbound.footer,
       });
     } else {
       await this.builderBot.sendTextMessage({

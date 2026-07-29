@@ -44,6 +44,15 @@ export interface SendButtonsMessageInput {
   buttons: BuilderBotButtonOption[];
 }
 
+export interface SendCtaUrlMessageInput {
+  deviceId: string;
+  phone: string;
+  body: string;
+  displayText: string;
+  url: string;
+  footer?: string;
+}
+
 export interface SendListMessageInput {
   deviceId: string;
   phone: string;
@@ -89,6 +98,7 @@ export interface IBuilderBotCloudService {
   updateDevice(deviceId: string, payload: Record<string, unknown>): Promise<void>;
   sendTextMessage(input: SendTextMessageInput): Promise<void>;
   sendButtonsMessage(input: SendButtonsMessageInput): Promise<void>;
+  sendCtaUrlMessage(input: SendCtaUrlMessageInput): Promise<void>;
   sendListMessage(input: SendListMessageInput): Promise<void>;
   deleteDevice(deviceId: string): Promise<void>;
   /** Elimina el proyecto completo en BuilderBot Cloud (cloud-v2). No-op en wa-api. */

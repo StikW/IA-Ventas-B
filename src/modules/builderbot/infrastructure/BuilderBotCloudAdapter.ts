@@ -7,6 +7,7 @@ import {
   IBuilderBotCloudService,
   SendTextMessageInput,
   SendButtonsMessageInput,
+  SendCtaUrlMessageInput,
   SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
 import { resolveBuilderBotApiMode } from './builderBotApiMode';
@@ -60,6 +61,10 @@ export class BuilderBotCloudAdapter implements IBuilderBotCloudService {
 
   sendButtonsMessage(input: SendButtonsMessageInput): Promise<void> {
     return this.delegate().sendButtonsMessage(input);
+  }
+
+  sendCtaUrlMessage(input: SendCtaUrlMessageInput): Promise<void> {
+    return this.delegate().sendCtaUrlMessage(input);
   }
 
   sendListMessage(input: SendListMessageInput): Promise<void> {

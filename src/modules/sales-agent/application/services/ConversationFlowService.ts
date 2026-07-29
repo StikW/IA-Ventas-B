@@ -1,8 +1,10 @@
 import { inject, injectable } from 'tsyringe';
 import { BuilderBotButtonOption } from '../../../builderbot/domain/IBuilderBotCloudService';
+import { IWooCommerceConfigRepository } from '../../../woocommerce/domain/IWooCommerceService';
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
 import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
 import { SalesContext } from '../../domain/IChatSessionRepository';
+import { CATALOG_CTA_LABEL, resolveStoreCatalogUrl } from '../../domain/catalogUrl.utils';
 import {
   isCartContinueShoppingIntent,
   isCartFinalizeIntent,
@@ -22,6 +24,13 @@ export type OutboundWhatsAppMessage =
       body: string;
       footer?: string;
       buttons: BuilderBotButtonOption[];
+    }
+  | {
+      kind: 'cta_url';
+      body: string;
+      displayText: string;
+      url: string;
+      footer?: string;
     };
 
 export interface ConversationFlowInput {
@@ -43,6 +52,7 @@ export interface ConversationFlowResult {
 @injectable()
 export class ConversationFlowService {
   constructor(
+    @inject('IWooCommerceConfigRepository') private readonly wcConfigRepo: IWooCommerceConfigRepository,
     @inject('IConfigRepository') private readonly configRepo: IConfigRepository,
     @inject(SalesAgentToolsHandler) private readonly tools: SalesAgentToolsHandler
   ) {}
@@ -78,7 +88,7 @@ export class ConversationFlowService {
       input.salesContext.flowStep !== 'payment_select' &&
       input.salesContext.phase !== 'awaiting_payment'
     ) {
-      return this.buildWelcomeMessage(input.businessName, input.businessProfile, input.salesContext);
+      return this.buildWelcomeMessage(input.tenantId, input.businessName, input.businessProfile, input.salesContext);
     }
 
     if (input.salesContext.flowStep === 'buying' && isCartFinalizeIntent(text)) {
@@ -86,12 +96,16 @@ export class ConversationFlowService {
     }
 
     if (input.salesContext.flowStep === 'buying' && isCartContinueShoppingIntent(text)) {
-      return this.buildDiscoveryPrompt(input.salesContext, '¿Qué más te gustaría agregar a tu pedido? Cuéntame el producto.');
+      return this.buildProductIdPrompt(
+        input.tenantId,
+        input.salesContext,
+        '¿Qué más te gustaría agregar? Envíame el *ID* del producto.'
+      );
     }
 
     if (input.salesContext.flowStep === 'checkout_redirect') {
       if (isMenuGreeting(text)) {
-        return this.buildWelcomeMessage(input.businessName, input.businessProfile, input.salesContext);
+        return this.buildWelcomeMessage(input.tenantId, input.businessName, input.businessProfile, input.salesContext);
       }
       if (isCartFinalizeIntent(text) || /formulario|link|enlace|checkout|completar\s+(la\s+)?compra/i.test(text)) {
         return null;
@@ -124,64 +138,67 @@ export class ConversationFlowService {
     return this.buildPaymentMethodPrompt(input.salesContext, totalHint);
   }
 
-  buildWelcomeMessage(
+  async buildWelcomeMessage(
+    tenantId: string,
     businessName: string,
     profile?: BusinessProfileConfig,
     previousContext?: SalesContext
-  ): ConversationFlowResult {
-    const description =
+  ): Promise<ConversationFlowResult> {
+    const tagline =
       profile?.description?.trim() ||
-      'Somos *fabricantes de joyas en oro 18K*. Diseñamos y elaboramos piezas con la calidad que nos caracteriza.';
-
-    const address =
-      profile?.address?.trim() ||
-      [
-        '📍 *Edificio La Ceiba*, Local 101 — Primer piso',
-        'Calle 52 #47-28, Medellín, Antioquia',
-      ].join('\n');
-
-    const hours = profile?.businessHours?.trim();
+      'Somos *fabricantes de joyas en oro 18K*. Estamos para ayudarte con tu compra.';
 
     const cartNote =
       previousContext?.cartItems?.length ?
-        `\n\n🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido.\nPara completar escribe *es todo* o *finalizar pedido*.\nPara agregar más, cuéntame el producto (nombre, medida o SKU).`
+        `\n\n🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido.\nPara completar escribe *finalizar con la compra*.\nPara agregar más, envíame otro ID de producto.`
       : null;
 
-    const body = [
-      `¡Hola! Bienvenido a *${businessName}*.`,
-      '',
-      description,
-      '',
-      address,
-      hours ? `🕐 ${hours}` : null,
-      cartNote,
-      '',
-      '¿En qué te podemos ayudar hoy?',
-    ]
-      .filter((line) => line !== null)
-      .join('\n');
+    const intro = [`¡Hola! Bienvenido a *${businessName}*.`, '', tagline, cartNote].filter(Boolean).join('\n');
 
-    const buttons =
-      previousContext?.cartItems?.length ?
-        [
-          { id: WA_BTN.MENU_BUY, body: WA_BTN_LABEL.MENU_BUY },
-          { id: WA_BTN.CART_FINALIZE, body: WA_BTN_LABEL.CART_FINALIZE },
-          { id: WA_BTN.MENU_ORDERS, body: WA_BTN_LABEL.MENU_ORDERS },
-        ]
-      : [
-          { id: WA_BTN.MENU_BUY, body: WA_BTN_LABEL.MENU_BUY },
-          { id: WA_BTN.MENU_ORDERS, body: WA_BTN_LABEL.MENU_ORDERS },
-          { id: WA_BTN.MENU_HELP, body: WA_BTN_LABEL.MENU_HELP },
-        ];
+    return this.buildProductIdPrompt(tenantId, previousContext ?? { phase: 'browsing' }, intro);
+  }
+
+  /** Pide ID de producto (SKU) y ofrece enlace al catálogo WC con botón CTA. */
+  async buildProductIdPrompt(
+    tenantId: string,
+    salesContext: SalesContext,
+    introBlock?: string
+  ): Promise<ConversationFlowResult> {
+    const wcConfig = await this.wcConfigRepo.findByTenantId(tenantId);
+    const catalogUrl = resolveStoreCatalogUrl(wcConfig?.storeUrl);
+
+    const bodyLines = [
+      introBlock,
+      introBlock ? '' : null,
+      'Estoy aquí para ayudarte a *realizar tu compra* por WhatsApp.',
+      '',
+      'Dime el *ID del producto* que te interesa (lo ves en nuestra tienda junto a cada producto), *o descríbeme qué buscas* (ej. balín diamantado #6, cadena de oro 50 cm). Puedes enviar uno o varios en un mismo mensaje.',
+      catalogUrl ?
+        'Si no conoces el ID, usa el botón de abajo para ver nuestro catálogo en la tienda.'
+      : 'Si no conoces el ID, visita nuestra tienda online para ver el catálogo y encontrar el ID de cada producto.',
+    ].filter((line) => line !== null) as string[];
+
+    const body = bodyLines.join('\n');
+
+    const outbound: OutboundWhatsAppMessage =
+      catalogUrl ?
+        {
+          kind: 'cta_url',
+          body,
+          displayText: CATALOG_CTA_LABEL,
+          url: catalogUrl,
+        }
+      : { kind: 'text', body };
 
     return {
-      replyText: body,
-      outbound: { kind: 'buttons', body, buttons },
+      replyText: catalogUrl ? `${body}\n\n${CATALOG_CTA_LABEL}: ${catalogUrl}` : body,
+      outbound,
       salesContext: {
+        ...salesContext,
         phase: 'browsing',
-        flowStep: 'menu',
-        cartItems: previousContext?.cartItems,
-        customerName: previousContext?.customerName,
+        flowStep: 'discovery',
+        cartItems: salesContext.cartItems,
+        customerName: salesContext.customerName,
       },
     };
   }
@@ -294,9 +311,10 @@ export class ConversationFlowService {
     if (!action) return null;
 
     if (action === WA_BTN.MENU_BUY) {
-      return this.buildDiscoveryPrompt(
+      return this.buildProductIdPrompt(
+        input.tenantId,
         input.salesContext,
-        '¡Perfecto! Cuéntame qué joya buscas (cadena, anillo, balín, dije…) o describe lo que tienes en mente.'
+        '¡Perfecto! Sigamos con tu compra.'
       );
     }
 
@@ -356,21 +374,28 @@ export class ConversationFlowService {
     }
 
     if (action === WA_BTN.MENU_BACK) {
-      return this.buildWelcomeMessage(input.businessName, input.businessProfile, input.salesContext);
+      return this.buildWelcomeMessage(
+        input.tenantId,
+        input.businessName,
+        input.businessProfile,
+        input.salesContext
+      );
     }
 
     if (action === WA_BTN.CART_ADD_MORE) {
-      return this.buildDiscoveryPrompt(
+      return this.buildProductIdPrompt(
+        input.tenantId,
         input.salesContext,
-        '¿Qué más te gustaría agregar? Cuéntame el producto o variante.'
+        '¿Qué otro producto te gustaría agregar? Envíame el *ID* del producto.'
       );
     }
 
     if (action === WA_BTN.CART_FINALIZE) {
       if (!input.salesContext.cartItems?.length) {
-        return this.buildDiscoveryPrompt(
+        return this.buildProductIdPrompt(
+          input.tenantId,
           input.salesContext,
-          'Tu carrito está vacío. Cuéntame qué producto te interesa.'
+          'Tu carrito está vacío. Envíame el *ID* del producto que te interesa.'
         );
       }
       return null;

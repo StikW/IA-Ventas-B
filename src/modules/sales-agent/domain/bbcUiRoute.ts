@@ -4,7 +4,8 @@ import { WA_BTN } from './whatsappFlow.constants';
 
 type OutboundWhatsAppMessage =
   | { kind: 'text'; body: string }
-  | { kind: 'buttons'; body: string; footer?: string; buttons: BuilderBotButtonOption[] };
+  | { kind: 'buttons'; body: string; footer?: string; buttons: BuilderBotButtonOption[] }
+  | { kind: 'cta_url'; body: string; displayText: string; url: string; footer?: string };
 
 const PAYMENT_BUTTON_IDS = new Set<string>([WA_BTN.PAY_TRANSFER, WA_BTN.PAY_CASH, WA_BTN.MENU_BACK]);
 

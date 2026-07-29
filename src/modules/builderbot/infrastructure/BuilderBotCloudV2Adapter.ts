@@ -18,6 +18,7 @@ import {
 
   SendTextMessageInput,
   SendButtonsMessageInput,
+  SendCtaUrlMessageInput,
   SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
 
@@ -745,6 +746,41 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
         },
       },
     });
+  }
+
+  async sendCtaUrlMessage(input: SendCtaUrlMessageInput): Promise<void> {
+    const body = input.body.trim();
+    const displayText = input.displayText.trim().slice(0, 20);
+    const url = input.url.trim();
+
+    try {
+      await this.postV2Message(input.deviceId, input.phone, {
+        messages: {
+          content: body,
+          footer: input.footer?.trim(),
+          interactive: {
+            type: 'cta_url',
+            body: { text: body },
+            footer: input.footer?.trim() ? { text: input.footer.trim() } : undefined,
+            action: {
+              name: 'cta_url',
+              parameters: {
+                display_text: displayText,
+                url,
+              },
+            },
+          },
+        },
+      });
+    } catch (error) {
+      const fallback = `${body}\n\n${displayText}: ${url}`;
+      await this.sendTextMessage({
+        deviceId: input.deviceId,
+        phone: input.phone,
+        message: fallback,
+      });
+      if (!(error instanceof DomainError)) throw error;
+    }
   }
 
   async sendListMessage(input: SendListMessageInput): Promise<void> {

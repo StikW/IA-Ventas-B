@@ -8,7 +8,7 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/modules/knowledge/**/*.ts'],
+      include: ['src/modules/knowledge/**/*.ts', 'src/modules/sales-agent/domain/**/*.ts'],
     },
   },
 });

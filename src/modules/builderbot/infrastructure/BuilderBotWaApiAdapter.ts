@@ -9,6 +9,7 @@ import {
   IBuilderBotCloudService,
   SendTextMessageInput,
   SendButtonsMessageInput,
+  SendCtaUrlMessageInput,
   SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
 import { resolveBuilderBotApiMode, resolveBuilderBotApiUrl } from './builderBotApiMode';
@@ -142,6 +143,15 @@ export class BuilderBotWaApiAdapter implements IBuilderBotCloudService {
         footer: input.footer?.trim(),
         buttons,
       }),
+    });
+  }
+
+  async sendCtaUrlMessage(input: SendCtaUrlMessageInput): Promise<void> {
+    const fallback = `${input.body.trim()}\n\n${input.displayText.trim()}: ${input.url.trim()}`;
+    await this.sendTextMessage({
+      deviceId: input.deviceId,
+      phone: input.phone,
+      message: fallback,
     });
   }
 

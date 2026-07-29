@@ -1,4 +1,5 @@
 import { inject, injectable } from 'tsyringe';
+import { hasOpenAI } from '../../../../shared/infrastructure/config/env';
 import { RagSearchService } from '../../../knowledge/application/services/RagSearchService';
 import { OrderItem } from '../../../commerce/domain/entities/Order.types';
 import { IMassiBotService, MassiBotVariation } from '../../../massi-bot/domain/IMassiBotService';
@@ -23,6 +24,7 @@ import {
   tokenizeProductQuery,
   VARIANT_STRIP_PATTERN,
 } from '../../domain/productSelection.utils';
+import { RagCatalogMatch, resolveSkuFromRagChunks } from '../../domain/catalogRag.utils';
 import { buildCheckoutFormUrl } from '../../domain/checkoutLink.utils';
 import {
   buildProductQueryFromTarget,
@@ -76,6 +78,40 @@ export class SalesAgentToolsHandler {
     return [format(primary.results, 'Resultados principales'), format(related, 'Productos o temas relacionados')].join(
       '\n\n'
     );
+  }
+
+  /**
+   * RAG → SKU: interpreta lenguaje natural con el catálogo vectorizado (.txt).
+   * Stock/precio se validan después en WooCommerce.
+   */
+  async resolveSkuFromRag(
+    tenantId: string,
+    userText: string,
+    variantHint?: string
+  ): Promise<RagCatalogMatch | null> {
+    if (!hasOpenAI) return null;
+
+    try {
+      const ragQuery = variantHint ? `${userText} ${variantHint}`.trim() : userText;
+      const [primary, similar] = await Promise.all([
+        this.ragSearch.search({ tenantId, query: ragQuery, topK: 8, minScore: 0.38 }),
+        this.ragSearch.search({ tenantId, query: userText, topK: 6, minScore: 0.32 }),
+      ]);
+
+      const seen = new Set<string>();
+      const chunks = [...primary.results, ...similar.results]
+        .filter((row) => {
+          const key = `${row.documentId}:${row.chunkIndex}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .map((row) => ({ content: row.content, score: row.score }));
+
+      return resolveSkuFromRagChunks(chunks, userText, variantHint);
+    } catch {
+      return null;
+    }
   }
 
   /** Catálogo legible para WhatsApp — solo productos publicados en WooCommerce. */
@@ -815,6 +851,13 @@ export class SalesAgentToolsHandler {
 
     const parsed = parseProductSelectionQuery(trimmed);
     const variantHint = parsed.variantHint ?? extractVariantHint(trimmed);
+
+    const ragMatch = await this.resolveSkuFromRag(tenantId, trimmed, variantHint);
+    if (ragMatch) {
+      const fromRag = await this.buildOrderItemBySku(tenantId, ragMatch.sku, qty);
+      if (fromRag.ok) return fromRag;
+    }
+
     const cartHasItems = !!context?.cartItems?.length;
     let siblingAttempt: { ok: boolean; message: string; item?: OrderItem } | null = null;
 
