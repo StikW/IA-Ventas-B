@@ -1,14 +1,14 @@
-import OpenAI from 'openai';
 import { injectable } from 'tsyringe';
 import { env, hasOpenAI } from '../../../../shared/infrastructure/config/env';
+import { createOpenAIClient } from '../../../../shared/infrastructure/ai/createOpenAIClient';
 import { DomainError } from '../../../../shared/domain/errors/DomainError';
 import { EmbedRequest, EmbedResponse, IEmbeddingProvider } from '../../domain/ports/KnowledgePorts';
 
 @injectable()
 export class OpenAIEmbeddingAdapter implements IEmbeddingProvider {
-  private client: OpenAI | null = null;
+  private client: ReturnType<typeof createOpenAIClient> | null = null;
 
-  private getClient(): OpenAI {
+  private getClient(): ReturnType<typeof createOpenAIClient> {
     if (!hasOpenAI) {
       throw new DomainError(
         'OPENAI_API_KEY no configurada. Requerida para vectorizar documentos y búsqueda RAG.',
@@ -16,7 +16,7 @@ export class OpenAIEmbeddingAdapter implements IEmbeddingProvider {
       );
     }
     if (!this.client) {
-      this.client = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+      this.client = createOpenAIClient();
     }
     return this.client;
   }

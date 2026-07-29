@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { injectable } from 'tsyringe';
 import { env, hasOpenAI } from '../../../../shared/infrastructure/config/env';
+import { createOpenAIClient } from '../../../../shared/infrastructure/ai/createOpenAIClient';
 import { DomainError } from '../../../../shared/domain/errors/DomainError';
 import { ChatMessage } from '../../domain/IChatSessionRepository';
 
@@ -33,7 +34,7 @@ export class OpenAIChatAdapter {
       );
     }
     if (!this.client) {
-      this.client = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+      this.client = createOpenAIClient();
     }
     return this.client;
   }
