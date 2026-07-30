@@ -3,7 +3,6 @@ import { injectable } from 'tsyringe';
 import { env, hasBuilderBot } from '../../../shared/infrastructure/config/env';
 
 import { DomainError } from '../../../shared/domain/errors/DomainError';
-import { logger } from '../../../shared/infrastructure/logger/logger';
 
 import {
 
@@ -22,6 +21,11 @@ import {
   SendCtaUrlMessageInput,
   SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
+import {
+  renderButtonsAsText,
+  renderCtaUrlAsText,
+  renderListAsText,
+} from '../domain/interactiveFallback.utils';
 
 import { resolveBuilderBotApiUrl, resolveBuilderBotCloudMessagesUrl } from './builderBotApiMode';
 import { deleteBuilderBotCloudProject, rebootBuilderBotCloudDeploy } from './BuilderBotMcpHttpClient';
@@ -723,138 +727,36 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
     }
   }
 
-  async sendButtonsMessage(input: SendButtonsMessageInput): Promise<void> {
-    const buttons = input.buttons.slice(0, 3).map((btn) => ({
-      body: btn.body.slice(0, 20),
-      id: (btn.id ?? btn.body).slice(0, 256),
-    }));
+  /**
+   * `POST /api/v2/{projectId}/messages` solo valida `messages.content` (string) y descarta
+   * cualquier otro campo: botones, interactive o listas nunca llegan al dispositivo.
+   */
+  supportsInteractiveMessages(): boolean {
+    return false;
+  }
 
-    await this.postV2Message(input.deviceId, input.phone, {
-      messages: {
-        content: input.body.trim(),
-        footer: input.footer?.trim(),
-        buttons,
-        interactive: {
-          type: 'button',
-          body: { text: input.body.trim() },
-          footer: input.footer?.trim() ? { text: input.footer.trim() } : undefined,
-          action: {
-            buttons: buttons.map((btn) => ({
-              type: 'reply',
-              reply: { id: btn.id, title: btn.body },
-            })),
-          },
-        },
-      },
+  async sendButtonsMessage(input: SendButtonsMessageInput): Promise<void> {
+    await this.sendTextMessage({
+      deviceId: input.deviceId,
+      phone: input.phone,
+      message: renderButtonsAsText(input),
     });
   }
 
   async sendCtaUrlMessage(input: SendCtaUrlMessageInput): Promise<void> {
-    const body = input.body.trim();
-    const displayText = input.displayText.trim().slice(0, 20);
-    const url = input.url.trim();
-    const footer = input.footer?.trim();
-
-    const payloadAttempts: Record<string, unknown>[] = [
-      {
-        messages: {
-          content: body,
-          footer,
-          buttons: [{ body: displayText, url }],
-          interactive: {
-            type: 'cta_url',
-            body: { text: body },
-            footer: footer ? { text: footer } : undefined,
-            action: {
-              name: 'cta_url',
-              parameters: { display_text: displayText, url },
-            },
-          },
-        },
-      },
-      {
-        messages: {
-          content: body,
-          footer,
-          buttons: [{ body: displayText, url }],
-        },
-      },
-      {
-        messages: {
-          content: body,
-          footer,
-          buttonUrl: { body: displayText, url },
-        },
-      },
-      {
-        messages: {
-          interactive: {
-            type: 'cta_url',
-            body: { text: body },
-            footer: footer ? { text: footer } : undefined,
-            action: {
-              name: 'cta_url',
-              parameters: { display_text: displayText, url },
-            },
-          },
-        },
-      },
-    ];
-
-    let lastError: DomainError | null = null;
-    for (const payload of payloadAttempts) {
-      try {
-        await this.postV2Message(input.deviceId, input.phone, payload);
-        return;
-      } catch (error) {
-        if (error instanceof DomainError) lastError = error;
-        else throw error;
-      }
-    }
-
-    logger.warn(
-      { deviceId: input.deviceId, lastError: lastError?.message },
-      'CTA URL no enviado por API v2; fallback a texto con enlace'
-    );
-
     await this.sendTextMessage({
       deviceId: input.deviceId,
       phone: input.phone,
-      message: `${body}\n\n${displayText}: ${url}`,
+      message: renderCtaUrlAsText(input),
     });
   }
 
   async sendListMessage(input: SendListMessageInput): Promise<void> {
-    const sections = input.sections.map((section) => ({
-      title: section.title,
-      rows: section.rows.slice(0, 10).map((row) => ({
-        id: row.id,
-        title: row.title,
-        description: row.description,
-      })),
-    }));
-
-    try {
-      await this.postV2Message(input.deviceId, input.phone, {
-        messages: {
-          content: input.body.trim(),
-          footer: input.footer?.trim(),
-          list: {
-            title: input.title?.trim(),
-            buttonText: input.buttonText.trim(),
-            sections,
-          },
-        },
-      });
-    } catch {
-      const lines = sections.flatMap((s) =>
-        s.rows.map((r) => `- ${r.title}${r.description ? `: ${r.description}` : ''}`)
-      );
-      throw new DomainError(
-        `No se pudo enviar la lista por BuilderBot Cloud: ${[input.body.trim(), ...lines].join('\n')}`,
-        'BUILDERBOT_ERROR'
-      );
-    }
+    await this.sendTextMessage({
+      deviceId: input.deviceId,
+      phone: input.phone,
+      message: renderListAsText(input),
+    });
   }
 
   private async postV2Message(

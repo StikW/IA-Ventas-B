@@ -1,6 +1,6 @@
 # WhatsApp + MASSI — Integración IA Ventas
 
-> Guía operativa: agente LLM en texto libre + botones BBC **solo** en selección de método de pago.  
+> Guía operativa: agente LLM en texto libre + **flows UI de BBC para los botones**. La API v2 solo envía texto, así que los botones se configuran a mano en el panel y el webhook los dispara con `{ route }`.  
 > **Catálogo:** cualquier producto WooCommerce (simple o variable) identificado por **SKU**.  
 > **Contexto de negocio** (QR en tienda, clientes remotos, formularios WC, tickets, OTP): [`business-flow-massi.md`](./business-flow-massi.md).
 
@@ -22,8 +22,10 @@ sequenceDiagram
   API->>WC: catálogo / stock (ck_/cs_)
   API->>MASSI: variaciones / pedidos (App Password)
   API->>IA: LLM + herramientas (si hace falta)
-  API->>BBC: API v2 sendTextMessage (+ botones carrito)
+  API->>BBC: API v2 sendTextMessage (texto dinámico)
   BBC->>C: Respuesta texto
+  API-->>BBC: {"route":"catalog" | "cart"}
+  BBC->>C: Flow UI con botones
 
   C->>BBC: finalizar compra (modo link)
   BBC->>API: webhook
@@ -39,7 +41,7 @@ sequenceDiagram
 
 | Componente | Rol |
 |------------|-----|
-| **BuilderBot Cloud** | WhatsApp, relay webhook (`add_http`), flow **Pago UI** con botones |
+| **BuilderBot Cloud** | WhatsApp, relay webhook (`add_http`), flows UI **Catálogo / Carrito / Pago** con los botones |
 | **IA Ventas `sales-agent`** | Agente LLM + atajos deterministas (carrito, SKU, modificar carrito); checkout link o pago legacy |
 | **WooCommerce REST** (`ck_`/`cs_`) | Búsqueda catálogo, productos simples, fallback stock por SKU |
 | **Plugin `massi-bot-api` (WordPress)** | Variaciones enriquecidas, lookup por SKU, pedidos MASSI, tickets, comprobantes |
@@ -50,20 +52,63 @@ sequenceDiagram
 | Tipo | Mecanismo |
 |------|-----------|
 | Texto (saludo, resumen de carrito) | `POST /api/v2/{projectId}/messages` — `sendTextMessage` |
-| Botón **Finalizar pedido** (con carrito activo) | API v2 — `sendButtonsMessage` (`buttons` + `interactive type: button`) |
-| Botones **Finalizar pedido** + **Vaciar carrito** (saludo con carrito) | API v2 — `sendButtonsMessage` |
-| Botón **Ver catálogo** (CTA URL) | API v2 — `sendCtaUrlMessage`: mensaje texto + segundo mensaje con botón (`buttons`+`url`, `buttonUrl`, `interactive cta_url`) |
-| Botón **Continuar compra** (CTA URL al formulario WC) | API v2 — `sendCtaUrlMessage` con la URL de checkout |
-| Botones de pago (modo `whatsapp` legacy) | Webhook `{ "route": "payment" }` → flow **IA Ventas — Pago UI** |
+| Botón **Ver catálogo** (CTA URL) | Webhook `{ "route": "catalog" }` → flow **IA Ventas — Saludo Sin Carrito** |
+| Botón **Vaciar carrito** (saludo con carrito) | Webhook `{ "route": "cart" }` → flow **IA Ventas — Saludo Con Carrito** |
+| Método de pago (modo `whatsapp` legacy) | Webhook `{ "route": "payment" }` → flow **IA Ventas — Pago UI** |
+| Enlace **Continuar compra** (formulario WC) | Texto con la URL de checkout (URL dinámica: sin flow) |
 
-**Un mensaje = un tipo de botón.** WhatsApp no permite mezclar botones de respuesta con un botón de enlace, así que el saludo con carrito se envía en **dos mensajes**: acciones primero, catálogo después (`OutboundWhatsAppPayload` acepta un arreglo de mensajes).
+### Dónde viven los botones (verificado jul 2026)
+
+Los botones **solo** existen en flows del panel BBC. Ni la API v2 ni el MCP pueden enviarlos ni guardarlos:
+
+| Vía | Resultado de la prueba |
+|-----|------------------------|
+| `POST /api/v2/{projectId}/messages` con `buttons` | `200`, pero la respuesta ecoa solo `message`; los logs del contenedor reciben `Message payload: <content>` sin botones. El esquema Zod valida únicamente `messages.content`, `number` y `checkIfExists` |
+| MCP `create_answer` con `buttons` en la raíz | `unrecognized_keys: 'buttons'` |
+| MCP `create_answer` con `buttons` en `options` | `200`, pero al releer el answer solo persisten `sensitive`, `capture` y `delay` |
+| REST `/api/v1/manager/flows|answers/...` | `404` con la API key; solo responde `/manager/deploys/{projectId}` |
+| Panel BBC → bloque de texto → **Botones interactivos** | ✅ Reply, CTA URL, lista interactiva y header |
+
+**Reparto de responsabilidades:**
+
+| Elemento | Automático (MCP) | Manual (panel) |
+|----------|------------------|----------------|
+| Flow, keywords, orden | ✅ | |
+| Texto del mensaje | ✅ (solo al crear el flow) | Editar copy |
+| Reglas de routing `add_http` | ✅ | |
+| Botones Reply / CTA URL | | ✅ **una vez por negocio** |
+
+`supportsInteractiveMessages()` devuelve `false` en cloud-v2 y `true` en wa-api (`console.builderbot.app`), único transporte con botones nativos por API.
+
+### Routing a flows UI
+
+El webhook responde `{ route }` **después** de que el agente envió sus textos por API v2 (`WebhookController` espera al agente), así que el flow con botones llega siempre al final:
+
+**Solo el saludo usa flows.** Al agregar o modificar productos el agente sigue en texto libre.
+
+| `route` | Cuándo | Flow UI | Botones en el panel |
+|---------|--------|---------|---------------------|
+| `catalog` | Saludo **sin** carrito · consulta de catálogo · tras vaciar el carrito | **IA Ventas — Saludo Sin Carrito** | CTA URL **Ver catálogo** → `{storeUrl}{shopPagePath}` |
+| `cart` | Saludo **con** carrito | **IA Ventas — Saludo Con Carrito** → `gotoFlow` al de catálogo | Reply **Vaciar carrito** |
+| `payment` | Método de pago (modo `whatsapp` legacy) | **IA Ventas — Pago UI** | Reply **Transferencia**, **Efectivo tienda**, **Menú principal** |
+| `none` | Todo lo demás | — | Texto plano (incluye el enlace de checkout) |
+
+`resolveBbcUiRoute` distingue el saludo por sus botones: **Vaciar carrito** solo aparece al saludar con carrito. Cuando la ruta delega en un flow, `dispatchOutbound` **omite** del texto lo que el flow va a mostrar (las opciones en `cart`, el enlace del catálogo en `catalog` y en `cart`).
+
+**Encadenado con `gotoFlow`:** WhatsApp no admite Reply y CTA URL en el mismo mensaje, así que el flow del saludo con carrito redirige al del catálogo (`options.gotoFlow`). El cliente recibe: texto del agente con el resumen → mensaje con el botón *Vaciar carrito* → mensaje con el botón *Ver catálogo*. El provisioning lo deja puesto al crear el answer; en flows que ya existían hay que configurarlo a mano, porque reescribir el answer por MCP borraría los botones.
+
+**El checkout no tiene flow:** su botón necesita una URL distinta por conversación (`items=SKU:qty&phone=…`) y el campo CTA URL del panel es fijo. El enlace sigue viajando como texto, que WhatsApp muestra tocable.
+
+**Si los botones no están configurados** en el panel, el flow envía solo su texto: el cliente puede seguir por escrito (`finalizar`, `vaciar carrito`), pero se queda sin acceso al catálogo. Configúralos al dar de alta el negocio.
+
+**Keywords centinela:** los flows UI llevan `__ia_ventas_route_*__` con `listenKeywords: false`. Una keyword real (p. ej. `hola`) haría que BBC dispare el flow por su cuenta, saltándose al agente.
 
 **Importante:** carrito y catálogo se envían desde **IA Ventas** vía API v2. **No** uses `messageMapping` en el relay HTTP.
 
 Relay HTTP (`sync-webhook`):
 
 - `avoidResponse: true`
-- Regla: `route === "payment"` → flow Pago UI
+- Reglas: `route === "catalog" | "cart" | "payment"` → su flow UI
 - Sin `messageMapping`
 
 ---
@@ -179,24 +224,23 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 |---------|---------|
 | `hola`, `menú`, `buenos días` | Texto: bienvenida + **perfil negocio** (descripción, 📍 dirección, 🕐 horario desde `/business/settings`) |
 | (continúa) | Pide **ID del producto** (SKU amigable) o descripción en lenguaje natural |
-| (continúa) | Segundo mensaje: botón **Ver catálogo** → `{storeUrl}{shopPagePath}` (MASSI: `https://massijoyeria.com/tienda/`) |
-
-Sin botones Reply en este caso (solo CTA URL al catálogo).
+| (continúa) | `route: catalog` → flow **Saludo Sin Carrito** con botón **Ver catálogo** → `{storeUrl}{shopPagePath}` (MASSI: `https://massijoyeria.com/tienda/`) |
 
 **Con carrito previo** (`flowStep: buying`, `buildWelcomeWithCart`):
 
 | Mensaje | Contenido |
 |---------|-----------|
-| 1 | Bienvenida + perfil + **resumen del carrito** + aviso de que puede enviar un **ID** para agregar o cambiar productos · botones **Finalizar pedido** y **Vaciar carrito** |
-| 2 | Botón **Ver catálogo** (CTA URL) |
+| 1 (API v2) | Bienvenida + perfil + **resumen del carrito** + aviso de que puede enviar un **ID** para agregar o cambiar productos |
+| 2 (flow `cart`) | **Saludo Con Carrito**: cómo modificar el carrito + botón **Vaciar carrito** |
+| 3 (gotoFlow) | **Saludo Sin Carrito**: botón **Ver catálogo** |
 
-**Vaciar carrito** (`massi:cart:clear`) limpia `cartItems` y devuelve al paso de pedir ID. El LLM **no** debe repetir un saludo genérico si ya se envió.
+**Vaciar carrito** (`massi:cart:clear`, o escribir *Vaciar carrito*) limpia `cartItems` y devuelve al paso de pedir ID. El LLM **no** debe repetir un saludo genérico si ya se envió.
 
 ### 2. Exploración de catálogo
 
 | Cliente | Sistema |
 |---------|---------|
-| `¿qué productos tienen?`, `catálogo`, `qué venden` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + botón **Ver catálogo** (no lista productos en chat) |
+| `¿qué productos tienen?`, `catálogo`, `qué venden` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + `route: catalog` → flow con botón **Ver catálogo** (no lista productos en chat) |
 | Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito |
 | Cliente describe producto (*cadena 50 cm*, *balín #6*) | **RAG** (`resolveSkuFromRag` + parser `.txt`) → SKU → stock WC → carrito; fallback búsqueda WC por nombre |
 | `busco zapatos`, consulta abierta al LLM | LLM → `buscar_en_documentos` (RAG) + `agregar_producto_por_sku` / `buscar_productos_tienda` |
@@ -207,7 +251,7 @@ Sin botones Reply en este caso (solo CTA URL al catálogo).
 
 | Cliente | Sistema |
 |---------|---------|
-| `quiero [producto] [variante]` | Atajo determinista → resuelve variación → agrega → resumen + invitación a enviar otro *ID* · único botón: **Finalizar pedido** |
+| `quiero [producto] [variante]` | Atajo determinista → resuelve variación → agrega → resumen + invitación a enviar otro *ID* · sin flow: **Finalizar pedido** va como opción escrita |
 | `cadena 45cm y balín #3` (varios productos) | `parseMultiProductSelection` → resuelve cada segmento; éxito parcial si uno no existe en WC |
 | `otra de 45 cm` (con carrito activo) | Misma familia de producto → variación hermana por atributo |
 | `quisiera agregar una [producto]` | Producto concreto; typos (`agreagar`) se normalizan |
@@ -234,10 +278,8 @@ Matching contra **ítems ya en carrito** (no busca productos nuevos en tienda sa
 
 | Cliente | Sistema |
 |---------|---------|
-| `eso es todo`, `finalizar con la compra`, botón **Finalizar pedido** | Valida stock → resumen del carrito + segundo mensaje con botón **Continuar compra** (CTA URL al formulario WC) |
-| `reenvía el link` / `formulario` | Reenvía el mismo botón/URL (`flowStep: checkout_redirect`) |
-
-Si BBC rechaza el CTA URL, el adapter cae a texto con el enlace, así que el cliente nunca se queda sin link.
+| `eso es todo`, `finalizar con la compra`, `Finalizar pedido` | Valida stock → resumen del carrito + enlace **Continuar compra** al formulario WC |
+| `reenvía el link` / `formulario` | Reenvía la misma URL (`flowStep: checkout_redirect`) |
 
 URL generada (`checkoutLink.utils.ts`):
 
@@ -317,17 +359,21 @@ Cliente: hola
 Bot:     ¡Hola! Bienvenido a MASSI JOYERIA.
          Somos fabricantes de joyas en oro 18K…
          📍 [dirección]  🕐 [horario]
-         Dime el ID del producto o productos que te interesan…
-Bot:     [botón Ver catálogo → massijoyeria.com/tienda/]
+         Dime el ID del producto o productos que te interesan.
+Bot:     Link de nuestro Catálogo Oficial       ← flow Saludo Sin Carrito
+         [ Ver catálogo ]                       ← botón CTA URL
 
 Cliente: qué productos tienen
-Bot:     Estos son nuestros productos… revisa el catálogo en el siguiente enlace.
-         [botón Ver catálogo]
+Bot:     Estos son nuestros productos disponibles en la tienda online.
+Bot:     Link de nuestro Catálogo Oficial
+         [ Ver catálogo ]
 
 Cliente: BAL-DI6-01
 Bot:     ¡Listo! Agregué Balín diamantado #6…
-         Dime el ID de otro producto o pulsa Finalizar pedido.
-         [Finalizar pedido]
+         Dime el ID de otro producto si quieres agregar más.
+
+         Responde con una de estas opciones:
+         • *Finalizar pedido*
 
 Cliente: quisiera eliminar mi carrito
 Bot:     Listo, vacié tu carrito. ¿Qué te gustaría pedir?
@@ -335,18 +381,20 @@ Bot:     Listo, vacié tu carrito. ¿Qué te gustaría pedir?
 Cliente: cadena de oro 50 cm
 Bot:     (RAG → SKU cadena 50cm → WC stock) → agrega al carrito…
 
-Cliente: [Finalizar pedido]
+Cliente: Finalizar pedido
 Bot:     ¡Perfecto! Tu selección está lista… (resumen)
-Bot:     Completa tu compra aquí 👇
-         [Continuar compra → massijoyeria.com/finalizar-compra/?phone=…&items=SKU:qty]
+
+         Completa tu compra aquí 👇
+         https://massijoyeria.com/finalizar-compra/?phone=…&items=SKU:qty
 
 --- Si vuelve más tarde con el carrito cargado ---
 
 Cliente: hola
 Bot:     ¡Hola! Bienvenido a MASSI JOYERIA… Tienes un pedido en curso: (resumen)
-         [Finalizar pedido | Vaciar carrito]
-Bot:     Si quieres ver más productos, revisa el catálogo:
-         [Ver catálogo]
+Bot:     🛒 ¿Qué deseas hacer con tu carrito?…     ← flow Saludo Con Carrito
+         [ Vaciar carrito ]
+Bot:     Link de nuestro Catálogo Oficial          ← gotoFlow al de catálogo
+         [ Ver catálogo ]
 ```
 
 Misma lógica aplica a cualquier catálogo WC (medidas, tallas, packs de variación, etc.).
@@ -361,10 +409,10 @@ Misma lógica aplica a cualquier catálogo WC (medidas, tallas, packs de variaci
 
 | Modo checkout | Qué pasa en BBC |
 |---------------|-----------------|
-| **`link` (default)** | Solo relay + API v2 texto (incluye URL formulario). **No** se dispara flow Pago UI. |
-| **`whatsapp` (legacy)** | Webhook `{ "route": "payment" }` → flow **Pago UI** con botones Reply. |
+| **`link` (default)** | Relay + API v2 texto (incluye URL formulario) + flows de saludo (**Sin Carrito** / **Con Carrito**). **No** se dispara Pago UI. |
+| **`whatsapp` (legacy)** | Además, webhook `{ "route": "payment" }` → flow **Pago UI** con botones Reply. |
 
-**Sin cambios obligatorios en BBC** al pasar a modo link. Re-sincronizar webhook tras deploy sigue siendo buena práctica.
+Los flows los crea `sync-webhook`; **sus botones se configuran a mano una vez por negocio** (ver sección de configuración arriba).
 
 ---
 
@@ -464,13 +512,26 @@ Violarlas produce fallos **silenciosos**, no errores:
 
 ---
 
-## Configurar botones en BuilderBot Cloud (solo modo `whatsapp`)
+## Configurar botones en BuilderBot Cloud (obligatorio por negocio)
 
-Tras **Re-sincronizar webhook** en panel IA Ventas → WhatsApp:
+`sync-webhook` crea los flows y su texto, pero **los botones son manuales**: el MCP no los acepta. Tras **Re-sincronizar webhook** en panel IA Ventas → WhatsApp:
 
 1. Abre [app.builderbot.cloud](https://app.builderbot.cloud) → proyecto del negocio.
-2. Flow **IA Ventas — Pago UI** → bloque texto `Perfecto. Elige cómo deseas pagar:`.
-3. **Botones interactivos → + Reply** (3 botones, no CTA URL):
+2. En cada flow, selecciona el bloque de texto → **Botones interactivos** → agrega los botones y **Guarda** el bloque (Reboot **no** guarda cambios).
+
+**IA Ventas — Saludo Sin Carrito** (`Link de nuestro Catálogo Oficial`) → **+ CTA URL**:
+
+| Texto | URL |
+|-------|-----|
+| Ver catálogo | `{storeUrl}{shopPagePath}` (MASSI: `https://massijoyeria.com/tienda/`) |
+
+**IA Ventas — Saludo Con Carrito** → **+ Reply** y, en las opciones del bloque, **Redirigir a flujo** → *Saludo Sin Carrito*:
+
+| Texto | ID (si el panel lo pide) |
+|-------|--------------------------|
+| Vaciar carrito | `massi:cart:clear` |
+
+**IA Ventas — Pago UI** (solo modo `whatsapp` legacy) → **+ Reply**:
 
 | Texto | ID (si el panel lo pide) |
 |-------|--------------------------|
@@ -478,12 +539,13 @@ Tras **Re-sincronizar webhook** en panel IA Ventas → WhatsApp:
 | Efectivo tienda | `massi:pay:cash` |
 | Menú principal | `massi:menu:back` |
 
-4. **Guardar** el bloque en el editor (Reboot **no** guarda cambios).
-5. Deploy / Reboot del bot en BBC.
+3. Deploy / Reboot del bot en BBC.
+
+Las etiquetas de los botones son las que `resolveButtonAction` interpreta al volver por webhook, así que **deben coincidir exactamente** con `WA_BTN_LABEL`.
 
 **No tocar** el flow **IA Ventas — Agente** (relay HTTP). Puedes **eliminar** `IA Ventas — Menú UI` si existe; ya no se usa.
 
-Modo **wa-api** (`console.builderbot.app`): botones vía `POST /messages` directo en el adapter.
+Modo **wa-api** (`console.builderbot.app`): no necesita nada de esto, envía botones Reply/URL por `POST /messages` (hasta 10 opciones, texto/URL/teléfono).
 
 ---
 
@@ -493,8 +555,10 @@ Modo **wa-api** (`console.builderbot.app`): botones vía `POST /messages` direct
 |------|---------|
 | Relay HTTP + reglas BBC | `builderbot/infrastructure/BuilderBotCloudWebhookRelay.ts` |
 | Cliente MCP HTTP (JSON-RPC) | `builderbot/infrastructure/BuilderBotMcpHttpClient.ts` |
-| Flow UI de pago (MCP) | `builderbot/infrastructure/BuilderBotCloudUiFlowsRelay.ts` |
+| Flows UI de saludo y pago (MCP) | `builderbot/infrastructure/BuilderBotCloudUiFlowsRelay.ts` |
 | Respuesta webhook `{ route }` | `builderbot/domain/BbcWebhookAgentResponse.ts` |
+| Elección de flow UI según botones | `sales-agent/domain/bbcUiRoute.ts` |
+| Botones/enlaces como texto (fallback) | `builderbot/domain/interactiveFallback.utils.ts` |
 | Webhook síncrono | `builderbot/presentation/controllers/WebhookController.ts` |
 | Envío texto API v2 | `builderbot/infrastructure/BuilderBotCloudV2Adapter.ts` |
 | Parser clicks de botones | `builderbot/application/services/BuilderBotWebhookParser.ts` |
@@ -534,16 +598,16 @@ Luego en panel → WhatsApp → **Re-sincronizar webhook**.
 - [ ] Tienda WC accesible desde el servidor (ngrok estable si es local)
 - [ ] **Re-sincronizar webhook** tras cada deploy que toque relay/BBC
 - [ ] **Probar conexión** WC (detecta `checkoutPagePath` + `shopPagePath` → `/tienda/`)
-- [ ] **hola** (sin carrito) → saludo con perfil negocio + pide ID + botón **Ver catálogo**
-- [ ] **hola** (con carrito previo) → saludo + resumen + botones **Finalizar pedido** / **Vaciar carrito** + botón **Ver catálogo**
-- [ ] Botón **Vaciar carrito** → carrito vacío + vuelve a pedir ID
+- [ ] **hola** (sin carrito) → saludo con perfil negocio + pide ID + enlace **Ver catálogo** (URL visible y clicable)
+- [ ] **hola** (con carrito previo) → saludo + resumen + opciones **Finalizar pedido** / **Vaciar carrito** + enlace catálogo
+- [ ] Escribir **Vaciar carrito** → carrito vacío + vuelve a pedir ID
 - [ ] **qué productos tienen** → enlace catálogo (no lista en chat)
-- [ ] **ID/SKU** o descripción natural → carrito + botón **Finalizar pedido**
+- [ ] **ID/SKU** o descripción natural → carrito + opción **Finalizar pedido**
 - [ ] **quisiera eliminar mi carrito** → vacía carrito
 - [ ] **Dos productos** en un mensaje (`cadena y balín`) → ambos si existen en WC
 - [ ] Segunda variante del mismo producto (*otra de X*) → suma al carrito
 - [ ] Quitar / corregir / vaciar carrito → resumen actualizado
-- [ ] **finalizar con la compra** → botón **Continuar compra** → formulario WC con `items=SKU:qty`
+- [ ] **finalizar con la compra** → enlace **Continuar compra** → formulario WC con `items=SKU:qty`
 - [ ] Abrir link → productos pre-cargados (plugin checkout link)
 - [ ] (Legacy) **eso sería todo** con `checkoutMode: whatsapp` → botones Transferencia / Efectivo
 - [ ] **Transferencia** (legacy) → datos bancarios → imagen comprobante
@@ -588,4 +652,4 @@ El plugin:
 
 ---
 
-*Última actualización: 30 julio 2026 — saludo con carrito (botones Finalizar/Vaciar), botón **Continuar compra** en el cierre, un solo botón durante el armado; referencia técnica plataforma BBC (MCP, reglas de flows, límites, gaps).*
+*Última actualización: 30 julio 2026 — botones solo en el saludo, vía flows UI de BBC (`route: catalog | cart`), con `gotoFlow` encadenando carrito → catálogo; la API v2 y el MCP solo manejan texto, así que los botones se configuran a mano una vez por negocio.*

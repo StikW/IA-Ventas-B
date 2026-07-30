@@ -72,13 +72,10 @@ export class BuilderBotCloudWebhookRelay {
     if (secret) headers['x-webhook-secret'] = secret;
 
     const rules: HttpRule[] = [
-      {
-        conditionRule: 'route',
-        conditionValue: 'payment',
-        conditionFlowId: uiFlows.paymentFlowId,
-        condition: '===',
-      },
-    ];
+      { conditionRule: 'route', conditionValue: 'catalog', conditionFlowId: uiFlows.catalogFlowId },
+      { conditionRule: 'route', conditionValue: 'cart', conditionFlowId: uiFlows.cartFlowId },
+      { conditionRule: 'route', conditionValue: 'payment', conditionFlowId: uiFlows.paymentFlowId },
+    ].map((rule) => ({ ...rule, condition: '===' }));
 
     return {
       url: webhookUrl,
@@ -92,7 +89,7 @@ export class BuilderBotCloudWebhookRelay {
         text: '{body}',
       },
       rules,
-      // Texto lo envía IA Ventas vía API v2; el HTTP solo enruta route=payment al flow UI.
+      // Texto lo envía IA Ventas vía API v2; el HTTP solo enruta `route` al flow UI con botones.
       avoidResponse: true,
     };
   }

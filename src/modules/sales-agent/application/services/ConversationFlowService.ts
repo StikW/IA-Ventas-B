@@ -246,8 +246,7 @@ export class ConversationFlowService {
   ): Promise<ConversationFlowResult> {
     const catalogUrl = await this.resolveCatalogUrl(tenantId);
 
-    const idPrompt =
-      'Dime el ID del producto o productos que te interesan. Si no los conoces, puedes revisar el catálogo a través del siguiente enlace.';
+    const idPrompt = 'Dime el ID del producto o productos que te interesan.';
 
     const body = [introBlock, introBlock ? '' : null, idPrompt].filter((line) => line !== null).join('\n');
 
@@ -257,8 +256,7 @@ export class ConversationFlowService {
   /** Respuesta a consultas de catálogo: enlace + botón (no lista de productos en chat). */
   async buildCatalogBrowseReply(tenantId: string, salesContext: SalesContext): Promise<ConversationFlowResult> {
     const catalogUrl = await this.resolveCatalogUrl(tenantId);
-    const body =
-      'Estos son nuestros productos disponibles en la tienda online. Revisa el catálogo completo en el siguiente enlace.';
+    const body = 'Estos son nuestros productos disponibles en la tienda online.';
 
     return this.buildCatalogCtaResult(body, catalogUrl, {
       ...salesContext,
@@ -320,7 +318,7 @@ export class ConversationFlowService {
       '',
       CartService.formatSummary(items),
       '',
-      'Dime el *ID* de otro producto si quieres agregar más, o pulsa *Finalizar pedido* cuando estés listo.',
+      'Dime el *ID* de otro producto si quieres agregar más.',
     ]
       .filter(Boolean)
       .join('\n');
@@ -357,7 +355,7 @@ export class ConversationFlowService {
       '¡Perfecto! Tu selección está lista.',
       cartSummary,
       '',
-      'Pulsa el botón para completar tu pedido en la tienda: elige recoger en tienda o envío a domicilio y el método de pago.',
+      'Abre el enlace para completar tu pedido en la tienda: elige recoger en tienda o envío a domicilio y el método de pago.',
       'Tu carrito y tu número (*' + customerPhone.replace(/\D/g, '') + '*) ya van cargados en el formulario.',
       'Cuando termines, recibirás confirmación por correo. Si necesitas ayuda, escríbeme por aquí.',
     ]
@@ -457,7 +455,7 @@ export class ConversationFlowService {
         profile?.address?.trim() ? `📍 ${profile.address.trim()}` : null,
         profile?.businessHours?.trim() ? `🕐 ${profile.businessHours.trim()}` : null,
         '',
-        'Pulsa *Comprar* para empezar o escríbeme tu pregunta.',
+        'Escribe *Comprar* para empezar o escríbeme tu pregunta.',
       ]
         .filter(Boolean)
         .join('\n');

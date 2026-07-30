@@ -59,6 +59,10 @@ export class BuilderBotCloudAdapter implements IBuilderBotCloudService {
     return this.delegate().sendTextMessage(input);
   }
 
+  supportsInteractiveMessages(): boolean {
+    return this.delegate().supportsInteractiveMessages();
+  }
+
   sendButtonsMessage(input: SendButtonsMessageInput): Promise<void> {
     return this.delegate().sendButtonsMessage(input);
   }

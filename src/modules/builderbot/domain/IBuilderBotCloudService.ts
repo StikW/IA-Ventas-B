@@ -97,6 +97,8 @@ export interface IBuilderBotCloudService {
   requestPairingCode(deviceId: string, phone: string): Promise<{ pairingCode?: string }>;
   updateDevice(deviceId: string, payload: Record<string, unknown>): Promise<void>;
   sendTextMessage(input: SendTextMessageInput): Promise<void>;
+  /** `false` cuando el transporte solo acepta texto y los botones se degradan a opciones escritas. */
+  supportsInteractiveMessages(): boolean;
   sendButtonsMessage(input: SendButtonsMessageInput): Promise<void>;
   sendCtaUrlMessage(input: SendCtaUrlMessageInput): Promise<void>;
   sendListMessage(input: SendListMessageInput): Promise<void>;

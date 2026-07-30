@@ -4,7 +4,11 @@ import { hasBuilderBot, hasOpenAI } from '../../../../shared/infrastructure/conf
 import { AuditService } from '../../../../shared/infrastructure/audit/AuditService';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
 import { IBuilderBotCloudService } from '../../../builderbot/domain/IBuilderBotCloudService';
-import { BbcWebhookAgentResponse, emptyBbcWebhookResponse } from '../../../builderbot/domain/BbcWebhookAgentResponse';
+import {
+  BbcUiRoute,
+  BbcWebhookAgentResponse,
+  emptyBbcWebhookResponse,
+} from '../../../builderbot/domain/BbcWebhookAgentResponse';
 import { resolveBuilderBotApiMode } from '../../../builderbot/infrastructure/builderBotApiMode';
 import { normalizeBuilderBotPhone } from '../../../builderbot/infrastructure/builderBotPhone';
 import { CreateOrderUseCase } from '../../../commerce/application/use-cases/OrderUseCases';
@@ -14,7 +18,16 @@ import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRe
 import { ChatMessage, IChatSessionRepository, PendingCartItem, SalesContext } from '../../domain/IChatSessionRepository';
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
-import { ConversationFlowService, OutboundWhatsAppPayload } from './ConversationFlowService';
+import {
+  ConversationFlowService,
+  OutboundWhatsAppMessage,
+  OutboundWhatsAppPayload,
+} from './ConversationFlowService';
+import {
+  joinTextBlocks,
+  renderButtonOptions,
+  renderLinkBlock,
+} from '../../../builderbot/domain/interactiveFallback.utils';
 import { CATALOG_CTA_LABEL } from '../../domain/catalogUrl.utils';
 import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
@@ -932,7 +945,7 @@ export class SalesAgentService {
           : input.flowStep === 'checkout_redirect'
             ? 'FASE ACTUAL: ya se envió enlace al formulario WC. Si pide el link → finalizar_compra. NO uses botones de pago en chat.'
             : input.flowStep === 'buying'
-              ? `FASE ACTUAL: carrito con ${input.cartItemCount} producto(s). El cliente tiene el botón *Finalizar pedido*; todo lo demás lo maneja por texto. Si agrega o cambia productos, usa agregar_producto_por_sku. NO llames finalizar_compra salvo confirmación explícita.`
+              ? `FASE ACTUAL: carrito con ${input.cartItemCount} producto(s). El cliente cierra escribiendo *Finalizar pedido*; todo lo demás lo maneja por texto. Si agrega o cambia productos, usa agregar_producto_por_sku. NO llames finalizar_compra salvo confirmación explícita.`
               : input.flowStep === 'discovery' || input.flowStep === 'menu'
                 ? 'FASE ACTUAL: esperando ID de producto o descripción en lenguaje natural. El sistema intenta RAG→SKU automáticamente; si el LLM interviene, usa buscar_en_documentos para interpretar y luego agregar_producto_por_sku con el SKU. Stock/precio solo desde WooCommerce.'
                 : 'FASE ACTUAL: exploración y venta.';
@@ -946,7 +959,7 @@ export class SalesAgentService {
       '3) Para interpretar descripciones: buscar_en_documentos (RAG del catálogo) → extrae SKU → agregar_producto_por_sku. El backend también intenta RAG→SKU antes del LLM.',
       '4) Catálogo, stock y precios finales: SIEMPRE WooCommerce (buscar_productos_tienda, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
       '5) IDENTIFICADOR PRINCIPAL: ID = SKU. Si envía varios IDs o productos, resuélvelos uno a uno.',
-      '6) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a pulsar *Finalizar pedido*.',
+      '6) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a escribir *Finalizar pedido*.',
       '7) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce.',
       '8) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
       '9) Usa la menor cantidad de herramientas posible por mensaje.',
@@ -1021,7 +1034,7 @@ export class SalesAgentService {
         return { route: 'payment' };
       }
 
-      await this.dispatchOutbound(params.deviceId, phone, outbound);
+      await this.dispatchOutbound(params.deviceId, phone, outbound, route);
 
       await this.audit.log({
         tenantId: params.tenantId,
@@ -1034,7 +1047,7 @@ export class SalesAgentService {
           replyPreview: params.reply.slice(0, 120),
           ragHits: params.ragHits,
           salesPhase: params.salesContext.phase,
-          bbcRoute: 'none',
+          bbcRoute: route,
         },
       });
 
@@ -1043,11 +1056,12 @@ export class SalesAgentService {
           tenantId: params.tenantId,
           customerPhone: params.customerPhone,
           salesPhase: params.salesContext.phase,
+          bbcRoute: route,
         },
         'Agente de ventas respondió por WhatsApp (API v2)'
       );
 
-      return { route: 'none' };
+      return { route };
     }
 
     const phone = normalizeBuilderBotPhone(params.customerPhone);
@@ -1084,11 +1098,19 @@ export class SalesAgentService {
   private async dispatchOutbound(
     deviceId: string,
     phone: string,
-    outbound: OutboundWhatsAppPayload
+    outbound: OutboundWhatsAppPayload,
+    route: BbcUiRoute = 'none'
   ): Promise<void> {
     const messages = Array.isArray(outbound) ? outbound : [outbound];
+    const interactive = this.builderBot.supportsInteractiveMessages();
 
     for (const message of messages) {
+      if (!interactive) {
+        const text = this.renderOutboundAsText(message, route);
+        if (text) await this.builderBot.sendTextMessage({ deviceId, phone, message: text });
+        continue;
+      }
+
       if (message.kind === 'buttons') {
         await this.builderBot.sendButtonsMessage({
           deviceId,
@@ -1117,6 +1139,26 @@ export class SalesAgentService {
 
       await this.builderBot.sendTextMessage({ deviceId, phone, message: message.body });
     }
+  }
+
+  /**
+   * Sin mensajes interactivos, las opciones y el enlace viajan dentro del texto. Se omiten
+   * cuando el flow UI de BuilderBot ya va a mostrarlos como botones, para no duplicarlos.
+   */
+  private renderOutboundAsText(message: OutboundWhatsAppMessage, route: BbcUiRoute): string {
+    if (message.kind === 'buttons') {
+      const options = route === 'cart' ? '' : renderButtonOptions(message.buttons);
+      return joinTextBlocks([message.body, options, message.footer]);
+    }
+
+    if (message.kind === 'cta_url') {
+      // En `cart` el flow del saludo con carrito encadena el del catálogo (gotoFlow).
+      const flowShowsCatalog = route === 'catalog' || route === 'cart';
+      const link = flowShowsCatalog ? '' : renderLinkBlock(message.displayText, message.url, message.ctaBody);
+      return joinTextBlocks([message.body, link, message.footer]);
+    }
+
+    return message.body.trim();
   }
 
   private async sendAndSave(

@@ -12,6 +12,7 @@ import {
   SendCtaUrlMessageInput,
   SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
+import { renderCtaUrlAsText } from '../domain/interactiveFallback.utils';
 import { resolveBuilderBotApiMode, resolveBuilderBotApiUrl } from './builderBotApiMode';
 
 @injectable()
@@ -128,6 +129,10 @@ export class BuilderBotWaApiAdapter implements IBuilderBotCloudService {
     });
   }
 
+  supportsInteractiveMessages(): boolean {
+    return true;
+  }
+
   async sendButtonsMessage(input: SendButtonsMessageInput): Promise<void> {
     const buttons = input.buttons.slice(0, 3).map((btn) => ({
       body: btn.body,
@@ -147,11 +152,10 @@ export class BuilderBotWaApiAdapter implements IBuilderBotCloudService {
   }
 
   async sendCtaUrlMessage(input: SendCtaUrlMessageInput): Promise<void> {
-    const fallback = `${input.body.trim()}\n\n${input.displayText.trim()}: ${input.url.trim()}`;
     await this.sendTextMessage({
       deviceId: input.deviceId,
       phone: input.phone,
-      message: fallback,
+      message: renderCtaUrlAsText(input),
     });
   }
 
