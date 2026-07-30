@@ -1005,35 +1005,6 @@ export class SalesAgentService {
       const route = resolveBbcUiRoute(outbound);
       const phone = normalizeBuilderBotPhone(params.customerPhone);
 
-      if (route === 'payment') {
-        await this.audit.log({
-          tenantId: params.tenantId,
-          userId: AGENT_ACTOR,
-          action: 'BUILDERBOT_MESSAGE_SENT',
-          resource: 'whatsapp_message',
-          resourceId: params.messageId,
-          metadata: {
-            customerPhone: params.customerPhone,
-            replyPreview: params.reply.slice(0, 120),
-            ragHits: params.ragHits,
-            salesPhase: params.salesContext.phase,
-            bbcRoute: 'payment',
-          },
-        });
-
-        logger.info(
-          {
-            tenantId: params.tenantId,
-            customerPhone: params.customerPhone,
-            salesPhase: params.salesContext.phase,
-            bbcRoute: 'payment',
-          },
-          'Agente enrutó selección de pago al flow UI de BuilderBot'
-        );
-
-        return { route: 'payment' };
-      }
-
       await this.dispatchOutbound(params.deviceId, phone, outbound, route);
 
       await this.audit.log({

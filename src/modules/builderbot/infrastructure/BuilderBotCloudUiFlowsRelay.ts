@@ -44,20 +44,11 @@ const UI_FLOWS: UiFlowSpec[] = [
     sort: 11,
     gotoFlow: 'catalogFlowId',
   },
-  {
-    key: 'paymentFlowId',
-    label: 'ia_ventas_ui_payment',
-    name: 'IA Ventas — Pago UI',
-    keyword: '__ia_ventas_route_payment__',
-    message: 'Perfecto. Elige cómo deseas pagar:',
-    sort: 12,
-  },
 ];
 
 export interface BuilderBotUiFlowIds {
   catalogFlowId: string;
   cartFlowId: string;
-  paymentFlowId: string;
 }
 
 type FlowRecord = { id?: string; label?: string; name?: string; keywords?: string[] };

@@ -33,6 +33,7 @@ import {
 import { SalesAgentToolsHandler } from '../../../modules/sales-agent/application/services/SalesAgentToolsHandler';
 import { ConversationFlowService } from '../../../modules/sales-agent/application/services/ConversationFlowService';
 import { OrderNotificationService } from '../../../modules/commerce/application/services/OrderNotificationService';
+import { WhatsAppOutboundService } from '../../../modules/builderbot/application/services/WhatsAppOutboundService';
 import { CreateOrderUseCase, UpdateOrderStatusUseCase } from '../../../modules/commerce/application/use-cases/OrderUseCases';
 import { PlatformTenantCleanupService } from '../../../modules/tenant/infrastructure/persistence/PlatformTenantCleanupService';
 import { TenantDeletionService } from '../../../modules/tenant/application/services/TenantDeletionService';
@@ -76,6 +77,7 @@ export function registerDependencies(): void {
   container.registerSingleton(ConversationFlowService, ConversationFlowService);
   container.registerSingleton(SalesAgentService, SalesAgentService);
   container.registerSingleton(OrderNotificationService, OrderNotificationService);
+  container.registerSingleton(WhatsAppOutboundService, WhatsAppOutboundService);
   container.registerSingleton(PlatformTenantCleanupService, PlatformTenantCleanupService);
   container.registerSingleton(TenantDeletionService, TenantDeletionService);
 

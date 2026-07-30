@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { wooCommerceController } from '../../../modules/woocommerce/presentation/controllers/WooCommerceController';
 import { orderController, catalogController } from '../../../modules/commerce/presentation/controllers/OrderController';
+import { channelController } from '../../../modules/builderbot/presentation/controllers/ChannelController';
 import { authMiddleware, requireRole, tenantMiddleware } from '../middlewares/auth.middleware';
 import { apiKeyMiddleware } from '../middlewares/apiKey.middleware';
 import { validateBody } from '../middlewares/validate.middleware';
@@ -65,10 +66,17 @@ export function createOrderRoutes(): Router {
   return router;
 }
 
+const sendChannelMessageSchema = z.object({
+  phone: z.string().min(8).max(24),
+  message: z.string().min(1).max(4096),
+  purpose: z.enum(['otp', 'order_status', 'generic']).optional(),
+});
+
 export function createBuilderBotRoutes(): Router {
   const router = Router();
   router.use(apiKeyMiddleware);
 
+  router.post('/messages', validateBody(sendChannelMessageSchema), channelController.sendMessage.bind(channelController));
   router.post('/orders', validateBody(createOrderSchema), orderController.create.bind(orderController));
   router.get('/catalog/products', catalogController.listProducts.bind(catalogController));
   router.get('/catalog/stock/:sku', catalogController.getStock.bind(catalogController));

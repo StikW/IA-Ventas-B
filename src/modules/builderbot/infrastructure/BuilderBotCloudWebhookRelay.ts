@@ -74,7 +74,6 @@ export class BuilderBotCloudWebhookRelay {
     const rules: HttpRule[] = [
       { conditionRule: 'route', conditionValue: 'catalog', conditionFlowId: uiFlows.catalogFlowId },
       { conditionRule: 'route', conditionValue: 'cart', conditionFlowId: uiFlows.cartFlowId },
-      { conditionRule: 'route', conditionValue: 'payment', conditionFlowId: uiFlows.paymentFlowId },
     ].map((rule) => ({ ...rule, condition: '===' }));
 
     return {

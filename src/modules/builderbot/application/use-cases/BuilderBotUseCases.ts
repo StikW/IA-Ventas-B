@@ -148,6 +148,7 @@ export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContex
       webhookUrl,
       appPublicUrl: env.APP_PUBLIC_URL,
       webhookNeedsSync,
+      apiMode: resolveBuilderBotApiMode(),
       projectId: config.projectId ?? config.deviceId,
       connectUrl:
         config.connectUrl ??

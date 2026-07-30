@@ -27,11 +27,6 @@ export function resolveBbcUiRoute(
 ): BbcUiRoute {
   const messages = Array.isArray(outbound) ? outbound : [outbound];
 
-  const usesPaymentFlow = messages.some(
-    (message) => hasButton(message, WA_BTN.PAY_TRANSFER) || hasButton(message, WA_BTN.PAY_CASH)
-  );
-  if (usesPaymentFlow) return 'payment';
-
   if (messages.some((message) => hasButton(message, WA_BTN.CART_CLEAR))) return 'cart';
 
   const usesCatalogCta = messages.some(
