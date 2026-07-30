@@ -9,6 +9,7 @@ export const WA_BTN = {
   MENU_BACK: 'massi:menu:back',
   CART_ADD_MORE: 'massi:cart:more',
   CART_FINALIZE: 'massi:cart:finalize',
+  CART_CLEAR: 'massi:cart:clear',
   PAY_TRANSFER: 'massi:pay:transfer',
   PAY_CASH: 'massi:pay:cash',
 } as const;
@@ -20,9 +21,13 @@ export const WA_BTN_LABEL = {
   MENU_BACK: 'Menú',
   CART_ADD_MORE: 'Agregar más',
   CART_FINALIZE: 'Finalizar pedido',
+  CART_CLEAR: 'Vaciar carrito',
   PAY_TRANSFER: 'Transferencia',
   PAY_CASH: 'Efectivo tienda',
 } as const;
+
+/** Botón CTA que abre el formulario de compra en WooCommerce (máx. 20 caracteres). */
+export const CHECKOUT_CTA_LABEL = 'Continuar compra';
 
 export const MENU_GREETING_PATTERN =
   /^(hola|buenos\s*d[ií]as|buenas\s*tardes|buenas\s*noches|buenas|menu|menú|inicio|hi|hello|ola|hey|start)$/i;
@@ -99,6 +104,7 @@ export function resolveButtonAction(text: string): string | null {
     [normalizeFlowText(WA_BTN_LABEL.MENU_HELP)]: WA_BTN.MENU_HELP,
     [normalizeFlowText(WA_BTN_LABEL.CART_ADD_MORE)]: WA_BTN.CART_ADD_MORE,
     [normalizeFlowText(WA_BTN_LABEL.CART_FINALIZE)]: WA_BTN.CART_FINALIZE,
+    [normalizeFlowText(WA_BTN_LABEL.CART_CLEAR)]: WA_BTN.CART_CLEAR,
     [normalizeFlowText(WA_BTN_LABEL.PAY_TRANSFER)]: WA_BTN.PAY_TRANSFER,
     [normalizeFlowText(WA_BTN_LABEL.PAY_CASH)]: WA_BTN.PAY_CASH,
     [normalizeFlowText(WA_BTN_LABEL.MENU_BACK)]: WA_BTN.MENU_BACK,

@@ -6,6 +6,7 @@ import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.ty
 import { SalesContext } from '../../domain/IChatSessionRepository';
 import { CATALOG_CTA_LABEL, resolveStoreCatalogUrl } from '../../domain/catalogUrl.utils';
 import {
+  CHECKOUT_CTA_LABEL,
   isCartContinueShoppingIntent,
   isCartFinalizeIntent,
   isMenuGreeting,
@@ -27,11 +28,17 @@ export type OutboundWhatsAppMessage =
     }
   | {
       kind: 'cta_url';
+      /** Texto que se envía como mensaje previo. Vacío = solo se envía el mensaje con el botón. */
       body: string;
+      /** Texto del mensaje que lleva el botón. Por defecto, la etiqueta del CTA. */
+      ctaBody?: string;
       displayText: string;
       url: string;
       footer?: string;
     };
+
+/** WhatsApp no permite mezclar botones de respuesta y botón de enlace en un mismo mensaje. */
+export type OutboundWhatsAppPayload = OutboundWhatsAppMessage | OutboundWhatsAppMessage[];
 
 export interface ConversationFlowInput {
   tenantId: string;
@@ -45,7 +52,7 @@ export interface ConversationFlowInput {
 
 export interface ConversationFlowResult {
   replyText: string;
-  outbound: OutboundWhatsAppMessage;
+  outbound: OutboundWhatsAppPayload;
   salesContext: SalesContext;
 }
 
@@ -173,17 +180,62 @@ export class ConversationFlowService {
     previousContext?: SalesContext
   ): Promise<ConversationFlowResult> {
     const profileLines = this.formatBusinessProfileBlock(profile);
+    const intro = [`¡Hola! Bienvenido a *${businessName}*.`, '', ...profileLines].join('\n');
+    const salesContext = previousContext ?? { phase: 'browsing' };
 
-    const cartNote =
-      previousContext?.cartItems?.length ?
-        `🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido. Escribe *finalizar con la compra* para completar.`
-      : null;
+    if (salesContext.cartItems?.length) {
+      return this.buildWelcomeWithCart(tenantId, intro, salesContext);
+    }
 
-    const introParts = [`¡Hola! Bienvenido a *${businessName}*.`, '', ...profileLines];
-    if (cartNote) introParts.push('', cartNote);
-    const intro = introParts.join('\n');
+    return this.buildProductIdPrompt(tenantId, salesContext, intro);
+  }
 
-    return this.buildProductIdPrompt(tenantId, previousContext ?? { phase: 'browsing' }, intro);
+  /** Saludo cuando el cliente vuelve con carrito: resumen + acciones + enlace al catálogo. */
+  private async buildWelcomeWithCart(
+    tenantId: string,
+    intro: string,
+    salesContext: SalesContext
+  ): Promise<ConversationFlowResult> {
+    const items = salesContext.cartItems ?? [];
+    const catalogUrl = await this.resolveCatalogUrl(tenantId);
+
+    const body = [
+      intro,
+      '',
+      'Tienes un pedido en curso:',
+      CartService.formatSummary(items),
+      '',
+      'Envíame el *ID* de otro producto para agregarlo o dime qué quieres cambiar. También puedes finalizar o vaciar el carrito.',
+    ].join('\n');
+
+    const messages: OutboundWhatsAppMessage[] = [
+      {
+        kind: 'buttons',
+        body,
+        buttons: [
+          { id: WA_BTN.CART_FINALIZE, body: WA_BTN_LABEL.CART_FINALIZE },
+          { id: WA_BTN.CART_CLEAR, body: WA_BTN_LABEL.CART_CLEAR },
+        ],
+      },
+    ];
+
+    if (catalogUrl) {
+      messages.push({
+        kind: 'cta_url',
+        body: '',
+        ctaBody: 'Si quieres ver más productos, revisa el catálogo:',
+        displayText: CATALOG_CTA_LABEL,
+        url: catalogUrl,
+      });
+    }
+
+    const replyText = catalogUrl ? `${body}\n\n${CATALOG_CTA_LABEL}: ${catalogUrl}` : body;
+
+    return {
+      replyText,
+      outbound: messages,
+      salesContext: { ...salesContext, phase: 'browsing', flowStep: 'buying' },
+    };
   }
 
   /** Pide ID de producto (SKU) y ofrece enlace al catálogo WC con botón CTA. */
@@ -245,16 +297,30 @@ export class ConversationFlowService {
     };
   }
 
-  /** Tras agregar al carrito: acciones persistentes por botones. */
+  /**
+   * Tras agregar o modificar el carrito. El cliente sigue conversando en texto libre;
+   * el único botón es el cierre de compra.
+   */
   buildCartActionPrompt(salesContext: SalesContext, introLine: string): ConversationFlowResult {
     const items = salesContext.cartItems ?? [];
-    const summary = items.length ? CartService.formatSummary(items) : '';
+
+    if (!items.length) {
+      const emptyBody = [introLine, '', 'Envíame el *ID* del producto que te interesa.']
+        .filter(Boolean)
+        .join('\n');
+      return {
+        replyText: emptyBody,
+        outbound: { kind: 'text', body: emptyBody },
+        salesContext: { ...salesContext, phase: 'browsing', flowStep: 'discovery' },
+      };
+    }
+
     const body = [
       introLine,
       '',
-      summary,
+      CartService.formatSummary(items),
       '',
-      '¿Quieres *finalizar con la compra* o *agregar más productos* al carrito?',
+      'Dime el *ID* de otro producto si quieres agregar más, o pulsa *Finalizar pedido* cuando estés listo.',
     ]
       .filter(Boolean)
       .join('\n');
@@ -264,11 +330,7 @@ export class ConversationFlowService {
       outbound: {
         kind: 'buttons',
         body,
-        buttons: [
-          { id: WA_BTN.CART_ADD_MORE, body: WA_BTN_LABEL.CART_ADD_MORE },
-          { id: WA_BTN.CART_FINALIZE, body: WA_BTN_LABEL.CART_FINALIZE },
-          { id: WA_BTN.MENU_BACK, body: WA_BTN_LABEL.MENU_BACK },
-        ],
+        buttons: [{ id: WA_BTN.CART_FINALIZE, body: WA_BTN_LABEL.CART_FINALIZE }],
       },
       salesContext: {
         ...salesContext,
@@ -295,18 +357,22 @@ export class ConversationFlowService {
       '¡Perfecto! Tu selección está lista.',
       cartSummary,
       '',
-      'Completa tu pedido en el *formulario de la tienda* (recoger en tienda, envío a domicilio y método de pago):',
-      checkoutUrl,
-      '',
-      'Usa el mismo número de WhatsApp (*' + customerPhone.replace(/\D/g, '') + '*) si el formulario lo pide.',
+      'Pulsa el botón para completar tu pedido en la tienda: elige recoger en tienda o envío a domicilio y el método de pago.',
+      'Tu carrito y tu número (*' + customerPhone.replace(/\D/g, '') + '*) ya van cargados en el formulario.',
       'Cuando termines, recibirás confirmación por correo. Si necesitas ayuda, escríbeme por aquí.',
     ]
       .filter(Boolean)
       .join('\n');
 
     return {
-      replyText: body,
-      outbound: { kind: 'text', body },
+      replyText: `${body}\n\n${CHECKOUT_CTA_LABEL}: ${checkoutUrl}`,
+      outbound: {
+        kind: 'cta_url',
+        body,
+        ctaBody: 'Completa tu compra aquí 👇',
+        displayText: CHECKOUT_CTA_LABEL,
+        url: checkoutUrl,
+      },
       salesContext: {
         ...salesContext,
         phase: 'browsing',
@@ -429,6 +495,18 @@ export class ConversationFlowService {
         input.tenantId,
         input.salesContext,
         '¿Qué otro producto te gustaría agregar? Envíame el *ID* del producto.'
+      );
+    }
+
+    if (action === WA_BTN.CART_CLEAR) {
+      const intro =
+        input.salesContext.cartItems?.length ?
+          'Listo, vacié tu carrito.'
+        : 'Tu carrito ya estaba vacío.';
+      return this.buildProductIdPrompt(
+        input.tenantId,
+        { ...input.salesContext, cartItems: [] },
+        intro
       );
     }
 

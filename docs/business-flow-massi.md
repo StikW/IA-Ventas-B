@@ -220,7 +220,9 @@ Reglas de negocio descritas por el equipo:
 - Comprobante imagen → `payment-report`.
 - Consulta pedidos recientes por teléfono.
 - Saludo configurable por perfil negocio.
-- Tras agregar al carrito: *¿finalizar con la compra o agregar más productos?*
+- Tras agregar al carrito: resumen + botón **Finalizar pedido** (el resto de la conversación es texto libre).
+- Saludo con carrito previo: resumen + botones **Finalizar pedido** / **Vaciar carrito** + botón **Ver catálogo**.
+- Cierre de compra: botón **Continuar compra** (CTA URL) al formulario WC.
 
 ### ⚠️ Parcial / en prueba
 
@@ -278,7 +280,7 @@ Reglas de negocio descritas por el equipo:
 
 1. Escanea QR → catálogo web.
 2. Abre WhatsApp → “quiero cadena lazo 60 cm”.
-3. Agente agrega al carrito → *¿finalizar o agregar más?* → “finalizar con la compra”.
+3. Agente agrega al carrito → resumen + botón **Finalizar pedido** → el cliente lo pulsa.
 4. Recibe **link al formulario WC** con productos pre-cargados.
 5. Completa recoger en tienda + transferencia en la web.
 6. Staff valida en WooCommerce → ticket prioritario.

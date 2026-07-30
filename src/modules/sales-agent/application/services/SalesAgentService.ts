@@ -14,7 +14,7 @@ import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRe
 import { ChatMessage, IChatSessionRepository, PendingCartItem, SalesContext } from '../../domain/IChatSessionRepository';
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
-import { ConversationFlowService, OutboundWhatsAppMessage } from './ConversationFlowService';
+import { ConversationFlowService, OutboundWhatsAppPayload } from './ConversationFlowService';
 import { CATALOG_CTA_LABEL } from '../../domain/catalogUrl.utils';
 import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
@@ -282,6 +282,7 @@ export class SalesAgentService {
           userText: text,
           reply: checkoutPrompt.replyText,
           salesContext: { ...mutableContext, ...checkoutPrompt.salesContext },
+          outbound: checkoutPrompt.outbound,
           now,
           ragHits: 0,
         });
@@ -379,6 +380,7 @@ export class SalesAgentService {
           userText: text,
           reply: checkoutPrompt.replyText,
           salesContext: { ...mutableContext, ...checkoutPrompt.salesContext },
+          outbound: checkoutPrompt.outbound,
           now,
           ragHits: 0,
         });
@@ -500,6 +502,7 @@ export class SalesAgentService {
           userText: text,
           reply: checkoutPrompt.replyText,
           salesContext: { ...mutableContext, ...checkoutPrompt.salesContext },
+          outbound: checkoutPrompt.outbound,
           now,
           ragHits: 0,
         });
@@ -929,7 +932,7 @@ export class SalesAgentService {
           : input.flowStep === 'checkout_redirect'
             ? 'FASE ACTUAL: ya se envió enlace al formulario WC. Si pide el link → finalizar_compra. NO uses botones de pago en chat.'
             : input.flowStep === 'buying'
-              ? `FASE ACTUAL: carrito con ${input.cartItemCount} producto(s). El cliente tiene botones Finalizar/Agregar más. Si agrega por texto, usa agregar_producto_por_sku. NO llames finalizar_compra salvo confirmación explícita.`
+              ? `FASE ACTUAL: carrito con ${input.cartItemCount} producto(s). El cliente tiene el botón *Finalizar pedido*; todo lo demás lo maneja por texto. Si agrega o cambia productos, usa agregar_producto_por_sku. NO llames finalizar_compra salvo confirmación explícita.`
               : input.flowStep === 'discovery' || input.flowStep === 'menu'
                 ? 'FASE ACTUAL: esperando ID de producto o descripción en lenguaje natural. El sistema intenta RAG→SKU automáticamente; si el LLM interviene, usa buscar_en_documentos para interpretar y luego agregar_producto_por_sku con el SKU. Stock/precio solo desde WooCommerce.'
                 : 'FASE ACTUAL: exploración y venta.';
@@ -943,7 +946,7 @@ export class SalesAgentService {
       '3) Para interpretar descripciones: buscar_en_documentos (RAG del catálogo) → extrae SKU → agregar_producto_por_sku. El backend también intenta RAG→SKU antes del LLM.',
       '4) Catálogo, stock y precios finales: SIEMPRE WooCommerce (buscar_productos_tienda, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
       '5) IDENTIFICADOR PRINCIPAL: ID = SKU. Si envía varios IDs o productos, resuélvelos uno a uno.',
-      '6) Tras agregar al carrito, pregunta *¿Deseas agregar algo más o finalizar con la compra?*',
+      '6) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a pulsar *Finalizar pedido*.',
       '7) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce.',
       '8) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
       '9) Usa la menor cantidad de herramientas posible por mensaje.',
@@ -964,7 +967,7 @@ export class SalesAgentService {
     userText: string;
     reply: string;
     salesContext: SalesContext;
-    outbound?: OutboundWhatsAppMessage;
+    outbound?: OutboundWhatsAppPayload;
     now: string;
     ragHits: number;
   }): Promise<BbcWebhookAgentResponse> {
@@ -1018,37 +1021,7 @@ export class SalesAgentService {
         return { route: 'payment' };
       }
 
-      if (outbound.kind === 'buttons') {
-        await this.builderBot.sendButtonsMessage({
-          deviceId: params.deviceId,
-          phone,
-          body: outbound.body,
-          footer: outbound.footer,
-          buttons: outbound.buttons,
-        });
-      } else if (outbound.kind === 'cta_url') {
-        if (outbound.body.trim()) {
-          await this.builderBot.sendTextMessage({
-            deviceId: params.deviceId,
-            phone,
-            message: outbound.body,
-          });
-        }
-        await this.builderBot.sendCtaUrlMessage({
-          deviceId: params.deviceId,
-          phone,
-          body: CATALOG_CTA_LABEL,
-          displayText: outbound.displayText,
-          url: outbound.url,
-          footer: outbound.footer,
-        });
-      } else {
-        await this.builderBot.sendTextMessage({
-          deviceId: params.deviceId,
-          phone,
-          message: outbound.body,
-        });
-      }
+      await this.dispatchOutbound(params.deviceId, phone, outbound);
 
       await this.audit.log({
         tenantId: params.tenantId,
@@ -1079,37 +1052,7 @@ export class SalesAgentService {
 
     const phone = normalizeBuilderBotPhone(params.customerPhone);
 
-    if (outbound.kind === 'buttons') {
-      await this.builderBot.sendButtonsMessage({
-        deviceId: params.deviceId,
-        phone,
-        body: outbound.body,
-        footer: outbound.footer,
-        buttons: outbound.buttons,
-      });
-    } else if (outbound.kind === 'cta_url') {
-      if (outbound.body.trim()) {
-        await this.builderBot.sendTextMessage({
-          deviceId: params.deviceId,
-          phone,
-          message: outbound.body,
-        });
-      }
-      await this.builderBot.sendCtaUrlMessage({
-        deviceId: params.deviceId,
-        phone,
-        body: CATALOG_CTA_LABEL,
-        displayText: outbound.displayText,
-        url: outbound.url,
-        footer: outbound.footer,
-      });
-    } else {
-      await this.builderBot.sendTextMessage({
-        deviceId: params.deviceId,
-        phone,
-        message: outbound.body,
-      });
-    }
+    await this.dispatchOutbound(params.deviceId, phone, outbound);
 
     await this.audit.log({
       tenantId: params.tenantId,
@@ -1135,6 +1078,45 @@ export class SalesAgentService {
     );
 
     return emptyBbcWebhookResponse();
+  }
+
+  /** Envía uno o varios mensajes WhatsApp en orden (botones y CTA no caben en el mismo mensaje). */
+  private async dispatchOutbound(
+    deviceId: string,
+    phone: string,
+    outbound: OutboundWhatsAppPayload
+  ): Promise<void> {
+    const messages = Array.isArray(outbound) ? outbound : [outbound];
+
+    for (const message of messages) {
+      if (message.kind === 'buttons') {
+        await this.builderBot.sendButtonsMessage({
+          deviceId,
+          phone,
+          body: message.body,
+          footer: message.footer,
+          buttons: message.buttons,
+        });
+        continue;
+      }
+
+      if (message.kind === 'cta_url') {
+        if (message.body.trim()) {
+          await this.builderBot.sendTextMessage({ deviceId, phone, message: message.body });
+        }
+        await this.builderBot.sendCtaUrlMessage({
+          deviceId,
+          phone,
+          body: message.ctaBody?.trim() || CATALOG_CTA_LABEL,
+          displayText: message.displayText,
+          url: message.url,
+          footer: message.footer,
+        });
+        continue;
+      }
+
+      await this.builderBot.sendTextMessage({ deviceId, phone, message: message.body });
+    }
   }
 
   private async sendAndSave(
