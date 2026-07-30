@@ -2,7 +2,7 @@
 
 > **Propósito:** Documentar la lógica de negocio real (joyería + WooCommerce + WhatsApp), qué hace cada sistema y qué falta implementar en **IA Ventas**.  
 > **Complementa:** [`whatsapp-massi.md`](./whatsapp-massi.md) (integración técnica WhatsApp/BBC).  
-> **Última actualización:** 29 julio 2026 (catálogo WC, multi-producto, prod massijoyeria.com).
+> **Última actualización:** 30 julio 2026 (saludo discovery, catálogo por link, RAG→SKU, prod massijoyeria.com).
 
 ---
 
@@ -62,10 +62,12 @@ flowchart LR
 
 | Paso | Responsable | Estado en IA Ventas |
 |------|-------------|---------------------|
-| Saludo, preguntas, catálogo | Agente: catálogo **determinista WC** + LLM con `buscar_productos_tienda` | ✅ Implementado |
+| Saludo + perfil negocio + pedir ID | `buildWelcomeMessage` → botón catálogo WC | ✅ Implementado |
+| Consulta catálogo (*qué productos tienen*) | Enlace `{storeUrl}/tienda/` + botón (no lista en chat) | ✅ Implementado |
+| ID/SKU directo o descripción natural | RAG (`.txt`) → SKU → stock WC → carrito | ✅ Implementado |
 | Identificación por **SKU** (simple o variación) | Atajos deterministas + herramientas; multi-producto en un mensaje | ✅ Implementado |
-| Carrito en sesión (`flowStep: buying`) | `SalesAgentService` / DynamoDB | ✅ Implementado |
-| Modificar carrito (quitar/corregir/vaciar/ajustar qty) | Atajos deterministas genéricos por SKU/nombre/variante | ✅ Implementado |
+| Carrito en sesión (`flowStep: buying` / `discovery`) | `SalesAgentService` / DynamoDB | ✅ Implementado |
+| Modificar carrito (quitar/corregir/**vaciar**/ajustar qty) | Atajos deterministas; vaciar con frases naturales | ✅ Implementado |
 | Cliente confirma (“finalizar con la compra”, “eso es todo”) | `finalizeCart` → **enlace formulario WC** (modo `link`, default) | ✅ Implementado |
 | Cliente confirma (modo legacy) | Botones pago WhatsApp → `POST /orders` | ✅ `checkoutMode: whatsapp` |
 
@@ -206,10 +208,12 @@ Reglas de negocio descritas por el equipo:
 ### ✅ Implementado en IA Ventas (jul 2026)
 
 - Agente ventas WhatsApp (texto libre + carrito SKU multi-producto).
-- **Catálogo WhatsApp solo desde WooCommerce** (no inventa productos).
+- **Saludo discovery:** perfil negocio (descripción, dirección, horario) + pedir ID + botón catálogo.
+- **Catálogo por enlace WC** (`/tienda/`) — no lista productos en chat.
+- **RAG → SKU** desde catálogo `.txt` vectorizado; stock/precio siempre WooCommerce.
 - **Multi-producto:** `cadena 45cm y balín #3` en un mensaje.
 - Catálogo/stock vía WC REST + variaciones/SKU vía MASSI.
-- **Modificar carrito:** quitar, corregir, vaciar, ajustar cantidad (genérico, cualquier catálogo).
+- **Modificar carrito:** quitar, corregir, **vaciar** (frases naturales), ajustar cantidad.
 - **Finalizar compra (modo link):** URL formulario WC con `items=SKU:qty` + plugin pre-carga carrito.
 - Finalizar compra (modo legacy) → botones Transferencia / Efectivo (BBC).
 - Creación pedido MASSI (`mdp_788` / `mdp_789`), `delivery_type: pickup` fijo.

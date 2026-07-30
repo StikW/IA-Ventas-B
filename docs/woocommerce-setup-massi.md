@@ -121,6 +121,7 @@ Pulsar **Guardar** y luego **Probar conexión** (las credenciales deben estar pe
 
 - `WooCommerce: conectado`
 - `MASSI Bot API: conectado`
+- Se detectan y guardan **`checkoutPagePath`** (ej. `/finalizar-compra/`) y **`shopPagePath`** (ej. `/tienda/`) para links del agente WhatsApp
 
 ### Errores comunes al probar
 
@@ -318,4 +319,4 @@ cd ~/IA-Ventas-B && git pull && cd backend && npm run build && pm2 restart all
 
 ---
 
-*Última actualización: 29 julio 2026 — catálogo solo WC, multi-producto, plugin zip + auth header, handoff prod massijoyeria.com.*
+*Última actualización: 30 julio 2026 — shopPagePath `/tienda/`, saludo discovery, RAG→SKU, catálogo por link.*

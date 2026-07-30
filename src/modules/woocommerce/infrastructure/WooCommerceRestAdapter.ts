@@ -124,18 +124,32 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     throw new DomainError('WooCommerce error: reintentos agotados', 'WOOCOMMERCE_ERROR');
   }
 
-  async testConnection(config: WooCommerceConfigData): Promise<{ checkoutPagePath?: string }> {
+  async testConnection(config: WooCommerceConfigData): Promise<{ checkoutPagePath?: string; shopPagePath?: string }> {
     await this.request(config, '/products?per_page=1');
-    const checkoutPagePath = (await this.resolveCheckoutPagePath(config)) ?? undefined;
-    return { checkoutPagePath };
+    const [checkoutPagePath, shopPagePath] = await Promise.all([
+      this.resolveCheckoutPagePath(config),
+      this.resolveShopPagePath(config),
+    ]);
+    return {
+      checkoutPagePath: checkoutPagePath ?? undefined,
+      shopPagePath: shopPagePath ?? undefined,
+    };
   }
 
   async resolveCheckoutPagePath(config: WooCommerceConfigData): Promise<string | null> {
+    return this.resolvePagePathFromSetting(config, '/settings/advanced/woocommerce_checkout_page_id');
+  }
+
+  async resolveShopPagePath(config: WooCommerceConfigData): Promise<string | null> {
+    return this.resolvePagePathFromSetting(config, '/settings/products/woocommerce_shop_page_id');
+  }
+
+  private async resolvePagePathFromSetting(
+    config: WooCommerceConfigData,
+    settingPath: string
+  ): Promise<string | null> {
     try {
-      const setting = await this.request<{ value?: string }>(
-        config,
-        '/settings/advanced/woocommerce_checkout_page_id'
-      );
+      const setting = await this.request<{ value?: string }>(config, settingPath);
       const pageId = Number.parseInt(String(setting.value ?? ''), 10);
       if (!pageId) return null;
 

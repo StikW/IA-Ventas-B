@@ -137,7 +137,7 @@ export class TestWooCommerceConnectionUseCase
     const config = await this.configRepo.findByTenantId(tenantId);
     if (!config) throw new ForbiddenError('WooCommerce no configurado');
 
-    const { checkoutPagePath } = await this.wcService.testConnection(config);
+    const { checkoutPagePath, shopPagePath } = await this.wcService.testConnection(config);
 
     const botConfig: WooCommerceConfigData = {
       ...config,
@@ -159,6 +159,7 @@ export class TestWooCommerceConnectionUseCase
           botApiUser: botConfig.botApiUser,
           botApiPassword: botConfig.botApiPassword,
           checkoutPagePath: checkoutPagePath ?? config.checkoutPagePath,
+          shopPagePath: shopPagePath ?? config.shopPagePath,
           connected: true,
           botApiConnected: true,
           lastSyncAt: new Date().toISOString(),
@@ -175,6 +176,7 @@ export class TestWooCommerceConnectionUseCase
     await this.configRepo.save({
       ...config,
       checkoutPagePath: checkoutPagePath ?? config.checkoutPagePath,
+      shopPagePath: shopPagePath ?? config.shopPagePath,
       connected: true,
       botApiConnected,
       lastSyncAt: now,

@@ -1,6 +1,6 @@
 import { inject, injectable } from 'tsyringe';
 import { BuilderBotButtonOption } from '../../../builderbot/domain/IBuilderBotCloudService';
-import { IWooCommerceConfigRepository } from '../../../woocommerce/domain/IWooCommerceService';
+import { IWooCommerceConfigRepository, IWooCommerceService } from '../../../woocommerce/domain/IWooCommerceService';
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
 import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
 import { SalesContext } from '../../domain/IChatSessionRepository';
@@ -53,6 +53,7 @@ export interface ConversationFlowResult {
 export class ConversationFlowService {
   constructor(
     @inject('IWooCommerceConfigRepository') private readonly wcConfigRepo: IWooCommerceConfigRepository,
+    @inject('IWooCommerceService') private readonly wcService: IWooCommerceService,
     @inject('IConfigRepository') private readonly configRepo: IConfigRepository,
     @inject(SalesAgentToolsHandler) private readonly tools: SalesAgentToolsHandler
   ) {}
@@ -138,22 +139,49 @@ export class ConversationFlowService {
     return this.buildPaymentMethodPrompt(input.salesContext, totalHint);
   }
 
+  private formatBusinessProfileBlock(profile?: BusinessProfileConfig): string[] {
+    const lines = [
+      profile?.description?.trim() ||
+        'Somos *fabricantes de joyas en oro 18K*. Estamos para ayudarte con tu compra.',
+      profile?.address?.trim() ? `📍 ${profile.address.trim()}` : null,
+      profile?.businessHours?.trim() ? `🕐 ${profile.businessHours.trim()}` : null,
+    ];
+
+    return lines.filter((line): line is string => !!line);
+  }
+
+  private async resolveCatalogUrl(tenantId: string): Promise<string | null> {
+    const wcConfig = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!wcConfig?.storeUrl) return null;
+
+    let shopPagePath = wcConfig.shopPagePath;
+    if (!shopPagePath && wcConfig.connected) {
+      try {
+        shopPagePath = (await this.wcService.resolveShopPagePath(wcConfig)) ?? undefined;
+      } catch {
+        shopPagePath = undefined;
+      }
+    }
+
+    return resolveStoreCatalogUrl(wcConfig.storeUrl, shopPagePath);
+  }
+
   async buildWelcomeMessage(
     tenantId: string,
     businessName: string,
     profile?: BusinessProfileConfig,
     previousContext?: SalesContext
   ): Promise<ConversationFlowResult> {
-    const tagline =
-      profile?.description?.trim() ||
-      'Somos fabricantes de joyas en oro 18K.';
+    const profileLines = this.formatBusinessProfileBlock(profile);
 
     const cartNote =
       previousContext?.cartItems?.length ?
-        `\n\n🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido. Escribe *finalizar con la compra* para completar.`
+        `🛒 Tienes *${previousContext.cartItems.length}* producto(s) en tu pedido. Escribe *finalizar con la compra* para completar.`
       : null;
 
-    const intro = [`¡Hola! Bienvenido a *${businessName}*.`, tagline, cartNote].filter(Boolean).join('\n');
+    const introParts = [`¡Hola! Bienvenido a *${businessName}*.`, '', ...profileLines];
+    if (cartNote) introParts.push('', cartNote);
+    const intro = introParts.join('\n');
 
     return this.buildProductIdPrompt(tenantId, previousContext ?? { phase: 'browsing' }, intro);
   }
@@ -164,14 +192,34 @@ export class ConversationFlowService {
     salesContext: SalesContext,
     introBlock?: string
   ): Promise<ConversationFlowResult> {
-    const wcConfig = await this.wcConfigRepo.findByTenantId(tenantId);
-    const catalogUrl = resolveStoreCatalogUrl(wcConfig?.storeUrl);
+    const catalogUrl = await this.resolveCatalogUrl(tenantId);
 
     const idPrompt =
       'Dime el ID del producto o productos que te interesan. Si no los conoces, puedes revisar el catálogo a través del siguiente enlace.';
 
     const body = [introBlock, introBlock ? '' : null, idPrompt].filter((line) => line !== null).join('\n');
 
+    return this.buildCatalogCtaResult(body, catalogUrl, salesContext);
+  }
+
+  /** Respuesta a consultas de catálogo: enlace + botón (no lista de productos en chat). */
+  async buildCatalogBrowseReply(tenantId: string, salesContext: SalesContext): Promise<ConversationFlowResult> {
+    const catalogUrl = await this.resolveCatalogUrl(tenantId);
+    const body =
+      'Estos son nuestros productos disponibles en la tienda online. Revisa el catálogo completo en el siguiente enlace.';
+
+    return this.buildCatalogCtaResult(body, catalogUrl, {
+      ...salesContext,
+      phase: 'browsing',
+      flowStep: 'discovery',
+    });
+  }
+
+  private buildCatalogCtaResult(
+    body: string,
+    catalogUrl: string | null,
+    salesContext: SalesContext
+  ): ConversationFlowResult {
     const outbound: OutboundWhatsAppMessage =
       catalogUrl ?
         {
@@ -182,8 +230,10 @@ export class ConversationFlowService {
         }
       : { kind: 'text', body };
 
+    const replyText = catalogUrl ? `${body}\n\n${CATALOG_CTA_LABEL}: ${catalogUrl}` : body;
+
     return {
-      replyText: body,
+      replyText,
       outbound,
       salesContext: {
         ...salesContext,

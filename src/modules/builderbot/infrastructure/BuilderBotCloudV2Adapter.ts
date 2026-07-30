@@ -755,8 +755,23 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
     const url = input.url.trim();
     const footer = input.footer?.trim();
 
-    // BuilderBot Cloud v2: botones dinámicos con URL (doc: hasta 10, incl. enlaces externos).
     const payloadAttempts: Record<string, unknown>[] = [
+      {
+        messages: {
+          content: body,
+          footer,
+          buttons: [{ body: displayText, url }],
+          interactive: {
+            type: 'cta_url',
+            body: { text: body },
+            footer: footer ? { text: footer } : undefined,
+            action: {
+              name: 'cta_url',
+              parameters: { display_text: displayText, url },
+            },
+          },
+        },
+      },
       {
         messages: {
           content: body,
@@ -773,21 +788,6 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
       },
       {
         messages: {
-          interactive: {
-            type: 'cta_url',
-            body: { text: body },
-            footer: footer ? { text: footer } : undefined,
-            action: {
-              name: 'cta_url',
-              parameters: { display_text: displayText, url },
-            },
-          },
-        },
-      },
-      {
-        messages: {
-          content: body,
-          footer,
           interactive: {
             type: 'cta_url',
             body: { text: body },

@@ -15,6 +15,7 @@ import { ChatMessage, IChatSessionRepository, PendingCartItem, SalesContext } fr
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
 import { ConversationFlowService, OutboundWhatsAppMessage } from './ConversationFlowService';
+import { CATALOG_CTA_LABEL } from '../../domain/catalogUrl.utils';
 import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent } from '../../domain/whatsappFlow.constants';
@@ -386,9 +387,8 @@ export class SalesAgentService {
     }
 
     if (isCatalogBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
-      const catalogReply = await this.tools.formatStoreCatalogForWhatsApp(input.tenantId);
+      const catalogPrompt = await this.conversationFlow.buildCatalogBrowseReply(input.tenantId, mutableContext);
       const now = new Date().toISOString();
-      mutableContext = { ...mutableContext, phase: 'browsing', flowStep: 'discovery' };
       const bbcResponse = await this.persistAndReply({
         tenantId: input.tenantId,
         deviceId: input.deviceId,
@@ -396,16 +396,18 @@ export class SalesAgentService {
         messageId: input.messageId,
         history,
         userText: text,
-        reply: catalogReply,
-        salesContext: mutableContext,
+        reply: catalogPrompt.replyText,
+        salesContext: { ...mutableContext, ...catalogPrompt.salesContext },
+        outbound: catalogPrompt.outbound,
         now,
         ragHits: 0,
       });
-      return { replied: true, reply: catalogReply, bbcResponse };
+      return { replied: true, reply: catalogPrompt.replyText, bbcResponse };
     }
 
     const shouldResolveProduct =
       salesContext.phase !== 'awaiting_payment' &&
+      !isCartClearIntent(text) &&
       (isProductSelectionIntent(text) || hasConcreteProductSpec(text));
 
     if (shouldResolveProduct) {
@@ -1025,10 +1027,17 @@ export class SalesAgentService {
           buttons: outbound.buttons,
         });
       } else if (outbound.kind === 'cta_url') {
+        if (outbound.body.trim()) {
+          await this.builderBot.sendTextMessage({
+            deviceId: params.deviceId,
+            phone,
+            message: outbound.body,
+          });
+        }
         await this.builderBot.sendCtaUrlMessage({
           deviceId: params.deviceId,
           phone,
-          body: outbound.body,
+          body: CATALOG_CTA_LABEL,
           displayText: outbound.displayText,
           url: outbound.url,
           footer: outbound.footer,
@@ -1079,10 +1088,17 @@ export class SalesAgentService {
         buttons: outbound.buttons,
       });
     } else if (outbound.kind === 'cta_url') {
+      if (outbound.body.trim()) {
+        await this.builderBot.sendTextMessage({
+          deviceId: params.deviceId,
+          phone,
+          message: outbound.body,
+        });
+      }
       await this.builderBot.sendCtaUrlMessage({
         deviceId: params.deviceId,
         phone,
-        body: outbound.body,
+        body: CATALOG_CTA_LABEL,
         displayText: outbound.displayText,
         url: outbound.url,
         footer: outbound.footer,

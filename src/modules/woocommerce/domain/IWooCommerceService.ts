@@ -8,6 +8,8 @@ export interface WooCommerceConfigData {
   botApiPassword?: string;
   /** Ruta checkout WC detectada al probar conexión, ej. `/finalizar-compra/` */
   checkoutPagePath?: string;
+  /** Ruta tienda/catálogo WC detectada al probar conexión, ej. `/tienda/` */
+  shopPagePath?: string;
   connected: boolean;
   botApiConnected?: boolean;
   lastSyncAt?: string;
@@ -47,8 +49,9 @@ export interface WooCommerceOrderResult {
 }
 
 export interface IWooCommerceService {
-  testConnection(config: WooCommerceConfigData): Promise<{ checkoutPagePath?: string }>;
+  testConnection(config: WooCommerceConfigData): Promise<{ checkoutPagePath?: string; shopPagePath?: string }>;
   resolveCheckoutPagePath(config: WooCommerceConfigData): Promise<string | null>;
+  resolveShopPagePath(config: WooCommerceConfigData): Promise<string | null>;
   listProducts(config: WooCommerceConfigData, page?: number): Promise<WooCommerceProduct[]>;
   searchProducts(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]>;
   getProductBySku(config: WooCommerceConfigData, sku: string): Promise<WooCommerceProduct | null>;

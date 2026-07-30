@@ -43,17 +43,18 @@ sequenceDiagram
 | **IA Ventas `sales-agent`** | Agente LLM + atajos deterministas (carrito, SKU, modificar carrito); checkout link o pago legacy |
 | **WooCommerce REST** (`ck_`/`cs_`) | Búsqueda catálogo, productos simples, fallback stock por SKU |
 | **Plugin `massi-bot-api` (WordPress)** | Variaciones enriquecidas, lookup por SKU, pedidos MASSI, tickets, comprobantes |
-| **RAG (documentos panel)** | Info del negocio / políticas — **no** sustituye precios del catálogo WC |
+| **RAG (documentos panel)** | Interpretar intención del cliente → **SKU** del catálogo `.txt` vectorizado. **No** precios ni stock (siempre WC) |
 
 ### Envío de mensajes (cloud-v2)
 
 | Tipo | Mecanismo |
 |------|-----------|
-| Texto (hola, productos, carrito, link checkout) | `POST /api/v2/{projectId}/messages` desde IA Ventas |
-| Botones carrito (Agregar más / Finalizar pedido) | API v2 con `buttons` desde `SalesAgentService.persistAndReply` |
+| Texto (saludo, carrito, link checkout) | `POST /api/v2/{projectId}/messages` — `sendTextMessage` |
+| Botones carrito (Agregar más / Finalizar pedido) | API v2 — `sendButtonsMessage` (`buttons` + `interactive type: button`) |
+| Botón **Ver catálogo** (CTA URL) | API v2 — `sendCtaUrlMessage`: mensaje texto + segundo mensaje con botón (`buttons`+`url`, `buttonUrl`, `interactive cta_url`) |
 | Botones de pago (modo `whatsapp` legacy) | Webhook `{ "route": "payment" }` → flow **IA Ventas — Pago UI** |
 
-**Importante:** la API v2 **no** envía botones en el payload (`buttons` se ignoran). **No** uses `messageMapping` en el relay HTTP (BBC envía literalmente el nombre del campo, p. ej. `"message"` o `"reply"`).
+**Importante:** carrito y catálogo se envían desde **IA Ventas** vía API v2. **No** uses `messageMapping` en el relay HTTP.
 
 Relay HTTP (`sync-webhook`):
 
@@ -164,22 +165,26 @@ stateDiagram-v2
   CheckoutRedirect --> CheckoutRedirect: reenviar formulario
 ```
 
-### 1. Saludo (determinista)
+### 1. Saludo (determinista — `flowStep: discovery`)
 
 | Cliente | Sistema |
 |---------|---------|
-| `hola`, `menú`, `buenos días` | Texto de bienvenida del negocio (perfil en `/business/settings` o default del tenant) |
+| `hola`, `menú`, `buenos días` | Texto: bienvenida + **perfil negocio** (descripción, 📍 dirección, 🕐 horario desde `/business/settings`) + nota de carrito si aplica |
+| (continúa) | Pide **ID del producto** (SKU amigable) o descripción en lenguaje natural |
+| (continúa) | Segundo mensaje: botón **Ver catálogo** → `{storeUrl}{shopPagePath}` (MASSI: `https://massijoyeria.com/tienda/`) |
 
-Sin botones. El LLM **no** debe repetir un saludo genérico si ya se envió.
+Sin botones Reply en el saludo (solo CTA URL al catálogo). El LLM **no** debe repetir un saludo genérico si ya se envió.
 
 ### 2. Exploración de catálogo
 
 | Cliente | Sistema |
 |---------|---------|
-| `¿qué productos tienen?`, `catálogo`, `qué venden` | **Determinista** → `formatStoreCatalogForWhatsApp` (solo productos **publicados en WC**) |
-| `busco zapatos`, `precio del SKU-123` | LLM → `buscar_productos_tienda` → lista con **SKU por variación** |
+| `¿qué productos tienen?`, `catálogo`, `qué venden` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + botón **Ver catálogo** (no lista productos en chat) |
+| Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito |
+| Cliente describe producto (*cadena 50 cm*, *balín #6*) | **RAG** (`resolveSkuFromRag` + parser `.txt`) → SKU → stock WC → carrito; fallback búsqueda WC por nombre |
+| `busco zapatos`, consulta abierta al LLM | LLM → `buscar_en_documentos` (RAG) + `agregar_producto_por_sku` / `buscar_productos_tienda` |
 
-**Regla:** el agente **nunca inventa** productos ni precios. Si un ítem no está en WooCommerce, no se ofrece ni se agrega al carrito. RAG/documentos = info del negocio, **no** catálogo.
+**Regla:** el agente **nunca inventa** productos ni precios. **RAG** identifica SKU; **WooCommerce** confirma stock y precio.
 
 ### 3. Agregar al carrito
 
@@ -204,7 +209,7 @@ Sin botones. El LLM **no** debe repetir un saludo genérico si ya se envió.
 | `quitar 2 balines #3`, `eliminar anillo talla 6` | Quita cantidad del ítem que coincida (nombre + variante + SKU) |
 | `no quiero las de 50cm, solo una de 45cm` | Corrige: quita lo indicado y deja/agrega lo pedido |
 | `deja solo 2 balines` | Ajusta cantidad exacta |
-| `vaciar carrito`, `empezar de cero` | Limpia sesión de carrito |
+| `vaciar carrito`, `quisiera eliminar mi carrito`, `empezar de cero` | Limpia sesión de carrito (`isCartClearIntent`) |
 
 Matching contra **ítems ya en carrito** (no busca productos nuevos en tienda salvo corrección que requiere agregar).
 
@@ -256,37 +261,66 @@ Si WooCommerce responde 502/503 (túnel caído, Local WP apagado):
 
 ---
 
-## Ejemplo E2E (productos variables genéricos)
+## Formato catálogo RAG (`.txt` subido al panel)
+
+El documento vectorizado (Pinecone) usa bloques separados por `---`:
+
+```
+Producto: Balines diamantados #6
+SKU: BAL-DI6-01
+BAL-DI6-02
+...
+Milímetros: 6.0
+Variaciones: 1 Balín|2 Balines|5 Balines|10 Balines
+ESTADO: Listo
+```
+
+`catalogRag.utils.ts` parsea bloques, puntúa coincidencia con el texto del cliente y elige SKU (p. ej. pack 5 → `BAL-DI6-05`). Luego **WC** valida stock.
+
+---
+
+## URL catálogo WooCommerce
+
+| Campo | Origen | Ejemplo MASSI |
+|-------|--------|---------------|
+| `storeUrl` | Panel `/business/woocommerce` | `https://massijoyeria.com` |
+| `shopPagePath` | Auto-detect al **Probar conexión** (`woocommerce_shop_page_id`) | `/tienda/` |
+| URL final | `resolveStoreCatalogUrl(storeUrl, shopPagePath)` | `https://massijoyeria.com/tienda/` |
+
+Si `shopPagePath` no está en DB pero WC conectado, se resuelve al vuelo en `ConversationFlowService.resolveCatalogUrl`.
+
+---
+
+## Ejemplo E2E (MASSI — jul 2026)
 
 ```
 Cliente: hola
-Bot:     ¡Bienvenido a [Negocio]! … ¿En qué te podemos ayudar?
+Bot:     ¡Hola! Bienvenido a MASSI JOYERIA.
+         Somos fabricantes de joyas en oro 18K…
+         📍 [dirección]  🕐 [horario]
+         Dime el ID del producto o productos que te interesan…
+Bot:     [botón Ver catálogo → massijoyeria.com/tienda/]
 
-Cliente: ¿tienen camisetas?
-Bot:     [lista desde WC con SKUs y variantes: S, M, L…]
+Cliente: qué productos tienen
+Bot:     Estos son nuestros productos… revisa el catálogo en el siguiente enlace.
+         [botón Ver catálogo]
 
-Cliente: quiero la camiseta básica talla M
-Bot:     ¡Listo! Agregué Camiseta Básica - M x1 — $45.000
-         Total: $45.000
+Cliente: BAL-DI6-01
+Bot:     ¡Listo! Agregué Balín diamantado #6…
          ¿Quieres finalizar con la compra o agregar más productos al carrito?
+         [Agregar más | Finalizar pedido]
 
-Cliente: otra en talla L
-Bot:     ¡Listo! Agregué Camiseta Básica - L x1 …
-         Total: $90.000
-         ¿Quieres finalizar con la compra o agregar más productos al carrito?
+Cliente: quisiera eliminar mi carrito
+Bot:     Listo, vacié tu carrito. ¿Qué te gustaría pedir?
 
-Cliente: quita la talla M
-Bot:     Quité 1 de Camiseta Básica - M.
-         Total: $45.000
-         ¿Quieres finalizar con la compra o agregar más productos al carrito?
+Cliente: cadena de oro 50 cm
+Bot:     (RAG → SKU cadena 50cm → WC stock) → agrega al carrito…
 
 Cliente: finalizar con la compra
-Bot:     ¡Perfecto! Tu selección está lista.
-         [resumen]
-         Link: https://tienda/finalizar-compra/?phone=…&items=SKU-M:1
+Bot:     Link: https://massijoyeria.com/finalizar-compra/?phone=…&items=SKU:qty
 ```
 
-Misma lógica aplica a joyería (cm), calzado (talla), electrónica (modelo), etc.
+Misma lógica aplica a cualquier catálogo WC (medidas, tallas, packs de variación, etc.).
 
 **Modo `whatsapp` legacy:** tras “eso es todo” → botones Transferencia / Efectivo → pedido MASSI en chat (ver §4b).
 
@@ -343,7 +377,9 @@ Modo **wa-api** (`console.builderbot.app`): botones vía `POST /messages` direct
 | Carrito (merge, quitar, qty) | `sales-agent/application/services/CartService.ts` |
 | Modificación carrito (intents) | `sales-agent/domain/cartModification.utils.ts` |
 | Resolución producto/variante | `sales-agent/application/services/SalesAgentToolsHandler.ts` |
-| Catálogo WC (WhatsApp) | `SalesAgentToolsHandler.formatStoreCatalogForWhatsApp` |
+| Catálogo WC (enlace) | `ConversationFlowService.buildCatalogBrowseReply` |
+| RAG → SKU | `sales-agent/domain/catalogRag.utils.ts`, `SalesAgentToolsHandler.resolveSkuFromRag` |
+| URL catálogo | `sales-agent/domain/catalogUrl.utils.ts` |
 | Multi-producto / variantes | `sales-agent/domain/productSelection.utils.ts` |
 | Link checkout WC | `sales-agent/domain/checkoutLink.utils.ts` |
 | IDs de botones | `sales-agent/domain/whatsappFlow.constants.ts` |
@@ -371,10 +407,11 @@ Luego en panel → WhatsApp → **Re-sincronizar webhook**.
 - [ ] WhatsApp escaneado (cloud-v2, `APP_PUBLIC_URL` público)
 - [ ] Tienda WC accesible desde el servidor (ngrok estable si es local)
 - [ ] **Re-sincronizar webhook** tras cada deploy que toque relay/BBC
-- [ ] **hola** → un mensaje de texto (sin botones)
-- [ ] Buscar producto → listado con SKUs de variaciones
-- [ ] **qué productos tienen** → solo productos WC publicados (sin inventar)
-- [ ] Elegir variante → carrito + *¿finalizar o agregar más?*
+- [ ] **Probar conexión** WC (detecta `checkoutPagePath` + `shopPagePath` → `/tienda/`)
+- [ ] **hola** → saludo con perfil negocio + pide ID + botón **Ver catálogo**
+- [ ] **qué productos tienen** → enlace catálogo (no lista en chat)
+- [ ] **ID/SKU** o descripción natural → carrito + *¿finalizar o agregar más?*
+- [ ] **quisiera eliminar mi carrito** → vacía carrito
 - [ ] **Dos productos** en un mensaje (`cadena y balín`) → ambos si existen en WC
 - [ ] Segunda variante del mismo producto (*otra de X*) → suma al carrito
 - [ ] Quitar / corregir / vaciar carrito → resumen actualizado
@@ -423,4 +460,4 @@ El plugin:
 
 ---
 
-*Última actualización: 29 julio 2026 — catálogo determinista WC, multi-producto, modificación carrito, checkout link prod.*
+*Última actualización: 30 julio 2026 — saludo discovery, botón catálogo `/tienda/`, RAG→SKU, vaciar carrito natural.*

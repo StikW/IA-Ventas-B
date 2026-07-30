@@ -147,9 +147,20 @@ export function findBestCartMatch(items: PendingCartItem[], target: CartTargetSp
 
 export function isCartClearIntent(text: string): boolean {
   const t = normalizeProductText(text);
-  return /vaciar|limpiar\s+(?:el\s+)?carrito|cancelar\s+(?:el\s+)?pedido|empezar\s+(?:de\s+)?cero|borrar\s+todo|eliminar\s+todo/.test(
-    t
-  );
+
+  if (/(?:vaciar|limpiar|borrar|eliminar|quitar|cancelar)\s+(?:el\s+|mi\s+|tu\s+)?carrito/.test(t)) {
+    return true;
+  }
+
+  if (/(?:quiero|quisiera|me gustaria|deseo)\s+(?:eliminar|vaciar|borrar|limpiar|quitar)\s+(?:el\s+|mi\s+)?carrito/.test(t)) {
+    return true;
+  }
+
+  if (/cancelar\s+(?:el\s+)?(?:pedido|compra)/.test(t)) return true;
+  if (/empezar\s+(?:de\s+)?cero/.test(t)) return true;
+  if (/(?:eliminar|borrar)\s+todo/.test(t)) return true;
+
+  return false;
 }
 
 export function isCartCorrectionIntent(text: string): boolean {
