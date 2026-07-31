@@ -88,8 +88,11 @@ export class BuilderBotCloudWebhookRelay {
         text: '{body}',
       },
       rules,
-      // Texto lo envía IA Ventas vía API v2; el HTTP solo enruta `route` al flow UI con botones.
-      avoidResponse: true,
+      // BBC solo evalúa `rules` cuando procesa la respuesta: con `avoidResponse: true` nunca
+      // salta al flow UI. El texto lo envía IA Ventas vía API v2, así que el mensaje mapeado
+      // se deja vacío para que no llegue nada extra al cliente.
+      messageMapping: '',
+      avoidResponse: false,
     };
   }
 

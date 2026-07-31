@@ -3,6 +3,7 @@ import { BuilderBotButtonOption } from '../../../builderbot/domain/IBuilderBotCl
 import { IWooCommerceConfigRepository, IWooCommerceService } from '../../../woocommerce/domain/IWooCommerceService';
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
 import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
+import { BbcUiRoute } from '../../../builderbot/domain/BbcWebhookAgentResponse';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 import { CATALOG_CTA_LABEL, resolveStoreCatalogUrl } from '../../domain/catalogUrl.utils';
 import {
@@ -54,6 +55,8 @@ export interface ConversationFlowResult {
   replyText: string;
   outbound: OutboundWhatsAppPayload;
   salesContext: SalesContext;
+  /** Flow UI de BuilderBot a ejecutar tras estos mensajes. Si falta, se infiere del outbound. */
+  uiRoute?: BbcUiRoute;
 }
 
 @injectable()
@@ -234,6 +237,7 @@ export class ConversationFlowService {
     return {
       replyText,
       outbound: messages,
+      uiRoute: 'cart',
       salesContext: { ...salesContext, phase: 'browsing', flowStep: 'buying' },
     };
   }
@@ -285,6 +289,7 @@ export class ConversationFlowService {
     return {
       replyText,
       outbound,
+      uiRoute: 'catalog',
       salesContext: {
         ...salesContext,
         phase: 'browsing',

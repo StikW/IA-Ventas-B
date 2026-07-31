@@ -76,12 +76,17 @@ export function parseMultiProductSelection(text: string): string[] | null {
   return null;
 }
 
+/**
+ * Preguntas por catálogo, productos o precios. Se responden con el enlace de la tienda:
+ * no se consulta WooCommerce ni se listan productos en el chat.
+ */
 export function isCatalogBrowseIntent(text: string): boolean {
   const t = normalizeProductText(normalizeUserTypos(text));
   return (
-    /^(qu[eé]|cu[aá]les|cu[aá]nto|tienen|hay|muestr|list|inform|cat[aá]logo|precio\s+de|que\s+venden)/.test(t) ||
-    /qu[eé]\s+productos\s+(tienen|hay|venden)/.test(t) ||
-    /productos?\s+(tienen|hay|venden|disponibles)/.test(t)
+    /^(qu[eé]|cu[aá]les|cu[aá]nto|tienen|tienes|hay|muestr|list|inform|cat[aá]logo|precio|venden|manejan|que\s+venden)/.test(t) ||
+    /qu[eé]\s+productos\s+(tienen|hay|venden|manejan)/.test(t) ||
+    /productos?\s+(tienen|tienes|hay|venden|disponibles|manejan)/.test(t) ||
+    /\b(cat[aá]logo|precios|lista\s+de\s+precios|ver\s+(los\s+)?productos)\b/.test(t)
   );
 }
 

@@ -260,6 +260,7 @@ export class SalesAgentService {
         reply: flowResult.replyText,
         salesContext: flowResult.salesContext,
         outbound: flowResult.outbound,
+        uiRoute: flowResult.uiRoute,
         now,
         ragHits: 0,
       });
@@ -414,6 +415,7 @@ export class SalesAgentService {
         reply: catalogPrompt.replyText,
         salesContext: { ...mutableContext, ...catalogPrompt.salesContext },
         outbound: catalogPrompt.outbound,
+        uiRoute: catalogPrompt.uiRoute,
         now,
         ragHits: 0,
       });
@@ -981,6 +983,7 @@ export class SalesAgentService {
     reply: string;
     salesContext: SalesContext;
     outbound?: OutboundWhatsAppPayload;
+    uiRoute?: BbcUiRoute;
     now: string;
     ragHits: number;
   }): Promise<BbcWebhookAgentResponse> {
@@ -1002,7 +1005,7 @@ export class SalesAgentService {
     const useCloudRelay = resolveBuilderBotApiMode() === 'cloud-v2';
 
     if (useCloudRelay) {
-      const route = resolveBbcUiRoute(outbound);
+      const route = params.uiRoute ?? resolveBbcUiRoute(outbound);
       const phone = normalizeBuilderBotPhone(params.customerPhone);
 
       await this.dispatchOutbound(params.deviceId, phone, outbound, route);

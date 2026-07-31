@@ -102,17 +102,21 @@ El webhook responde `{ route }` **después** de que el agente envió sus textos 
 
 **Keywords centinela:** los flows UI llevan `__ia_ventas_route_*__` con `listenKeywords: false`. Una keyword real (p. ej. `hola`) haría que BBC dispare el flow por su cuenta, saltándose al agente.
 
-**Operador de las reglas (sin confirmar):** el esquema del MCP documenta `===`, pero los ejemplos reales del skill oficial usan `equals`. Cada ruta está duplicada con ambos operadores hasta saber cuál evalúa el runtime; solo puede coincidir uno.
+**`avoidResponse` debe ser `false`** (verificado jul 2026 en logs del contenedor). Con `true`, BBC descarta la respuesta del webhook y **nunca evalúa las reglas**: guarda `route` en el estado pero no salta al flow. Ese fue el motivo real de que los botones no aparecieran. Con `false` el log muestra `Evaluando condición: === - catalog - catalog: result: true` → `Goto flow …`.
 
-**Latencia del webhook:** el agente tarda ~5 s en responder (incluye el envío por API v2, que espera confirmación de entrega). Si BBC corta la petición antes, nunca evalúa las reglas y el flow no se dispara. Sospechoso principal si los botones siguen sin aparecer.
+**Operador de las reglas: `===`.** El runtime rechaza `equals` con `Flow has rule with empty or invalid condition` (los ejemplos del skill oficial están desactualizados).
 
-**Importante:** carrito y catálogo se envían desde **IA Ventas** vía API v2. **No** uses `messageMapping` en el relay HTTP.
+**`messageMapping: ''`.** Con `avoidResponse: false` BBC envía al cliente el mensaje mapeado; el valor **no** resuelve rutas del JSON (con `messageMapping: 'route'` llega el literal `route`). Como el texto ya lo manda IA Ventas por API v2, se deja vacío. El mensaje mapeado se envía **después** de evaluar las reglas, así que no afecta al enrutamiento.
+
+**Latencia del webhook:** el agente tarda ~2-5 s (incluye el envío por API v2, que espera confirmación de entrega). BBC espera sin cortar.
 
 Relay HTTP (`sync-webhook`):
 
-- `avoidResponse: true`
+- `avoidResponse: false`
+- `messageMapping: ''`
 - Reglas: `route === "catalog" | "cart"` → su flow UI
-- Sin `messageMapping`
+
+**Diagnóstico:** `builderbot_read_logs` (MCP) devuelve los logs del contenedor, con el módulo `conditions` (evaluación de reglas), `pluginHttp` (`Goto flow …`) y `crmCloud` (`respondedBy: BOT` = lo envió un flow; `HOST` = lo envió IA Ventas por API v2).
 
 ---
 
@@ -243,7 +247,7 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 
 | Cliente | Sistema |
 |---------|---------|
-| `¿qué productos tienen?`, `catálogo`, `qué venden` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + `route: catalog` → flow con botón **Ver catálogo** (no lista productos en chat) |
+| `¿qué productos tienen?`, `catálogo`, `qué venden`, `precios`, `lista de precios` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + `route: catalog` → flow con botón **Ver catálogo**. **No** consulta WooCommerce ni RAG: solo enruta al catálogo |
 | Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito |
 | Cliente describe producto (*cadena 50 cm*, *balín #6*) | **RAG** (`resolveSkuFromRag` + parser `.txt`) → SKU → stock WC → carrito; fallback búsqueda WC por nombre |
 | `busco zapatos`, consulta abierta al LLM | LLM → `buscar_en_documentos` (RAG) + `agregar_producto_por_sku` / `buscar_productos_tienda` |
