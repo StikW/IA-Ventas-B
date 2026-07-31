@@ -57,6 +57,8 @@ export interface ConversationFlowResult {
   salesContext: SalesContext;
   /** Flow UI de BuilderBot a ejecutar tras estos mensajes. Si falta, se infiere del outbound. */
   uiRoute?: BbcUiRoute;
+  /** URL dinámica que el flow `checkout` renderiza como `{checkoutUrl}` en su botón. */
+  checkoutUrl?: string;
 }
 
 @injectable()
@@ -376,6 +378,8 @@ export class ConversationFlowService {
         displayText: CHECKOUT_CTA_LABEL,
         url: checkoutUrl,
       },
+      uiRoute: 'checkout',
+      checkoutUrl,
       salesContext: {
         ...salesContext,
         phase: 'browsing',

@@ -55,7 +55,7 @@ sequenceDiagram
 | Botón **Vaciar carrito** (saludo con carrito) | Webhook `{ "route": "cart" }` → flow **IA Ventas — Vaciar Carrito** |
 | OTP / estado pedido (MASSI Tickets) | `POST /api/v1/channel/messages` desde WordPress (`purpose: otp` \| `order_status`) |
 | Pago legacy (`checkoutMode: whatsapp`) | Texto por API v2 (cloud-v2); botones nativos solo en wa-api — **sin** flow Pago UI en BBC |
-| Enlace **Continuar compra** (formulario WC) | Texto con la URL de checkout (URL dinámica: sin flow) |
+| Botón **Continuar compra** (formulario WC) | Webhook `{ "route": "checkout", "checkoutUrl": "…" }` → flow **IA Ventas — Checkout** con CTA URL `{checkoutUrl}` |
 
 ### Dónde viven los botones (verificado jul 2026)
 
@@ -90,7 +90,10 @@ El webhook responde `{ route }` **después** de que el agente envió sus textos 
 |---------|--------|---------|---------------------|
 | `catalog` | Saludo **sin** carrito · consulta de catálogo · tras vaciar el carrito | **IA Ventas — Catalogo** | CTA URL **Ver catálogo** → `{storeUrl}{shopPagePath}` |
 | `cart` | Saludo **con** carrito | **IA Ventas — Vaciar Carrito** → `gotoFlow` al de catálogo | Reply **Vaciar carrito** |
-| `none` | Todo lo demás (incl. pago legacy) | — | Texto plano (incluye el enlace de checkout) |
+| `checkout` | Finalizar compra (modo `link`) | **IA Ventas — Checkout** | CTA URL **Continuar compra** → `{checkoutUrl}` |
+| `none` | Todo lo demás (incl. pago legacy) | — | Texto plano |
+
+**URL dinámica en un flow fijo:** el webhook devuelve `{ route: "checkout", checkoutUrl }` y BBC fusiona la respuesta en el estado del contacto (igual que hace con `route`), así que el campo URL del botón puede escribirse como `{checkoutUrl}` aunque cambie en cada conversación (teléfono + `items=SKU:qty`). Mientras se valida, el agente **sigue enviando la URL en texto** por API v2: si la variable no resolviera, el cliente no se queda sin enlace. Para dejar solo el botón hay que omitir el enlace en `renderOutboundAsText` para `route === 'checkout'`.
 
 `resolveBbcUiRoute` distingue el saludo por sus botones: **Vaciar carrito** solo aparece al saludar con carrito. Cuando la ruta delega en un flow, `dispatchOutbound` **omite** del texto lo que el flow va a mostrar (las opciones en `cart`, el enlace del catálogo en `catalog` y en `cart`).
 
