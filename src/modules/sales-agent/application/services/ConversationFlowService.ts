@@ -112,7 +112,7 @@ export class ConversationFlowService {
       return this.buildProductIdPrompt(
         input.tenantId,
         input.salesContext,
-        '¿Qué más te gustaría agregar? Envíame el *ID* del producto.'
+        '¡Claro! Sigamos armando tu pedido.'
       );
     }
 
@@ -151,10 +151,10 @@ export class ConversationFlowService {
     return this.buildPaymentMethodPrompt(input.salesContext, totalHint);
   }
 
+  /** Descripción, dirección y horario del negocio (se editan en `/business/settings`). */
   private formatBusinessProfileBlock(profile?: BusinessProfileConfig): string[] {
     const lines = [
-      profile?.description?.trim() ||
-        'Somos *fabricantes de joyas en oro 18K*. Estamos para ayudarte con tu compra.',
+      profile?.description?.trim() ? `✨ ${profile.description.trim()}` : null,
       profile?.address?.trim() ? `📍 ${profile.address.trim()}` : null,
       profile?.businessHours?.trim() ? `🕐 ${profile.businessHours.trim()}` : null,
     ];
@@ -185,7 +185,15 @@ export class ConversationFlowService {
     previousContext?: SalesContext
   ): Promise<ConversationFlowResult> {
     const profileLines = this.formatBusinessProfileBlock(profile);
-    const intro = [`¡Hola! Bienvenido a *${businessName}*.`, '', ...profileLines].join('\n');
+    const intro = [
+      `¡Hola! 👋 Qué gusto tenerte en *${businessName}*.`,
+      profileLines.length ? '' : null,
+      ...profileLines,
+      '',
+      'Soy tu asesor por WhatsApp: te ayudo a elegir, armo tu pedido y te acompaño hasta finalizar la compra 😊',
+    ]
+      .filter((line) => line !== null)
+      .join('\n');
     const salesContext = previousContext ?? { phase: 'browsing' };
 
     if (salesContext.cartItems?.length) {
@@ -207,10 +215,10 @@ export class ConversationFlowService {
     const body = [
       intro,
       '',
-      'Tienes un pedido en curso:',
+      '🛒 Tienes un pedido en curso:',
       CartService.formatSummary(items),
       '',
-      'Envíame el *ID* de otro producto para agregarlo o dime qué quieres cambiar. También puedes finalizar o vaciar el carrito.',
+      '¿Seguimos con este pedido? Puedes agregar más productos, cambiar cantidades o finalizar tu compra.',
     ].join('\n');
 
     const messages: OutboundWhatsAppMessage[] = [
@@ -252,7 +260,14 @@ export class ConversationFlowService {
   ): Promise<ConversationFlowResult> {
     const catalogUrl = await this.resolveCatalogUrl(tenantId);
 
-    const idPrompt = 'Dime el ID del producto o productos que te interesan.';
+    const idPrompt = [
+      '🛍️ *¿Cómo seguimos?*',
+      '',
+      '1️⃣ Si ya viste algo que te gustó, envíame el *ID del producto* y lo agrego a tu pedido.',
+      '2️⃣ Si no lo tienes a mano, descríbeme lo que buscas (por ejemplo: _una cadena de 50 cm_) y yo lo busco por ti.',
+      '',
+      'Y si prefieres mirar con calma, aquí abajo te dejo el catálogo 👇',
+    ].join('\n');
 
     const body = [introBlock, introBlock ? '' : null, idPrompt].filter((line) => line !== null).join('\n');
 
@@ -262,7 +277,8 @@ export class ConversationFlowService {
   /** Respuesta a consultas de catálogo: enlace + botón (no lista de productos en chat). */
   async buildCatalogBrowseReply(tenantId: string, salesContext: SalesContext): Promise<ConversationFlowResult> {
     const catalogUrl = await this.resolveCatalogUrl(tenantId);
-    const body = 'Estos son nuestros productos disponibles en la tienda online.';
+    const body =
+      '¡Con gusto! 😊 Aquí puedes ver todos nuestros productos disponibles, con fotos, precios y el *ID* de cada uno.\n\nCuando encuentres el que te guste, envíame su *ID* por aquí y lo agrego a tu pedido.';
 
     return this.buildCatalogCtaResult(body, catalogUrl, {
       ...salesContext,
@@ -501,7 +517,7 @@ export class ConversationFlowService {
       return this.buildProductIdPrompt(
         input.tenantId,
         input.salesContext,
-        '¿Qué otro producto te gustaría agregar? Envíame el *ID* del producto.'
+        '¿Qué otro producto te gustaría agregar?'
       );
     }
 
@@ -522,7 +538,7 @@ export class ConversationFlowService {
         return this.buildProductIdPrompt(
           input.tenantId,
           input.salesContext,
-          'Tu carrito está vacío. Envíame el *ID* del producto que te interesa.'
+          'Tu carrito está vacío por ahora.'
         );
       }
       return null;
