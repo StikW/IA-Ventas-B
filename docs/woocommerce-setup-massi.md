@@ -203,50 +203,46 @@ Con el flujo de negocio actual (**modo `link`**, default) y los cambios reciente
 
 | Antes (whatsapp) | Ahora (link) |
 |------------------|--------------|
-| Tras “eso es todo” → webhook responde `{ "route": "payment" }` | Webhook responde `{ "route": "none" }` |
-| BBC muestra flow **Pago UI** con botones | IA Ventas envía **texto + URL** del formulario WC vía API v2 |
+| Tras “eso es todo” → opciones pago en chat | Webhook responde `{ "route": "none" }` |
 | Pedido se crea en chat (`POST /massi-bot/v1/orders`) | Cliente completa **formulario en WooCommerce** |
-| Comprobante por imagen en WhatsApp | Validación y ticket en **panel WC** (+ email) |
+| Comprobante por imagen en WhatsApp | Validación en **`/validacion-de-pagos/`** (+ email) |
 
 **Conclusión:** **no hay cambios obligatorios en BuilderBot** para el flujo link. El relay y API v2 siguen siendo el canal principal.
 
-### 11.3 Flow **IA Ventas — Pago UI** (botones)
+### 11.3 Flow **IA Ventas — Pago UI** (obsoleto)
 
-| Modo | ¿Necesario en BBC? |
-|------|---------------------|
-| `checkoutMode: link` (default) | **No** se usa en el flujo normal. Puede quedar provisionado sin afectar. |
-| `checkoutMode: whatsapp` (legacy) | **Sí** — configurar 3 botones Reply manualmente en BBC |
-
-Botones Reply (solo modo whatsapp):
-
-| Texto | ID |
-|-------|-----|
-| Transferencia | `massi:pay:transfer` |
-| Efectivo tienda | `massi:pay:cash` |
-| Menú principal | `massi:menu:back` |
-
-Pasos: panel [app.builderbot.cloud](https://app.builderbot.cloud) → flow **IA Ventas — Pago UI** → bloque texto → + Reply × 3 → **Guardar** → Reboot.
+| Modo | Notas |
+|------|--------|
+| `checkoutMode: link` (default) | No se usa. |
+| `checkoutMode: whatsapp` (legacy) | Pago por **texto** API v2 (cloud-v2). El flow Pago UI **ya no se provisiona**; eliminar en BBC si quedó de instalaciones antiguas. |
 
 ### 11.4 Limpieza opcional en BBC
 
-- **Eliminar** flow **IA Ventas — Menú UI** si existe (ya no se usa).
+- **Eliminar** flows **IA Ventas — Menú UI** y **IA Ventas — Pago UI** si existen.
 - **No tocar** flow **IA Ventas — Agente** (relay HTTP).
-- Flow **Pago UI**: dejar si puedes volver a modo `whatsapp`; no es necesario borrarlo en modo `link`.
+- Mantener solo **Saludo Sin Carrito** y **Saludo Con Carrito** (+ botones manuales).
 
 ### 11.5 Acciones recomendadas tras deploy
 
-1. `git pull` + `npm run build` + `pm2 restart` en EC2
-2. Panel → WhatsApp → **Re-sincronizar webhook** (idempotente)
-3. Verificar en BBC que el relay apunta a `{APP_PUBLIC_URL}/api/v1/webhooks/builderbot/{tenantId}`
-4. Probar: hola → **qué productos tienen** (solo WC) → carrito → **dos productos en un mensaje** → quitar/corregir → “finalizar con la compra” → **link con items=SKU:qty**
+1. `git pull` + `npm run build` + `pm2 restart` en EC2 (incluye ruta `POST /channel/messages`)
+2. Panel → WhatsApp → **Re-sincronizar BuilderBot** (relay + flows saludo; idempotente)
+3. Subir plugins WP: `dist/massi-bot-api-ia-ventas.zip` + `dist/massi-tickets-ia-ventas-update.zip` (`node dist/build-plugin-zips.mjs`)
+4. **MASSI → API** (WP): modo **4 IA Ventas**, URL + API Key
+5. Verificar relay → `{APP_PUBLIC_URL}/api/v1/webhooks/builderbot/{tenantId}`
+6. Probar: hola → carrito → checkout link **y** OTP Mi cuenta
 
-### 11.6 Roadmap BuilderBot (no implementado)
+### 11.6 Mensajería MASSI → IA Ventas (OTP, estado pedido)
 
-| Feature | BBC / IA Ventas |
-|---------|-----------------|
-| OTP login Mi cuenta → WhatsApp | Enviar OTP desde misma línea (API v2) |
-| Notificación “pedido listo” | API v2 proactiva al cambiar estado WC |
-| Botón CTA URL “Abrir formulario” | Opcional en flow; hoy el link va en texto plano |
+| Item | Detalle |
+|------|---------|
+| Endpoint | `POST /api/v1/channel/messages` + header `X-API-Key: bb_live_…` |
+| Body | `{ "phone", "message", "purpose": "otp" \| "order_status" \| "generic" }` |
+| Config WP | MASSI → API → modo **4. WhatsApp Automático (IA Ventas)** |
+| URL | `https://ventas.nedi.info/api/v1` (**sin** `/channel/messages` al final) |
+| API Key | Panel IA Ventas → Configuración → copiar `bb_live_…` **completa** |
+| Validación comprobantes | `{tienda}/validacion-de-pagos/` (Motor de Pagos) |
+
+Reemplaza DonChat para OTP/notificaciones; emails WooCommerce **siguen activos**.
 
 ---
 
@@ -271,22 +267,25 @@ El plugin (`class-massi-bot-checkout-link.php`):
 
 ---
 
-## 13. Instalar plugin en producción (zip)
+## 13. Instalar plugins en producción (zip)
 
-IA Ventas **no** instala el plugin en WordPress; se sube manualmente.
+IA Ventas **no** instala plugins en WordPress; se suben manualmente (WP Admin o File Manager).
 
-| Artefacto | Ubicación |
+| Artefacto | Contenido |
 |-----------|-----------|
-| Zip listo para WP | `dist/massi-bot-api-ia-ventas.zip` |
-| Script empaquetado | `dist/build-plugin-zip.ps1` (rutas `/`, compatible Linux) |
+| `dist/massi-bot-api-ia-ventas.zip` | Plugin **MASSI Bot API** (+ cliente IA Ventas, notificaciones) |
+| `dist/massi-tickets-ia-ventas-update.zip` | Actualización **MASSI Tickets** (gateway `ia_ventas`, OTP) |
+| Script empaquetado | `node dist/build-plugin-zips.mjs` (**bestzip**, rutas `/` — compatible Linux/SiteGround) |
 | Instrucciones | `dist/INSTALAR-PLUGIN-WORDPRESS.txt` |
+
+**Importante:** no uses `Compress-Archive` de PowerShell (crea `\` en rutas → WordPress en Linux instala mal). Si la subida falla, borra carpetas rotas en `wp-content/plugins/` por File Manager y vuelve a subir.
 
 Pasos:
 
-1. WordPress Admin → **Plugins → Añadir nuevo → Subir plugin** → elegir el zip
-2. **Activar** MASSI Bot API
-3. Crear usuario bot + Application Password (§4)
-4. Panel IA Ventas → credenciales → **Guardar** → **Probar conexión**
+1. WordPress Admin → **Plugins → Añadir → Subir plugin** → `massi-bot-api-ia-ventas.zip` → Activar
+2. Actualizar **massi-tickets** con el segundo zip (o FTP sobre archivos clave)
+3. Usuario bot + Application Password (§4) → panel IA Ventas → **Probar conexión**
+4. **MASSI → API** → modo **4**, URL + API Key (§11.6)
 
 ### Fix Authorization en hosting
 
@@ -308,8 +307,9 @@ Referencia verificada jul 2026:
 | Plataforma IA Ventas | `https://ventas.nedi.info` |
 | Tienda WC | `https://massijoyeria.com` |
 | Checkout link | `/finalizar-compra/?phone=…&items=SKU:qty` |
-| Plugin | `massi-bot-api` manual en WP (zip §13) |
-| Panel | `/business/woocommerce` — WC + MASSI Bot API conectados |
+| Validación comprobantes | `https://massijoyeria.com/validacion-de-pagos/` |
+| Plugins WP | §13 — bot-api + tickets (IA Ventas) |
+| Mensajería OTP/estado | MASSI → API modo **4** + `/channel/messages` |
 
 Deploy backend tras cambios de agente:
 
@@ -319,4 +319,4 @@ cd ~/IA-Ventas-B && git pull && cd backend && npm run build && pm2 restart all
 
 ---
 
-*Última actualización: 30 julio 2026 — shopPagePath `/tienda/`, saludo discovery, RAG→SKU, catálogo por link.*
+*Última actualización: 30 julio 2026 — OTP/notificaciones IA Ventas, zip bestzip, validación `/validacion-de-pagos/`, sin flow Pago UI.*

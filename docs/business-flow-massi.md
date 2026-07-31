@@ -165,13 +165,13 @@ Reglas de negocio descritas por el equipo:
 | Prellenar nombre/documento/ciudad | Respuesta `clients` | ❌ Roadmap |
 | Historial pedidos | `GET /massi-bot/v1/orders?phone=` | ✅ Tool `consultar_pedidos` |
 
-**Implementación del login WC con OTP:** WooCommerce (o plugin MASSI en WP) pide OTP al iniciar sesión. **Objetivo:** enviar ese OTP **desde la misma línea WhatsApp** (BuilderBot), sin SMS externo.
+**Implementación del login WC con OTP:** `massi-tickets` genera el PIN; con gateway **`ia_ventas`** lo envía vía `POST /api/v1/channel/messages` (misma línea BuilderBot).
 
 | Componente | Estado |
 |------------|--------|
-| Generación OTP en WP | ❌ Fuera de repo IA Ventas (plugin/tema) |
-| Envío OTP por WhatsApp desde IA Ventas | ❌ Roadmap explícito |
-| Endpoint/hook para disparar OTP | ❌ Por diseñar con plugin WP |
+| Generación OTP en WP | ✅ `massi-tickets` → `OTP_Manager` |
+| Envío OTP por WhatsApp (IA Ventas) | ✅ Modo **4** en MASSI → API + API Key `bb_live_…` |
+| Config WP | URL `https://ventas.nedi.info/api/v1` (solo base) + key completa del panel |
 
 ---
 
@@ -181,11 +181,13 @@ Reglas de negocio descritas por el equipo:
 |--------|-----------|----------------|
 | Cambio estado pedido WC | **Correo electrónico** (WooCommerce) | Email + **WhatsApp** |
 | Pago validado → ticket prioritario | Email + metadatos MASSI | WhatsApp: “Tu pedido está listo para recoger” |
-| Comprobante recibido | Mensaje fijo agente | Mantener + sync con estado real |
+| Comprobante recibido | Mensaje fijo agente (legacy WA) | Mantener + sync con estado real |
 
-**Roadmap IA Ventas:** webhook desde WooCommerce o MASSI cuando cambie `_massi_operational_status` → `BuilderBotCloudV2Adapter.sendTextMessage` al teléfono del pedido.
+**Implementado (jul 2026):** hook `massi_operational_status_changed` en `massi-bot-api` → `POST /channel/messages` con `purpose: order_status`. **Emails WC no se desactivan.**
 
-**Referencia parcial existente:** `OrderNotificationService` notifica por WhatsApp cuando el panel marca un pedido **plataforma** como `PAID` — flujo distinto al pedido MASSI creado directo en WC.
+**Validación manual de transferencias:** portal equipo `{tienda}/validacion-de-pagos/` (plugin **Motor de Pagos**), alternativa admin `wp-admin/admin.php?page=mdp-payment-reports`.
+
+**Referencia panel IA Ventas:** `OrderNotificationService` + `WhatsAppOutboundService` para pedidos creados en la plataforma (`PAID`).
 
 ---
 
@@ -196,7 +198,8 @@ Reglas de negocio descritas por el equipo:
 | **Sitio WooCommerce** (tema + plugins) | Catálogo web, QR landing, formularios checkout, Mi cuenta, emails transaccionales, admin pedidos, validación manual de pagos |
 | **Plugin `massi-bot-api`** | API REST: pedidos, tickets, comprobantes, variaciones, perfil cliente, estados operacionales MASSI |
 | **IA Ventas** | Panel multi-tenant, agente WhatsApp, carrito conversacional, integración WC + MASSI, BuilderBot relay |
-| **BuilderBot Cloud** | Transporte WhatsApp, QR device, flow botones pago |
+| **BuilderBot Cloud** | Transporte WhatsApp agente + mensajes salientes (`/channel/messages`) |
+| **Motor de Pagos** (WP) | Validación manual comprobantes Bre-B/efectivo — `/validacion-de-pagos/` |
 | **Personal joyería** | Validar transferencias, preparar pedido, entregar con ticket |
 
 **Regla para agentes IA que desarrollen features:** antes de duplicar lógica de checkout en el chat, revisar si ya existe en **WooCommerce/plugin** y exponerla vía API o deep link.
@@ -215,9 +218,11 @@ Reglas de negocio descritas por el equipo:
 - Catálogo/stock vía WC REST + variaciones/SKU vía MASSI.
 - **Modificar carrito:** quitar, corregir, **vaciar** (frases naturales), ajustar cantidad.
 - **Finalizar compra (modo link):** URL formulario WC con `items=SKU:qty` + plugin pre-carga carrito.
-- Finalizar compra (modo legacy) → botones Transferencia / Efectivo (BBC).
+- Finalizar compra (modo legacy) → opciones pago por texto (sin flow Pago UI BBC).
 - Creación pedido MASSI (`mdp_788` / `mdp_789`), `delivery_type: pickup` fijo.
 - Comprobante imagen → `payment-report`.
+- **OTP Mi cuenta** por WhatsApp (gateway `ia_ventas`).
+- **Notificaciones estado pedido** por WhatsApp + email WC en paralelo.
 - Consulta pedidos recientes por teléfono.
 - Saludo configurable por perfil negocio.
 - Tras agregar al carrito: resumen + botón **Finalizar pedido** (el resto de la conversación es texto libre).
@@ -227,17 +232,16 @@ Reglas de negocio descritas por el equipo:
 ### ⚠️ Parcial / en prueba
 
 - E2E completo checkout link con tienda local + ngrok + EC2 (verificado en dev local).
-- Sincronización estados MASSI ↔ mensajes al cliente (solo textos estáticos post-comprobante).
 
 ### ❌ Roadmap (prioridad sugerida para el negocio)
 
 | # | Feature | Notas |
 |---|---------|-------|
-| 1 | ~~Plugin WP: leer `phone` + `items` en URL checkout~~ | ✅ Implementado (`class-massi-bot-checkout-link.php`) |
-| 2 | **Captura conversacional (modo chat)** | Alternativa a link; reutilizar `createMassiOrder` + delivery |
-| 3 | **Perfil cliente por teléfono** | `GET /clients?phone=` al iniciar compra |
-| 4 | **Webhook estado operacional → WhatsApp** | `_massi_operational_status` |
-| 5 | **OTP login Mi cuenta vía WhatsApp** | Coordinar con plugin WP |
+| 1 | ~~Plugin WP: leer `phone` + `items` en URL checkout~~ | ✅ Implementado |
+| 2 | ~~OTP login Mi cuenta vía WhatsApp~~ | ✅ Gateway `ia_ventas` + `/channel/messages` |
+| 3 | ~~Webhook estado operacional → WhatsApp~~ | ✅ `massi-bot-notifications.php` |
+| 4 | **Captura conversacional (modo chat)** | Alternativa a link; reutilizar `createMassiOrder` + delivery |
+| 5 | **Perfil cliente por teléfono** | `GET /clients?phone=` al iniciar compra |
 | 6 | **QR catálogo → WhatsApp** | Tema WP |
 | 7 | **Listas interactivas WhatsApp** | Variaciones |
 
@@ -267,6 +271,7 @@ Reglas de negocio descritas por el equipo:
 | Link checkout | `sales-agent/domain/checkoutLink.utils.ts` |
 | Pago + tickets | `sales-agent/application/services/ConversationFlowService.ts` |
 | Pedidos/comprobantes MASSI | `sales-agent/application/services/SalesAgentToolsHandler.ts` |
+| WhatsApp saliente | `builderbot/application/services/WhatsAppOutboundService.ts` |
 | Cliente REST MASSI | `massi-bot/infrastructure/MassiBotRestAdapter.ts` |
 | Tipos pedido MASSI | `massi-bot/domain/IMassiBotService.ts` |
 | Integración técnica WhatsApp | `backend/docs/whatsapp-massi.md` |
@@ -305,4 +310,4 @@ Reglas de negocio descritas por el equipo:
 
 ---
 
-*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress.*
+*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress. Última revisión: 30 julio 2026 — OTP + notificaciones WhatsApp vía IA Ventas; validación comprobantes `/validacion-de-pagos/`.*

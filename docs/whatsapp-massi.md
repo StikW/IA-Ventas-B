@@ -33,15 +33,14 @@ sequenceDiagram
   BBC->>C: Link /finalizar-compra/?items=SKU:qty
   C->>WC: Completa formulario (recoger/envío/pago)
 
-  Note over C,MASSI: Modo whatsapp legacy
+  Note over C,MASSI: Modo whatsapp legacy (sin flow Pago UI)
   C->>BBC: eso es todo (checkoutMode whatsapp)
-  API-->>BBC: {"route":"payment"}
-  BBC->>C: Flow Pago UI (botones Reply)
+  API->>BBC: API v2 texto (opciones pago; wa-api puede usar botones nativos)
 ```
 
 | Componente | Rol |
 |------------|-----|
-| **BuilderBot Cloud** | WhatsApp, relay webhook (`add_http`), flows UI **Catálogo / Carrito / Pago** con los botones |
+| **BuilderBot Cloud** | WhatsApp, relay webhook (`add_http`), flows UI **Saludo Sin/Carrito** con botones |
 | **IA Ventas `sales-agent`** | Agente LLM + atajos deterministas (carrito, SKU, modificar carrito); checkout link o pago legacy |
 | **WooCommerce REST** (`ck_`/`cs_`) | Búsqueda catálogo, productos simples, fallback stock por SKU |
 | **Plugin `massi-bot-api` (WordPress)** | Variaciones enriquecidas, lookup por SKU, pedidos MASSI, tickets, comprobantes |
@@ -52,9 +51,10 @@ sequenceDiagram
 | Tipo | Mecanismo |
 |------|-----------|
 | Texto (saludo, resumen de carrito) | `POST /api/v2/{projectId}/messages` — `sendTextMessage` |
-| Botón **Ver catálogo** (CTA URL) | Webhook `{ "route": "catalog" }` → flow **IA Ventas — Saludo Sin Carrito** |
-| Botón **Vaciar carrito** (saludo con carrito) | Webhook `{ "route": "cart" }` → flow **IA Ventas — Saludo Con Carrito** |
-| Método de pago (modo `whatsapp` legacy) | Webhook `{ "route": "payment" }` → flow **IA Ventas — Pago UI** |
+| Botón **Ver catálogo** (CTA URL) | Webhook `{ "route": "catalog" }` → flow **IA Ventas — Catalogo** |
+| Botón **Vaciar carrito** (saludo con carrito) | Webhook `{ "route": "cart" }` → flow **IA Ventas — Vaciar Carrito** |
+| OTP / estado pedido (MASSI Tickets) | `POST /api/v1/channel/messages` desde WordPress (`purpose: otp` \| `order_status`) |
+| Pago legacy (`checkoutMode: whatsapp`) | Texto por API v2 (cloud-v2); botones nativos solo en wa-api — **sin** flow Pago UI en BBC |
 | Enlace **Continuar compra** (formulario WC) | Texto con la URL de checkout (URL dinámica: sin flow) |
 
 ### Dónde viven los botones (verificado jul 2026)
@@ -88,10 +88,9 @@ El webhook responde `{ route }` **después** de que el agente envió sus textos 
 
 | `route` | Cuándo | Flow UI | Botones en el panel |
 |---------|--------|---------|---------------------|
-| `catalog` | Saludo **sin** carrito · consulta de catálogo · tras vaciar el carrito | **IA Ventas — Saludo Sin Carrito** | CTA URL **Ver catálogo** → `{storeUrl}{shopPagePath}` |
-| `cart` | Saludo **con** carrito | **IA Ventas — Saludo Con Carrito** → `gotoFlow` al de catálogo | Reply **Vaciar carrito** |
-| `payment` | Método de pago (modo `whatsapp` legacy) | **IA Ventas — Pago UI** | Reply **Transferencia**, **Efectivo tienda**, **Menú principal** |
-| `none` | Todo lo demás | — | Texto plano (incluye el enlace de checkout) |
+| `catalog` | Saludo **sin** carrito · consulta de catálogo · tras vaciar el carrito | **IA Ventas — Catalogo** | CTA URL **Ver catálogo** → `{storeUrl}{shopPagePath}` |
+| `cart` | Saludo **con** carrito | **IA Ventas — Vaciar Carrito** → `gotoFlow` al de catálogo | Reply **Vaciar carrito** |
+| `none` | Todo lo demás (incl. pago legacy) | — | Texto plano (incluye el enlace de checkout) |
 
 `resolveBbcUiRoute` distingue el saludo por sus botones: **Vaciar carrito** solo aparece al saludar con carrito. Cuando la ruta delega en un flow, `dispatchOutbound` **omite** del texto lo que el flow va a mostrar (las opciones en `cart`, el enlace del catálogo en `catalog` y en `cart`).
 
@@ -103,12 +102,16 @@ El webhook responde `{ route }` **después** de que el agente envió sus textos 
 
 **Keywords centinela:** los flows UI llevan `__ia_ventas_route_*__` con `listenKeywords: false`. Una keyword real (p. ej. `hola`) haría que BBC dispare el flow por su cuenta, saltándose al agente.
 
+**Operador de las reglas (sin confirmar):** el esquema del MCP documenta `===`, pero los ejemplos reales del skill oficial usan `equals`. Cada ruta está duplicada con ambos operadores hasta saber cuál evalúa el runtime; solo puede coincidir uno.
+
+**Latencia del webhook:** el agente tarda ~5 s en responder (incluye el envío por API v2, que espera confirmación de entrega). Si BBC corta la petición antes, nunca evalúa las reglas y el flow no se dispara. Sospechoso principal si los botones siguen sin aparecer.
+
 **Importante:** carrito y catálogo se envían desde **IA Ventas** vía API v2. **No** uses `messageMapping` en el relay HTTP.
 
 Relay HTTP (`sync-webhook`):
 
 - `avoidResponse: true`
-- Reglas: `route === "catalog" | "cart" | "payment"` → su flow UI
+- Reglas: `route === "catalog" | "cart"` → su flow UI
 - Sin `messageMapping`
 
 ---
@@ -224,15 +227,15 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 |---------|---------|
 | `hola`, `menú`, `buenos días` | Texto: bienvenida + **perfil negocio** (descripción, 📍 dirección, 🕐 horario desde `/business/settings`) |
 | (continúa) | Pide **ID del producto** (SKU amigable) o descripción en lenguaje natural |
-| (continúa) | `route: catalog` → flow **Saludo Sin Carrito** con botón **Ver catálogo** → `{storeUrl}{shopPagePath}` (MASSI: `https://massijoyeria.com/tienda/`) |
+| (continúa) | `route: catalog` → flow **Catalogo** con botón **Ver catálogo** → `{storeUrl}{shopPagePath}` (MASSI: `https://massijoyeria.com/tienda/`) |
 
 **Con carrito previo** (`flowStep: buying`, `buildWelcomeWithCart`):
 
 | Mensaje | Contenido |
 |---------|-----------|
 | 1 (API v2) | Bienvenida + perfil + **resumen del carrito** + aviso de que puede enviar un **ID** para agregar o cambiar productos |
-| 2 (flow `cart`) | **Saludo Con Carrito**: cómo modificar el carrito + botón **Vaciar carrito** |
-| 3 (gotoFlow) | **Saludo Sin Carrito**: botón **Ver catálogo** |
+| 2 (flow `cart`) | **Vaciar Carrito**: cómo modificar el carrito + botón **Vaciar carrito** |
+| 3 (gotoFlow) | **Catalogo**: botón **Ver catálogo** |
 
 **Vaciar carrito** (`massi:cart:clear`, o escribir *Vaciar carrito*) limpia `cartItems` y devuelve al paso de pedir ID. El LLM **no** debe repetir un saludo genérico si ya se envió.
 
@@ -296,14 +299,14 @@ El cliente elige en la **web**: recoger en tienda, domicilio, transferencia o ef
 
 | Cliente | Sistema |
 |---------|---------|
-| `eso es todo` (con `checkoutMode: whatsapp`) | Botones BBC Transferencia / Efectivo |
+| `eso es todo` (con `checkoutMode: whatsapp`) | Opciones Transferencia / Efectivo por **texto** (cloud-v2) o botones nativos (wa-api). **No** hay flow Pago UI en BBC (jul 2026). |
 
-### 5. Método de pago (botones BBC — determinista)
+### 5. Método de pago (legacy — sin flow BBC)
 
-Flow **IA Ventas — Pago UI**:
+El agente guía por texto (o botones nativos en wa-api). Acciones por ID de botón o frases equivalentes:
 
-| Botón | ID | Acción |
-|-------|-----|--------|
+| Opción | ID botón (wa-api) | Acción |
+|--------|-------------------|--------|
 | Transferencia | `massi:pay:transfer` | `POST /massi-bot/v1/orders` (`mdp_788`) + datos bancarios |
 | Efectivo tienda | `massi:pay:cash` | Pedido + ticket provisional (`mdp_789`) |
 | Menú principal | `massi:menu:back` | Cancela selección de pago |
@@ -360,7 +363,7 @@ Bot:     ¡Hola! Bienvenido a MASSI JOYERIA.
          Somos fabricantes de joyas en oro 18K…
          📍 [dirección]  🕐 [horario]
          Dime el ID del producto o productos que te interesan.
-Bot:     Link de nuestro Catálogo Oficial       ← flow Saludo Sin Carrito
+Bot:     Link de nuestro Catálogo Oficial       ← flow Catalogo
          [ Ver catálogo ]                       ← botón CTA URL
 
 Cliente: qué productos tienen
@@ -391,7 +394,7 @@ Bot:     ¡Perfecto! Tu selección está lista… (resumen)
 
 Cliente: hola
 Bot:     ¡Hola! Bienvenido a MASSI JOYERIA… Tienes un pedido en curso: (resumen)
-Bot:     🛒 ¿Qué deseas hacer con tu carrito?…     ← flow Saludo Con Carrito
+Bot:     🛒 ¿Qué deseas hacer con tu carrito?…     ← flow Vaciar Carrito
          [ Vaciar carrito ]
 Bot:     Link de nuestro Catálogo Oficial          ← gotoFlow al de catálogo
          [ Ver catálogo ]
@@ -399,7 +402,39 @@ Bot:     Link de nuestro Catálogo Oficial          ← gotoFlow al de catálogo
 
 Misma lógica aplica a cualquier catálogo WC (medidas, tallas, packs de variación, etc.).
 
-**Modo `whatsapp` legacy:** tras “eso es todo” → botones Transferencia / Efectivo → pedido MASSI en chat (ver §4b).
+**Modo `whatsapp` legacy:** tras “eso es todo” → opciones de pago por texto (ver §4b).
+
+---
+
+## WhatsApp saliente (OTP, estado pedido)
+
+Misma línea BuilderBot que el agente de ventas. WordPress llama a IA Ventas; **no** pasa por el webhook del agente.
+
+```http
+POST https://ventas.nedi.info/api/v1/channel/messages
+X-API-Key: bb_live_{tenant}_{hex}
+Content-Type: application/json
+
+{ "phone": "573103534207", "message": "MASSI: Tu codigo es 1234", "purpose": "otp" }
+```
+
+| `purpose` | Origen | Uso |
+|-----------|--------|-----|
+| `otp` | `massi-tickets` → `OTP_Manager` (modo gateway `ia_ventas`) | Login **Mi cuenta** |
+| `order_status` | `massi-bot-api` → `class-massi-bot-notifications.php` | Cambio `_massi_operational_status` |
+| `generic` | Otros | — |
+
+**Configuración WordPress** (MASSI → API → Enrutador):
+
+| Campo | Valor |
+|-------|--------|
+| Método de envío central | **4. WhatsApp Automático (IA Ventas / BuilderBot)** |
+| URL API IA Ventas | `https://ventas.nedi.info/api/v1` (solo base, **sin** `/channel/messages`) |
+| API Key plataforma | `bb_live_…` del panel IA Ventas → Configuración (pegar completa al guardar) |
+
+Reemplaza DonChat para OTP y notificaciones; **emails WC siguen activos** en paralelo.
+
+**Validación manual de comprobantes** (transferencia Bre-B): portal equipo en `{tienda}/validacion-de-pagos/` (plugin **Motor de Pagos**), no en IA Ventas.
 
 ---
 
@@ -409,8 +444,8 @@ Misma lógica aplica a cualquier catálogo WC (medidas, tallas, packs de variaci
 
 | Modo checkout | Qué pasa en BBC |
 |---------------|-----------------|
-| **`link` (default)** | Relay + API v2 texto (incluye URL formulario) + flows de saludo (**Sin Carrito** / **Con Carrito**). **No** se dispara Pago UI. |
-| **`whatsapp` (legacy)** | Además, webhook `{ "route": "payment" }` → flow **Pago UI** con botones Reply. |
+| **`link` (default)** | Relay + API v2 texto (incluye URL formulario) + flows de saludo (**Sin Carrito** / **Con Carrito**). |
+| **`whatsapp` (legacy)** | Pago por texto (cloud-v2); **sin** flow Pago UI en BBC. |
 
 Los flows los crea `sync-webhook`; **sus botones se configuran a mano una vez por negocio** (ver sección de configuración arriba).
 
@@ -443,7 +478,7 @@ El MCP **solo construye bots**. Para enviar un mensaje del servidor a un contact
 | `builderbot_create_flow` / `builderbot_update_flow` | Sí | Relay + UI flows |
 | `builderbot_delete_flow` | Sí (destructiva) | — |
 | `builderbot_list_answers` | No | Relay + UI flows |
-| `builderbot_create_answer` / `builderbot_update_answer` / `builderbot_delete_answer` | Sí | Relay (`add_http`) + Pago UI (`add_text`) |
+| `builderbot_create_answer` / `builderbot_update_answer` / `builderbot_delete_answer` | Sí | Relay (`add_http`) + flows saludo (`add_text`) |
 | `builderbot_deploy` (`create`/`status`/`qr`/`reboot`/`delete`) | Parcial | `reboot` tras sync; deploy/QR van por manager API |
 | `builderbot_validate_bot` | No | ❌ **No usado** — ver gaps |
 | `builderbot_read_logs` | No | ❌ **No usado** — ver gaps |
@@ -519,27 +554,21 @@ Violarlas produce fallos **silenciosos**, no errores:
 1. Abre [app.builderbot.cloud](https://app.builderbot.cloud) → proyecto del negocio.
 2. En cada flow, selecciona el bloque de texto → **Botones interactivos** → agrega los botones y **Guarda** el bloque (Reboot **no** guarda cambios).
 
-**IA Ventas — Saludo Sin Carrito** (`Link de nuestro Catálogo Oficial`) → **+ CTA URL**:
+**IA Ventas — Catalogo** (`Link de nuestro Catálogo Oficial`) → **+ CTA URL**:
 
 | Texto | URL |
 |-------|-----|
 | Ver catálogo | `{storeUrl}{shopPagePath}` (MASSI: `https://massijoyeria.com/tienda/`) |
 
-**IA Ventas — Saludo Con Carrito** → **+ Reply** y, en las opciones del bloque, **Redirigir a flujo** → *Saludo Sin Carrito*:
+**IA Ventas — Vaciar Carrito** → **+ Reply** y, en las opciones del bloque, **Redirigir a flujo** → *Catalogo*:
 
 | Texto | ID (si el panel lo pide) |
 |-------|--------------------------|
 | Vaciar carrito | `massi:cart:clear` |
 
-**IA Ventas — Pago UI** (solo modo `whatsapp` legacy) → **+ Reply**:
-
-| Texto | ID (si el panel lo pide) |
-|-------|--------------------------|
-| Transferencia | `massi:pay:transfer` |
-| Efectivo tienda | `massi:pay:cash` |
-| Menú principal | `massi:menu:back` |
-
 3. Deploy / Reboot del bot en BBC.
+
+> **Flow Pago UI:** ya **no** se provisiona (jul 2026). Si existe en BBC de un negocio antiguo, puedes eliminarlo; el pago legacy va por texto API v2.
 
 Las etiquetas de los botones son las que `resolveButtonAction` interpreta al volver por webhook, así que **deben coincidir exactamente** con `WA_BTN_LABEL`.
 
@@ -609,7 +638,7 @@ Luego en panel → WhatsApp → **Re-sincronizar webhook**.
 - [ ] Quitar / corregir / vaciar carrito → resumen actualizado
 - [ ] **finalizar con la compra** → enlace **Continuar compra** → formulario WC con `items=SKU:qty`
 - [ ] Abrir link → productos pre-cargados (plugin checkout link)
-- [ ] (Legacy) **eso sería todo** con `checkoutMode: whatsapp` → botones Transferencia / Efectivo
+- [ ] (Legacy) `checkoutMode: whatsapp` → opciones pago por texto
 - [ ] **Transferencia** (legacy) → datos bancarios → imagen comprobante
 - [ ] Producto **simple** y **variable** (cualquier categoría WC)
 
@@ -624,8 +653,8 @@ Ver tabla completa y prioridades en [`business-flow-massi.md`](./business-flow-m
 | Recoger vs domicilio | `delivery_type: delivery` + datos envío (hoy solo `pickup`) |
 | Formulario WC / link checkout | ✅ Plugin pre-carga carrito; formularios en WordPress |
 | Perfil cliente por teléfono | `GET /clients?phone=` — adapter listo, agente no usa |
-| Webhook estado → WhatsApp | `_massi_operational_status`; hoy solo email WC |
-| OTP Mi cuenta vía WhatsApp | Misma línea BuilderBot; coordinar con plugin WP |
+| Webhook estado → WhatsApp | ✅ `massi-bot-api` + `POST /channel/messages` (modo `ia_ventas`) |
+| OTP Mi cuenta vía WhatsApp | ✅ `massi-tickets` gateway `ia_ventas` + `/channel/messages` |
 | Listas WhatsApp variaciones | Elegir variante sin texto libre |
 | Tests E2E automatizados | — |
 
@@ -652,4 +681,4 @@ El plugin:
 
 ---
 
-*Última actualización: 30 julio 2026 — botones solo en el saludo, vía flows UI de BBC (`route: catalog | cart`), con `gotoFlow` encadenando carrito → catálogo; la API v2 y el MCP solo manejan texto, así que los botones se configuran a mano una vez por negocio.*
+*Última actualización: 30 julio 2026 — OTP/notificaciones vía `/channel/messages`; flows BBC solo saludo (sin Pago UI); validación comprobantes en `/validacion-de-pagos/`.*

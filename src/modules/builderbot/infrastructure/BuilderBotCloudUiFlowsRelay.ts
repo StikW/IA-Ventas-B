@@ -22,7 +22,7 @@ const UI_FLOWS: UiFlowSpec[] = [
   {
     key: 'catalogFlowId',
     label: 'ia_ventas_ui_catalog',
-    name: 'IA Ventas — Saludo Sin Carrito',
+    name: 'IA Ventas — Catalogo',
     keyword: '__ia_ventas_route_catalog__',
     message: 'Link de nuestro Catálogo Oficial',
     sort: 10,
@@ -30,7 +30,7 @@ const UI_FLOWS: UiFlowSpec[] = [
   {
     key: 'cartFlowId',
     label: 'ia_ventas_ui_cart',
-    name: 'IA Ventas — Saludo Con Carrito',
+    name: 'IA Ventas — Vaciar Carrito',
     keyword: '__ia_ventas_route_cart__',
     message: [
       '🛒 *¿Qué deseas hacer con tu carrito?*',
