@@ -30,6 +30,8 @@ export interface SalesContext {
   flowStep?: ConversationFlowStep;
   cartItems?: PendingCartItem[];
   customerName?: string;
+  /** Último enlace al formulario WC. Lo resuelve el redirect `/c/:tenantId/:phone`. */
+  checkoutUrl?: string;
   lastOrderId?: string;
   /** Pedido WooCommerce MASSI creado vía massi-bot-api */
   massiWooOrderId?: number;

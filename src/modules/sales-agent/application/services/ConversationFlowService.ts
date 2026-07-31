@@ -400,6 +400,7 @@ export class ConversationFlowService {
         ...salesContext,
         phase: 'browsing',
         flowStep: 'checkout_redirect',
+        checkoutUrl,
       },
     };
   }

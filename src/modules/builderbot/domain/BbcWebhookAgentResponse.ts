@@ -9,9 +9,9 @@ export type BbcUiRoute = 'catalog' | 'cart' | 'checkout' | 'none';
 export interface BbcWebhookAgentResponse {
   route: BbcUiRoute;
   /**
-   * URL del formulario de checkout. BBC fusiona la respuesta en el estado del contacto,
-   * así el flow **IA Ventas — Checkout** la usa como `{checkoutUrl}` en su botón CTA
-   * (cambia en cada conversación: teléfono + `items=SKU:qty`).
+   * URL del formulario de checkout, solo informativa (queda en el estado del contacto y en logs).
+   * El botón CTA no resuelve variables del estado: usa el enlace corto `/c/:tenantId/:phone`,
+   * que redirige a esta misma URL leyéndola de la sesión.
    */
   checkoutUrl?: string;
 }

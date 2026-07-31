@@ -22,6 +22,7 @@ import {
 } from './shared/presentation/routes/commerce.routes';
 import { createBuilderBotTenantRoutes } from './shared/presentation/routes/builderbot.routes';
 import { createWebhookRoutes } from './shared/presentation/routes/webhook.routes';
+import { checkoutRedirectController } from './modules/sales-agent/presentation/controllers/CheckoutRedirectController';
 
 const swaggerSpec = swaggerJsdoc({
   definition: {
@@ -76,7 +77,13 @@ export function createApp(): express.Application {
 
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
+  // Enlace del botón "Continuar compra" (BBC no resuelve variables en URLs de botones).
+  // Se expone también bajo API_PREFIX porque el proxy puede enrutar solo `/api/*` al backend.
+  const checkoutRedirect = checkoutRedirectController.redirect.bind(checkoutRedirectController);
+  app.get('/c/:tenantId/:phone', checkoutRedirect);
+
   const api = express.Router();
+  api.get('/c/:tenantId/:phone', checkoutRedirect);
   api.use('/auth', createAuthRoutes());
   api.use('/users', createUserRoutes());
   api.use('/businesses', createBusinessRoutes());

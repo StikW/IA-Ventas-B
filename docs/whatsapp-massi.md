@@ -55,7 +55,7 @@ sequenceDiagram
 | Botón **Vaciar carrito** (saludo con carrito) | Webhook `{ "route": "cart" }` → flow **IA Ventas — Vaciar Carrito** |
 | OTP / estado pedido (MASSI Tickets) | `POST /api/v1/channel/messages` desde WordPress (`purpose: otp` \| `order_status`) |
 | Pago legacy (`checkoutMode: whatsapp`) | Texto por API v2 (cloud-v2); botones nativos solo en wa-api — **sin** flow Pago UI en BBC |
-| Botón **Continuar compra** (formulario WC) | Webhook `{ "route": "checkout", "checkoutUrl": "…" }` → flow **IA Ventas — Checkout** con CTA URL `{checkoutUrl}` |
+| Botón **Continuar compra** (formulario WC) | Webhook `{ "route": "checkout" }` → flow **IA Ventas — Checkout** con CTA URL fija `{APP_PUBLIC_URL}/c/{tenantId}/{from}` (redirige 302) |
 
 ### Dónde viven los botones (verificado jul 2026)
 
@@ -90,10 +90,20 @@ El webhook responde `{ route }` **después** de que el agente envió sus textos 
 |---------|--------|---------|---------------------|
 | `catalog` | Saludo **sin** carrito · consulta de catálogo · tras vaciar el carrito | **IA Ventas — Catalogo** | CTA URL **Ver catálogo** → `{storeUrl}{shopPagePath}` |
 | `cart` | Saludo **con** carrito | **IA Ventas — Vaciar Carrito** → `gotoFlow` al de catálogo | Reply **Vaciar carrito** |
-| `checkout` | Finalizar compra (modo `link`) | **IA Ventas — Checkout** | CTA URL **Continuar compra** → `{checkoutUrl}` |
+| `checkout` | Finalizar compra (modo `link`) | **IA Ventas — Checkout** | CTA URL **Continuar compra** → `{APP_PUBLIC_URL}/c/{tenantId}/{from}` |
 | `none` | Todo lo demás (incl. pago legacy) | — | Texto plano |
 
-**URL dinámica en un flow fijo:** el webhook devuelve `{ route: "checkout", checkoutUrl }` y BBC fusiona la respuesta en el estado del contacto (igual que hace con `route`), así que el campo URL del botón puede escribirse como `{checkoutUrl}` aunque cambie en cada conversación (teléfono + `items=SKU:qty`). Mientras se valida, el agente **sigue enviando la URL en texto** por API v2: si la variable no resolviera, el cliente no se queda sin enlace. Para dejar solo el botón hay que omitir el enlace en `renderOutboundAsText` para `route === 'checkout'`.
+**URL dinámica en un flow fijo (enlace corto):** el campo URL de un botón CTA **no resuelve variables del estado** — con `{checkoutUrl}` WhatsApp abre literalmente `{checkoutUrl}` (verificado jul 2026). La solución es un botón con URL fija que apunta a IA Ventas y redirige:
+
+```
+https://ventas.nedi.info/c/{tenantId}/{from}   →  302  →  {storeUrl}/finalizar-compra/?phone=…&items=SKU:qty
+```
+
+- `{from}` sí es variable de sistema de BBC (la misma que ya se usa en el body del `add_http`).
+- El agente guarda la URL en `SalesContext.checkoutUrl`; `GET /c/:tenantId/:phone` (público, sin JWT) la busca por teléfono y responde `302`. Sin carrito en sesión redirige a la tienda.
+- La ruta se expone en la raíz **y** bajo `API_PREFIX` (`/api/v1/c/:tenantId/:phone`) por si el proxy solo enruta `/api/*` al backend.
+
+Mientras se valida, el agente **sigue enviando la URL en texto** por API v2: si el botón fallara, el cliente no se queda sin enlace. Para dejar solo el botón hay que omitir el enlace en `renderOutboundAsText` para `route === 'checkout'`.
 
 `resolveBbcUiRoute` distingue el saludo por sus botones: **Vaciar carrito** solo aparece al saludar con carrito. Cuando la ruta delega en un flow, `dispatchOutbound` **omite** del texto lo que el flow va a mostrar (las opciones en `cart`, el enlace del catálogo en `catalog` y en `cart`).
 
