@@ -270,6 +270,7 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 |---------|---------|
 | `quiero [producto] [variante]` | Atajo determinista → resuelve variación → agrega → resumen + invitación a enviar otro *ID* · sin flow: **Finalizar pedido** va como opción escrita |
 | `cadena 45cm y balín #3` (varios productos) | `parseMultiProductSelection` → resuelve cada segmento; éxito parcial si uno no existe en WC |
+| `dos unidades de CAD-ORO-45 y una de CAD-ORO-60` | Segmenta por **ID explícito** (`extractExplicitSkus`, separadores `,` / `y`) aunque no se nombre el producto; cantidad por segmento (`extractSpokenQuantity`, también en palabras) y los IDs repetidos suman unidades |
 | `otra de 45 cm` (con carrito activo) | Misma familia de producto → variación hermana por atributo |
 | `quisiera agregar una [producto]` | Producto concreto; typos (`agreagar`) se normalizan |
 

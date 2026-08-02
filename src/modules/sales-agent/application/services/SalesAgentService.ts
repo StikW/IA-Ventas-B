@@ -37,8 +37,12 @@ import { hasConcreteProductSpec, isCatalogBrowseIntent, normalizeUserTypos } fro
 
 const AGENT_ACTOR = 'system:sales-agent';
 
-/** Distingue «no hay stock» (hay que contarlo) de «no identifiqué el producto» (pedir ID). */
-const STOCK_ISSUE_PATTERN = /stock|disponible|agotad|quedan|unidades/i;
+/**
+ * Distingue «no hay stock» (hay que contarlo) de «no identifiqué el producto» (pedir ID).
+ * Solo frases que produce el sistema: los mensajes citan el texto del cliente y palabras
+ * como "unidades" darían falsos positivos.
+ */
+const STOCK_ISSUE_PATTERN = /sin stock|no hay stock|stock insuficiente|solo (?:hay|quedan)|agotad/i;
 
 /**
  * Sin herramientas de búsqueda por nombre ni de listado de variaciones: el agente nunca

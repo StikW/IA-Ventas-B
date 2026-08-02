@@ -2,6 +2,7 @@ import {
   cartItemMatchesVariantHint,
   extractQuantityFromText,
   extractVariantHint,
+  looksLikeExplicitSku,
   looksLikeSku,
   normalizeProductText,
   tokenizeProductQuery,
@@ -69,16 +70,6 @@ function stripCartTargetNoise(text: string): string {
     .trim();
 }
 
-/**
- * Dentro de una frase, cualquier palabra pasa `looksLikeSku` ("unidades", "quiero"), así que
- * solo aceptamos códigos inequívocos: con dígito y separador o mayúsculas ("CAD-ORO-50").
- * Las medidas sueltas ("45cm") quedan como variante, que es lo que el cliente quiso decir.
- */
-function looksLikeEmbeddedSku(token: string): boolean {
-  if (!looksLikeSku(token) || !/\d/.test(token)) return false;
-  return /[-_.]/.test(token) || /[A-Z]{2,}/.test(token);
-}
-
 /** Extrae qué producto del carrito describe el cliente (cualquier catálogo). */
 export function extractCartTarget(text: string, defaultQty = 1): CartTargetSpec {
   const rawText = text.trim();
@@ -89,8 +80,10 @@ export function extractCartTarget(text: string, defaultQty = 1): CartTargetSpec 
     sku = cleaned;
     cleaned = '';
   } else {
+    // Dentro de una frase solo valen códigos inequívocos: "unidades" o "quiero" pasan
+    // `looksLikeSku`, y una medida suelta ("45cm") describe la variante, no el SKU.
     const skuMatch = cleaned.match(/\b([A-Za-z0-9][A-Za-z0-9._-]{3,})\b/);
-    if (skuMatch && looksLikeEmbeddedSku(skuMatch[1]!)) {
+    if (skuMatch && looksLikeExplicitSku(skuMatch[1]!)) {
       sku = skuMatch[1];
       cleaned = cleaned.replace(skuMatch[0], ' ').trim();
     }

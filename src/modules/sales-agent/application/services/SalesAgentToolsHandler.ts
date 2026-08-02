@@ -8,6 +8,7 @@ import { SalesContext } from '../../domain/IChatSessionRepository';
 import { PendingCartItem } from '../../domain/IChatSessionRepository';
 import { DomainError } from '../../../../shared/domain/errors/DomainError';
 import {
+  extractExplicitSkus,
   extractQuantityFromText,
   extractVariantHint,
   cartItemMatchesVariantHint,
@@ -29,6 +30,7 @@ import { buildCheckoutFormUrl } from '../../domain/checkoutLink.utils';
 import {
   buildProductQueryFromTarget,
   describeCartTarget,
+  extractSpokenQuantity,
   hasProductReference,
   isCartClearIntent,
   isCartCorrectionIntent,
@@ -766,15 +768,19 @@ export class SalesAgentToolsHandler {
         const errors: string[] = [];
 
         for (const segment of multiProducts) {
-          const result = await this.resolveSelectionFromTextInner(tenantId, segment, quantity, {
+          const segmentQuantity = extractSpokenQuantity(segment, quantity);
+          const result = await this.resolveSelectionFromTextInner(tenantId, segment, segmentQuantity, {
             cartItems: [...(context?.cartItems ?? []), ...items],
           });
-          if (result.ok && result.item) {
-            const duplicate = items.some((row) => row.sku === result.item!.sku);
-            if (!duplicate) items.push(result.item);
-          } else {
+          if (!result.ok || !result.item) {
             errors.push(result.message);
+            continue;
           }
+
+          // El mismo ID en dos segmentos ("dos de X y una de X") suma unidades.
+          const existing = items.find((row) => row.sku === result.item!.sku);
+          if (existing) existing.quantity += result.item.quantity;
+          else items.push(result.item);
         }
 
         if (!items.length) {
@@ -843,10 +849,13 @@ export class SalesAgentToolsHandler {
     }
 
     const trimmed = userText.trim();
-    const qty = extractQuantityFromText(trimmed, quantity);
+    // "dos unidades de CAD-ORO-45": la cantidad puede venir en palabras.
+    const qty = extractSpokenQuantity(trimmed, quantity);
 
-    if (looksLikeSku(trimmed)) {
-      const bySku = await this.buildOrderItemBySku(tenantId, trimmed, qty);
+    // El ID puede venir dentro de la frase: "quiero dos unidades de CAD-ORO-45".
+    const explicitSku = looksLikeSku(trimmed) ? trimmed : extractExplicitSkus(trimmed)[0];
+    if (explicitSku) {
+      const bySku = await this.buildOrderItemBySku(tenantId, explicitSku, qty);
       if (bySku.ok) return bySku;
     }
 

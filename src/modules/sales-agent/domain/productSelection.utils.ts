@@ -48,16 +48,41 @@ export function normalizeUserTypos(text: string): string {
 export const PRODUCT_FAMILY_PATTERN =
   /\b(cadena|cadenas|anillo|anillos|arete|aretes|collar|collares|pulsera|pulseras|bal[ií]n|balines|dije|dijes|argolla|argollas|aro|aros)\b/i;
 
-/** Varios productos distintos en un mensaje: "cadena 45cm y anillo talla 12". */
-export function parseMultiProductSelection(text: string): string[] | null {
-  const normalized = normalizeUserTypos(text);
-  if (!/\s+y\s+/i.test(normalized)) return null;
+/**
+ * Códigos de producto inequívocos ("CAD-ORO-45"): con dígito y separador o mayúsculas.
+ * `looksLikeSku` por sí solo acepta cualquier palabra ("unidades", "quiero").
+ */
+export function looksLikeExplicitSku(token: string): boolean {
+  if (!looksLikeSku(token) || !/\d/.test(token)) return false;
+  return /[-_.]/.test(token) || /[A-Z]{2,}/.test(token);
+}
 
-  const segments = normalized
-    .split(/\s+y\s+/i)
+export function extractExplicitSkus(text: string): string[] {
+  return [...text.matchAll(/\b[A-Za-z0-9][A-Za-z0-9._-]{2,}\b/g)]
+    .map((match) => match[0])
+    .filter(looksLikeExplicitSku);
+}
+
+function splitSegments(text: string, separator: RegExp): string[] {
+  return text
+    .split(separator)
     .map((segment) => segment.trim())
     .filter((segment) => segment.length >= 3);
+}
 
+/** Varios productos en un mensaje: "cadena 45cm y anillo talla 12", "CAD-ORO-45 y CAD-ORO-50". */
+export function parseMultiProductSelection(text: string): string[] | null {
+  const normalized = normalizeUserTypos(text);
+
+  // Con códigos explícitos no hace falta reconocer la familia del producto.
+  const codeSegments = splitSegments(normalized, /\s*,\s*|\s+y\s+/i);
+  if (codeSegments.filter((segment) => extractExplicitSkus(segment).length).length >= 2) {
+    return codeSegments;
+  }
+
+  if (!/\s+y\s+/i.test(normalized)) return null;
+
+  const segments = splitSegments(normalized, /\s+y\s+/i);
   if (segments.length < 2) return null;
 
   const families = segments.map((segment) => {
