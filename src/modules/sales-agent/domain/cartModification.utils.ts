@@ -54,6 +54,9 @@ function tokenMatchesProductBlob(token: string, blob: string): boolean {
   if (blob.includes(token)) return true;
   if (token.length > 3 && token.endsWith('s') && blob.includes(token.slice(0, -1))) return true;
   if (token.length > 3 && blob.includes(`${token}s`)) return true;
+  // Plural español en -es: "balines" → "balín", "collares" → "collar".
+  if (token.length > 4 && token.endsWith('es') && blob.includes(token.slice(0, -2))) return true;
+  if (token.length > 2 && blob.includes(`${token}es`)) return true;
   return false;
 }
 
@@ -64,6 +67,16 @@ function stripCartTargetNoise(text: string): string {
     .replace(/^(?:deja(?:r)?\s+(?:solo|solamente)|pon(?:er)?|baja(?:r)?\s+a|cambia(?:r)?\s+a)\s+/i, '')
     .replace(/^(?:las?|los?|el|la|del|de la|de)\s+/i, '')
     .trim();
+}
+
+/**
+ * Dentro de una frase, cualquier palabra pasa `looksLikeSku` ("unidades", "quiero"), así que
+ * solo aceptamos códigos inequívocos: con dígito y separador o mayúsculas ("CAD-ORO-50").
+ * Las medidas sueltas ("45cm") quedan como variante, que es lo que el cliente quiso decir.
+ */
+function looksLikeEmbeddedSku(token: string): boolean {
+  if (!looksLikeSku(token) || !/\d/.test(token)) return false;
+  return /[-_.]/.test(token) || /[A-Z]{2,}/.test(token);
 }
 
 /** Extrae qué producto del carrito describe el cliente (cualquier catálogo). */
@@ -77,7 +90,7 @@ export function extractCartTarget(text: string, defaultQty = 1): CartTargetSpec 
     cleaned = '';
   } else {
     const skuMatch = cleaned.match(/\b([A-Za-z0-9][A-Za-z0-9._-]{3,})\b/);
-    if (skuMatch && looksLikeSku(skuMatch[1]!)) {
+    if (skuMatch && looksLikeEmbeddedSku(skuMatch[1]!)) {
       sku = skuMatch[1];
       cleaned = cleaned.replace(skuMatch[0], ' ').trim();
     }
@@ -102,6 +115,11 @@ export function extractCartTarget(text: string, defaultQty = 1): CartTargetSpec 
     quantity: extractSpokenQuantity(rawText, defaultQty),
     rawText,
   };
+}
+
+/** ¿El texto señala un producto? "no quiero 3" solo habla de cantidad, no de un ítem. */
+export function hasProductReference(target: CartTargetSpec): boolean {
+  return Boolean(target.sku || target.variantHint || target.productTokens.length);
 }
 
 export function buildProductQueryFromTarget(target: CartTargetSpec): string {
@@ -186,7 +204,8 @@ export function isCartRemoveIntent(text: string): boolean {
 }
 
 export interface CartCorrectionParts {
-  remove: CartTargetSpec;
+  /** Ausente cuando el cliente solo corrige la cantidad ("ya no quiero 3, solo dos de la de 60 cm"). */
+  remove?: CartTargetSpec;
   want: CartTargetSpec;
 }
 
@@ -199,10 +218,10 @@ export function parseCartCorrection(text: string): CartCorrectionParts | null {
   );
   if (!match) return null;
 
-  return {
-    remove: extractCartTarget(match[1]!.trim(), 99),
-    want: extractCartTarget(match[2]!.trim(), 1),
-  };
+  const remove = extractCartTarget(match[1]!.trim(), 99);
+  const want = extractCartTarget(match[2]!.trim(), 1);
+
+  return { remove: hasProductReference(remove) ? remove : undefined, want };
 }
 
 export interface CartRemoveRequest {
@@ -218,10 +237,18 @@ export function parseCartRemove(text: string): CartRemoveRequest {
   return { target, removeAll };
 }
 
+/** "deja solo 2 cadenas": el número va tras el verbo, sin unidad que lo delate. */
+const QUANTITY_AFTER_VERB =
+  /(?:deja(?:r)?\s+(?:solo|solamente)\s+|pon(?:er)?\s+|baja(?:r)?\s+a\s+|cambia(?:r)?\s+(?:a\s+)?)(\d+)\b/;
+
 export function parseCartSetQuantity(text: string): { target: CartTargetSpec; quantity: number } | null {
   if (!isCartSetQuantityIntent(text)) return null;
 
-  const qtyFromDigits = extractQuantityFromText(text, 0);
+  const afterVerb = Number.parseInt(normalizeProductText(text).match(QUANTITY_AFTER_VERB)?.[1] ?? '', 10);
+  const qtyFromDigits =
+    Number.isFinite(afterVerb) && afterVerb > 0 && afterVerb < 100
+      ? afterVerb
+      : extractQuantityFromText(text, 0);
   const quantity = qtyFromDigits > 0 ? qtyFromDigits : extractSpokenQuantity(text, 1);
   const target = extractCartTarget(text, quantity);
 

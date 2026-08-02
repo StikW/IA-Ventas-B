@@ -37,45 +37,24 @@ import { hasConcreteProductSpec, isCatalogBrowseIntent, normalizeUserTypos } fro
 
 const AGENT_ACTOR = 'system:sales-agent';
 
+/** Distingue «no hay stock» (hay que contarlo) de «no identifiqué el producto» (pedir ID). */
+const STOCK_ISSUE_PATTERN = /stock|disponible|agotad|quedan|unidades/i;
+
+/**
+ * Sin herramientas de búsqueda por nombre ni de listado de variaciones: el agente nunca
+ * sugiere productos. Si no llega un SKU, se pide el ID y se remite al catálogo de la tienda.
+ */
 const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
       name: 'buscar_en_documentos',
       description:
-        'Busca en el catálogo vectorizado (PDF/TXT del panel) para interpretar qué producto pide el cliente y obtener SKU/ID. NO usar para stock ni precios finales; después valida con agregar_producto_por_sku o buscar_productos_tienda en WooCommerce.',
+        'Busca en el catálogo vectorizado (PDF/TXT del panel) para interpretar qué producto pide el cliente y obtener su SKU/ID. NO usar para stock ni precios finales: valida después con agregar_producto_por_sku. Nunca listes al cliente los productos que devuelva.',
       parameters: {
         type: 'object',
         properties: { consulta: { type: 'string', description: 'Qué busca el cliente' } },
         required: ['consulta'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'buscar_productos_tienda',
-      description:
-        'Busca productos en WooCommerce. Preferir SKU exacto si lo conoces. Si buscas por nombre, devuelve SKUs de cada variación para usar en stock/compra.',
-      parameters: {
-        type: 'object',
-        properties: {
-          consulta: { type: 'string', description: 'SKU exacto o palabras clave del nombre del producto' },
-        },
-        required: ['consulta'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'listar_variaciones',
-      description:
-        'Lista variaciones con SKU, medidas y precios de un producto variable. Usar solo si aún no tienes el SKU de la variación.',
-      parameters: {
-        type: 'object',
-        properties: { product_id: { type: 'number', description: 'ID del producto padre en WooCommerce' } },
-        required: ['product_id'],
       },
     },
   },
@@ -461,7 +440,8 @@ export class SalesAgentService {
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
 
-      if (mutableContext.cartItems?.length) {
+      // Falta de stock: el detalle importa. Producto no identificado: pedir ID + catálogo.
+      if (STOCK_ISSUE_PATTERN.test(selection.message)) {
         const now = new Date().toISOString();
         const cartPrompt = this.conversationFlow.buildCartActionPrompt(
           mutableContext,
@@ -482,6 +462,27 @@ export class SalesAgentService {
         });
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
+
+      const helpPrompt = await this.conversationFlow.buildProductLookupHelpReply(
+        input.tenantId,
+        mutableContext
+      );
+      const now = new Date().toISOString();
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: helpPrompt.replyText,
+        salesContext: { ...mutableContext, ...helpPrompt.salesContext },
+        outbound: helpPrompt.outbound,
+        uiRoute: helpPrompt.uiRoute,
+        now,
+        ragHits: 0,
+      });
+      return { replied: true, reply: helpPrompt.replyText, bbcResponse };
     }
 
     const reply = await this.chat.completeWithTools({
@@ -720,10 +721,6 @@ export class SalesAgentService {
     switch (name) {
       case 'buscar_en_documentos':
         return this.tools.searchDocuments(input.tenantId, String(args.consulta ?? ''));
-      case 'buscar_productos_tienda':
-        return this.tools.searchStoreProducts(input.tenantId, String(args.consulta ?? ''));
-      case 'listar_variaciones':
-        return this.tools.listVariations(input.tenantId, Number(args.product_id ?? args.productId ?? 0));
       case 'verificar_stock': {
         const result = await this.tools.checkStock(input.tenantId, {
           sku: args.sku ? String(args.sku) : undefined,
@@ -952,7 +949,7 @@ export class SalesAgentService {
             : input.flowStep === 'buying'
               ? `FASE ACTUAL: carrito con ${input.cartItemCount} producto(s). El cliente cierra escribiendo *Finalizar pedido*; todo lo demás lo maneja por texto. Si agrega o cambia productos, usa agregar_producto_por_sku. NO llames finalizar_compra salvo confirmación explícita.`
               : input.flowStep === 'discovery' || input.flowStep === 'menu'
-                ? 'FASE ACTUAL: esperando ID de producto o descripción en lenguaje natural. El sistema intenta RAG→SKU automáticamente; si el LLM interviene, usa buscar_en_documentos para interpretar y luego agregar_producto_por_sku con el SKU. Stock/precio solo desde WooCommerce.'
+                ? 'FASE ACTUAL: esperando ID de producto o descripción en lenguaje natural. El sistema intenta RAG→SKU automáticamente; si el LLM interviene, usa buscar_en_documentos para interpretar y luego agregar_producto_por_sku con el SKU. Si sigue sin haber un SKU claro, pide el ID en vez de proponer opciones.'
                 : 'FASE ACTUAL: exploración y venta.';
 
     return [
@@ -962,13 +959,14 @@ export class SalesAgentService {
       '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
       '2) El cliente puede enviar el *ID del producto* (SKU) o describirlo en lenguaje natural (ej. "balín diamantado #6", "cadena de oro 50 cm").',
       '3) Para interpretar descripciones: buscar_en_documentos (RAG del catálogo) → extrae SKU → agregar_producto_por_sku. El backend también intenta RAG→SKU antes del LLM.',
-      '4) Catálogo, stock y precios finales: SIEMPRE WooCommerce (buscar_productos_tienda, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
-      '5) IDENTIFICADOR PRINCIPAL: ID = SKU. Si envía varios IDs o productos, resuélvelos uno a uno.',
-      '6) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a escribir *Finalizar pedido*.',
-      '7) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce.',
-      '8) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
-      '9) Usa la menor cantidad de herramientas posible por mensaje.',
-      'No inventes productos ni precios. Usa las herramientas.',
+      '4) PROHIBIDO sugerir, listar o comparar productos, medidas o precios, aunque las herramientas te devuelvan varias opciones. Si no tienes un SKU exacto, pide el *ID del producto* y di que el catálogo va enseguida (el sistema envía el enlace).',
+      '5) Stock y precios: SIEMPRE WooCommerce por SKU (verificar_stock, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
+      '6) IDENTIFICADOR PRINCIPAL: ID = SKU. Si envía varios IDs o productos, resuélvelos uno a uno.',
+      '7) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a escribir *Finalizar pedido*.',
+      '8) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce.',
+      '9) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
+      '10) Usa la menor cantidad de herramientas posible por mensaje.',
+      'Tu trabajo es armar el carrito, no asesorar sobre el catálogo. No inventes productos ni precios.',
       phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',
     ]

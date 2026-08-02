@@ -88,13 +88,15 @@ El webhook responde `{ route }` **después** de que el agente envió sus textos 
 
 | `route` | Cuándo | Flow UI | Botones en el panel |
 |---------|--------|---------|---------------------|
-| `catalog` | Saludo **sin** carrito · consulta de catálogo · tras vaciar el carrito | **IA Ventas — Catalogo** | CTA URL **Ver catálogo** → `{storeUrl}{shopPagePath}` |
+| `catalog` | Saludo **sin** carrito · consulta de catálogo · tras vaciar el carrito · **producto no identificado** | **IA Ventas — Catalogo** | CTA URL **Ver catálogo** → `{storeUrl}{shopPagePath}` |
 | `cart` | Saludo **con** carrito | **IA Ventas — Vaciar Carrito** → `gotoFlow` al de catálogo | Reply **Vaciar carrito** |
 | `none` | Todo lo demás (incl. checkout y pago legacy) | — | Texto plano |
 
 `resolveBbcUiRoute` distingue el saludo por sus botones: **Vaciar carrito** solo aparece al saludar con carrito. Cuando la ruta delega en un flow, `dispatchOutbound` **omite** del texto lo que el flow va a mostrar (las opciones en `cart`, el enlace del catálogo en `catalog` y en `cart`).
 
-**Encadenado con `gotoFlow`:** WhatsApp no admite Reply y CTA URL en el mismo mensaje, así que el flow del saludo con carrito redirige al del catálogo (`options.gotoFlow`). El cliente recibe: texto del agente con el resumen → mensaje con el botón *Vaciar carrito* → mensaje con el botón *Ver catálogo*. El provisioning lo deja puesto al crear el answer; en flows que ya existían hay que configurarlo a mano, porque reescribir el answer por MCP borraría los botones.
+**Encadenado con `gotoFlow`:** WhatsApp no admite Reply y CTA URL en el mismo mensaje, así que el flow del saludo con carrito redirige al del catálogo (`options.gotoFlow`). El cliente recibe: texto del agente con el resumen → mensaje con el botón *Vaciar carrito* → mensaje con el botón *Ver catálogo*. El provisioning lo deja puesto al crear el answer. En un flow que ya existía se puede activar con `builderbot_update_answer` mandando **solo** `options.gotoFlow` (verificado en MASSI, ago 2026: los botones del panel sobrevivieron); mandar `message` sí arriesga borrarlos.
+
+**El agente nunca sugiere productos.** El LLM no tiene herramientas de búsqueda por nombre ni de listado de variaciones: solo RAG→SKU, stock por SKU, carrito y checkout. Si el mensaje del cliente no resuelve a un SKU (*"quiero una cadena"*), `buildProductLookupHelpReply` pide el **ID** y devuelve `route: catalog`, así el botón del catálogo llega detrás. La excepción es la falta de stock, donde el detalle sí se cuenta (`STOCK_ISSUE_PATTERN` en `SalesAgentService`).
 
 **El checkout no puede ser botón (verificado jul 2026):** su URL cambia por conversación (`phone=…&items=SKU:qty`) y el campo CTA URL del panel **no pasa por el motor de plantillas**. Se probaron dos variantes y WhatsApp abrió el texto literal en ambas:
 
@@ -244,7 +246,7 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 
 | Mensaje | Contenido |
 |---------|-----------|
-| 1 (API v2) | Bienvenida + perfil + **resumen del carrito** + aviso de que puede enviar un **ID** para agregar o cambiar productos |
+| 1 (API v2) | Bienvenida + perfil + **resumen del carrito**. Sin instrucciones: las da el flow siguiente, para no repetir |
 | 2 (flow `cart`) | **Vaciar Carrito**: cómo modificar el carrito + botón **Vaciar carrito** |
 | 3 (gotoFlow) | **Catalogo**: botón **Ver catálogo** |
 
@@ -255,6 +257,7 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 | Cliente | Sistema |
 |---------|---------|
 | `¿qué productos tienen?`, `catálogo`, `qué venden`, `precios`, `lista de precios` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + `route: catalog` → flow con botón **Ver catálogo**. **No** consulta WooCommerce ni RAG: solo enruta al catálogo |
+| `quiero una cadena` (descripción sin SKU resoluble) | `buildProductLookupHelpReply`: pide el **ID** + `route: catalog`. Nunca se listan opciones ni precios |
 | Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito |
 | Cliente describe producto (*cadena 50 cm*, *balín #6*) | **RAG** (`resolveSkuFromRag` + parser `.txt`) → SKU → stock WC → carrito; fallback búsqueda WC por nombre |
 | `busco zapatos`, consulta abierta al LLM | LLM → `buscar_en_documentos` (RAG) + `agregar_producto_por_sku` / `buscar_productos_tienda` |

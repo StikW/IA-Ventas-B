@@ -29,6 +29,7 @@ import { buildCheckoutFormUrl } from '../../domain/checkoutLink.utils';
 import {
   buildProductQueryFromTarget,
   describeCartTarget,
+  hasProductReference,
   isCartClearIntent,
   isCartCorrectionIntent,
   isCartRemoveIntent,
@@ -635,12 +636,14 @@ export class SalesAgentToolsHandler {
       let next = [...items];
       const notes: string[] = [];
 
-      const removed = CartService.removeByTarget(next, parts.remove, parts.remove.quantity, true);
-      next = removed.items;
-      if (removed.removedQty > 0) {
-        notes.push(`Quité del carrito: ${removed.removedNames.join(', ')}.`);
-      } else {
-        notes.push(`No encontré "${describeCartTarget(parts.remove)}" en tu carrito.`);
+      if (parts.remove) {
+        const removed = CartService.removeByTarget(next, parts.remove, parts.remove.quantity, true);
+        next = removed.items;
+        if (removed.removedQty > 0) {
+          notes.push(`Quité del carrito: ${removed.removedNames.join(', ')}.`);
+        } else {
+          notes.push(`No encontré "${describeCartTarget(parts.remove)}" en tu carrito.`);
+        }
       }
 
       const wantQuery = buildProductQueryFromTarget(parts.want);
@@ -694,10 +697,8 @@ export class SalesAgentToolsHandler {
 
     if (isCartRemoveIntent(userText)) {
       const req = parseCartRemove(userText);
-      const hasTarget =
-        !!req.target.sku || !!req.target.variantHint || req.target.productTokens.length > 0;
 
-      if (!hasTarget) {
+      if (!hasProductReference(req.target)) {
         return {
           handled: true,
           items,

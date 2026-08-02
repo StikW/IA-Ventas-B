@@ -210,14 +210,10 @@ export class ConversationFlowService {
     const items = salesContext.cartItems ?? [];
     const catalogUrl = await this.resolveCatalogUrl(tenantId);
 
-    const body = [
-      intro,
-      '',
-      '🛒 Tienes un pedido en curso:',
-      CartService.formatSummary(items),
-      '',
-      '¿Seguimos con este pedido? Puedes agregar más productos, cambiar cantidades o finalizar tu compra.',
-    ].join('\n');
+    // Las opciones (vaciar, modificar, catálogo) las explica el flow BBC que llega después.
+    const body = [intro, '', '🛒 Tienes un pedido en curso:', CartService.formatSummary(items)].join(
+      '\n'
+    );
 
     const messages: OutboundWhatsAppMessage[] = [
       {
@@ -268,6 +264,28 @@ export class ConversationFlowService {
     ].join('\n');
 
     const body = [introBlock, introBlock ? '' : null, idPrompt].filter((line) => line !== null).join('\n');
+
+    return this.buildCatalogCtaResult(body, catalogUrl, salesContext);
+  }
+
+  /** Cuando no se identifica el producto: pedir el ID y remitir al catálogo (nunca sugerir opciones). */
+  async buildProductLookupHelpReply(
+    tenantId: string,
+    salesContext: SalesContext
+  ): Promise<ConversationFlowResult> {
+    const catalogUrl = await this.resolveCatalogUrl(tenantId);
+    const items = salesContext.cartItems ?? [];
+
+    const body = [
+      'Quiero agregarte justo lo que buscas, así que necesito el *ID del producto* 🙌',
+      '',
+      'Lo verás junto a cada producto en la tienda: envíamelo por aquí y lo sumo a tu pedido.',
+      items.length ? '' : null,
+      items.length ? '🛒 Por ahora tu pedido va así:' : null,
+      items.length ? CartService.formatSummary(items) : null,
+    ]
+      .filter((line) => line !== null)
+      .join('\n');
 
     return this.buildCatalogCtaResult(body, catalogUrl, salesContext);
   }
