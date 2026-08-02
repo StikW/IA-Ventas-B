@@ -55,7 +55,7 @@ sequenceDiagram
 | Botón **Vaciar carrito** (saludo con carrito) | Webhook `{ "route": "cart" }` → flow **IA Ventas — Vaciar Carrito** |
 | OTP / estado pedido (MASSI Tickets) | `POST /api/v1/channel/messages` desde WordPress (`purpose: otp` \| `order_status`) |
 | Pago legacy (`checkoutMode: whatsapp`) | Texto por API v2 (cloud-v2); botones nativos solo en wa-api — **sin** flow Pago UI en BBC |
-| Botón **Continuar compra** (formulario WC) | Webhook `{ "route": "checkout" }` → flow **IA Ventas — Checkout** con CTA URL fija `{APP_PUBLIC_URL}/c/{tenantId}/{from}` (redirige 302) |
+| Enlace al formulario WC (finalizar compra) | Texto por API v2 — **sin botón** (ver «El checkout no puede ser botón») |
 
 ### Dónde viven los botones (verificado jul 2026)
 
@@ -90,26 +90,20 @@ El webhook responde `{ route }` **después** de que el agente envió sus textos 
 |---------|--------|---------|---------------------|
 | `catalog` | Saludo **sin** carrito · consulta de catálogo · tras vaciar el carrito | **IA Ventas — Catalogo** | CTA URL **Ver catálogo** → `{storeUrl}{shopPagePath}` |
 | `cart` | Saludo **con** carrito | **IA Ventas — Vaciar Carrito** → `gotoFlow` al de catálogo | Reply **Vaciar carrito** |
-| `checkout` | Finalizar compra (modo `link`) | **IA Ventas — Checkout** | CTA URL **Continuar compra** → `{APP_PUBLIC_URL}/c/{tenantId}/{from}` |
-| `none` | Todo lo demás (incl. pago legacy) | — | Texto plano |
-
-**URL dinámica en un flow fijo (enlace corto):** el campo URL de un botón CTA **no resuelve variables del estado** — con `{checkoutUrl}` WhatsApp abre literalmente `{checkoutUrl}` (verificado jul 2026). La solución es un botón con URL fija que apunta a IA Ventas y redirige:
-
-```
-https://ventas.nedi.info/c/{tenantId}/{from}   →  302  →  {storeUrl}/finalizar-compra/?phone=…&items=SKU:qty
-```
-
-- `{from}` sí es variable de sistema de BBC (la misma que ya se usa en el body del `add_http`).
-- El agente guarda la URL en `SalesContext.checkoutUrl`; `GET /c/:tenantId/:phone` (público, sin JWT) la busca por teléfono y responde `302`. Sin carrito en sesión redirige a la tienda.
-- La ruta se expone en la raíz **y** bajo `API_PREFIX` (`/api/v1/c/:tenantId/:phone`) por si el proxy solo enruta `/api/*` al backend.
-
-Mientras se valida, el agente **sigue enviando la URL en texto** por API v2: si el botón fallara, el cliente no se queda sin enlace. Para dejar solo el botón hay que omitir el enlace en `renderOutboundAsText` para `route === 'checkout'`.
+| `none` | Todo lo demás (incl. checkout y pago legacy) | — | Texto plano |
 
 `resolveBbcUiRoute` distingue el saludo por sus botones: **Vaciar carrito** solo aparece al saludar con carrito. Cuando la ruta delega en un flow, `dispatchOutbound` **omite** del texto lo que el flow va a mostrar (las opciones en `cart`, el enlace del catálogo en `catalog` y en `cart`).
 
 **Encadenado con `gotoFlow`:** WhatsApp no admite Reply y CTA URL en el mismo mensaje, así que el flow del saludo con carrito redirige al del catálogo (`options.gotoFlow`). El cliente recibe: texto del agente con el resumen → mensaje con el botón *Vaciar carrito* → mensaje con el botón *Ver catálogo*. El provisioning lo deja puesto al crear el answer; en flows que ya existían hay que configurarlo a mano, porque reescribir el answer por MCP borraría los botones.
 
-**El checkout no tiene flow:** su botón necesita una URL distinta por conversación (`items=SKU:qty&phone=…`) y el campo CTA URL del panel es fijo. El enlace sigue viajando como texto, que WhatsApp muestra tocable.
+**El checkout no puede ser botón (verificado jul 2026):** su URL cambia por conversación (`phone=…&items=SKU:qty`) y el campo CTA URL del panel **no pasa por el motor de plantillas**. Se probaron dos variantes y WhatsApp abrió el texto literal en ambas:
+
+| URL en el campo CTA | Resultado |
+|---------------------|-----------|
+| `{checkoutUrl}` (variable del estado, fusionada desde la respuesta del webhook) | Abre literalmente `{checkoutUrl}` |
+| `{APP_PUBLIC_URL}/c/{tenantId}/{from}` (variable de sistema, la misma que sí resuelve en el body del `add_http`) | Abre literalmente `…/{from}` |
+
+Como ni siquiera `{from}` resuelve, tampoco sirve un enlace corto que redirija por teléfono. El enlace viaja como texto, que WhatsApp muestra tocable.
 
 **Si los botones no están configurados** en el panel, el flow envía solo su texto: el cliente puede seguir por escrito (`finalizar`, `vaciar carrito`), pero se queda sin acceso al catálogo. Configúralos al dar de alta el negocio.
 

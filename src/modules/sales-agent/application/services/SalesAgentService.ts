@@ -298,7 +298,6 @@ export class SalesAgentService {
           salesContext: { ...mutableContext, ...checkoutPrompt.salesContext },
           outbound: checkoutPrompt.outbound,
           uiRoute: checkoutPrompt.uiRoute,
-          checkoutUrl: checkoutPrompt.checkoutUrl,
           now,
           ragHits: 0,
         });
@@ -398,7 +397,6 @@ export class SalesAgentService {
           salesContext: { ...mutableContext, ...checkoutPrompt.salesContext },
           outbound: checkoutPrompt.outbound,
           uiRoute: checkoutPrompt.uiRoute,
-          checkoutUrl: checkoutPrompt.checkoutUrl,
           now,
           ragHits: 0,
         });
@@ -523,7 +521,6 @@ export class SalesAgentService {
           salesContext: { ...mutableContext, ...checkoutPrompt.salesContext },
           outbound: checkoutPrompt.outbound,
           uiRoute: checkoutPrompt.uiRoute,
-          checkoutUrl: checkoutPrompt.checkoutUrl,
           now,
           ragHits: 0,
         });
@@ -990,7 +987,6 @@ export class SalesAgentService {
     salesContext: SalesContext;
     outbound?: OutboundWhatsAppPayload;
     uiRoute?: BbcUiRoute;
-    checkoutUrl?: string;
     now: string;
     ragHits: number;
   }): Promise<BbcWebhookAgentResponse> {
@@ -1042,7 +1038,7 @@ export class SalesAgentService {
         'Agente de ventas respondió por WhatsApp (API v2)'
       );
 
-      return params.checkoutUrl ? { route, checkoutUrl: params.checkoutUrl } : { route };
+      return { route };
     }
 
     const phone = normalizeBuilderBotPhone(params.customerPhone);

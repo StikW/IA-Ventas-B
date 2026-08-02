@@ -18,8 +18,8 @@ interface UiFlowSpec {
  * botones (Reply / CTA URL) se agregan a mano en el panel BBC porque el esquema del MCP
  * no los acepta.
  *
- * El botón del flow de checkout usa `{checkoutUrl}`: BBC fusiona la respuesta del webhook
- * en el estado del contacto, así que la URL cambia por conversación aunque el flow sea fijo.
+ * Solo se declaran flows con URL fija: el campo URL de un botón CTA no resuelve variables,
+ * por eso el enlace de checkout (cambia por cliente y carrito) viaja como texto.
  */
 const UI_FLOWS: UiFlowSpec[] = [
   {
@@ -47,20 +47,11 @@ const UI_FLOWS: UiFlowSpec[] = [
     sort: 11,
     gotoFlow: 'catalogFlowId',
   },
-  {
-    key: 'checkoutFlowId',
-    label: 'ia_ventas_ui_checkout',
-    name: 'IA Ventas — Checkout',
-    keyword: '__ia_ventas_route_checkout__',
-    message: 'Completa tu compra aquí 👇',
-    sort: 12,
-  },
 ];
 
 export interface BuilderBotUiFlowIds {
   catalogFlowId: string;
   cartFlowId: string;
-  checkoutFlowId: string;
 }
 
 type FlowRecord = { id?: string; label?: string; name?: string; keywords?: string[] };
