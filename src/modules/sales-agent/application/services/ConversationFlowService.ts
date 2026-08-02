@@ -258,7 +258,7 @@ export class ConversationFlowService {
       '🛍️ *¿Cómo seguimos?*',
       '',
       '1️⃣ Si ya viste algo que te gustó, envíame el *ID del producto* y lo agrego a tu pedido.',
-      '2️⃣ Si aún no lo tienes, abre el catálogo de abajo: ahí verás fotos, precios y el *ID* de cada pieza.',
+      '2️⃣ Si no lo tienes a mano, descríbeme lo que buscas (por ejemplo: _una cadena, anillo, balín, etc..._) y yo lo busco por ti.',
       '',
       'Y si prefieres mirar con calma, aquí abajo te dejo el catálogo 👇',
     ].join('\n');

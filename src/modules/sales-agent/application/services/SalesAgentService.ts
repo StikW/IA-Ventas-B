@@ -33,7 +33,7 @@ import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent } from '../../domain/whatsappFlow.constants';
 import { isCartClearIntent, isCartCorrectionIntent, isCartRemoveIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
-import { hasConcreteProductSpec, isCatalogBrowseIntent, normalizeUserTypos } from '../../domain/productSelection.utils';
+import { hasConcreteProductSpec, isCatalogBrowseIntent, isProductFamilyBrowseIntent, normalizeUserTypos, extractVariantHint } from '../../domain/productSelection.utils';
 
 const AGENT_ACTOR = 'system:sales-agent';
 
@@ -385,6 +385,83 @@ export class SalesAgentService {
         });
         return { replied: true, reply: checkoutPrompt.replyText, bbcResponse };
       }
+    }
+
+    if (isProductFamilyBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
+      const hasDirectSelection = Boolean(extractVariantHint(text));
+
+      if (hasDirectSelection) {
+        const selection = await this.tools.resolveSelectionsFromText(input.tenantId, text, 1, {
+          cartItems: mutableContext.cartItems,
+        });
+        if (selection.items?.length) {
+          this.addItemsToCart(input, mutableContext, selection.items);
+          const addedNames = selection.items.map((item) => `*${item.name}*`).join(', ');
+          let introLine =
+            selection.items.length === 1
+              ? `¡Listo! Agregué ${addedNames} a tu pedido.`
+              : `¡Listo! Agregué ${selection.items.length} productos a tu pedido: ${addedNames}.`;
+          if (selection.message) introLine = `${introLine} ${selection.message}`;
+
+          const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, introLine);
+          const now = new Date().toISOString();
+          const bbcResponse = await this.persistAndReply({
+            tenantId: input.tenantId,
+            deviceId: input.deviceId,
+            customerPhone: input.customerPhone,
+            messageId: input.messageId,
+            history,
+            userText: text,
+            reply: cartPrompt.replyText,
+            salesContext: { ...mutableContext, ...cartPrompt.salesContext },
+            outbound: cartPrompt.outbound,
+            now,
+            ragHits: 0,
+          });
+          return { replied: true, reply: cartPrompt.replyText, bbcResponse };
+        }
+      }
+
+      const browse = await this.tools.resolveProductFamilyBrowse(input.tenantId, text);
+      const now = new Date().toISOString();
+
+      if (browse.ok) {
+        const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, browse.message);
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: cartPrompt.replyText,
+          salesContext: { ...mutableContext, ...cartPrompt.salesContext },
+          outbound: cartPrompt.outbound,
+          now,
+          ragHits: 0,
+        });
+        return { replied: true, reply: cartPrompt.replyText, bbcResponse };
+      }
+
+      const helpPrompt = await this.conversationFlow.buildProductLookupHelpReply(
+        input.tenantId,
+        mutableContext
+      );
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: helpPrompt.replyText,
+        salesContext: { ...mutableContext, ...helpPrompt.salesContext },
+        outbound: helpPrompt.outbound,
+        uiRoute: helpPrompt.uiRoute,
+        now,
+        ragHits: 0,
+      });
+      return { replied: true, reply: helpPrompt.replyText, bbcResponse };
     }
 
     if (isCatalogBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
@@ -963,14 +1040,14 @@ export class SalesAgentService {
       '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
       '2) El cliente puede enviar el *ID del producto* (SKU) o describirlo en lenguaje natural (ej. "balín diamantado #6", "cadena de oro 50 cm").',
       '3) Para interpretar descripciones: buscar_en_documentos (RAG del catálogo) → extrae SKU → agregar_producto_por_sku. El backend también intenta RAG→SKU antes del LLM.',
-      '4) PROHIBIDO sugerir, listar o comparar productos, medidas o precios, aunque las herramientas te devuelvan varias opciones. Si no tienes un SKU exacto, pide el *ID del producto* y di que el catálogo va enseguida (el sistema envía el enlace).',
-      '5) Stock y precios: SIEMPRE WooCommerce por SKU (verificar_stock, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
-      '6) IDENTIFICADOR PRINCIPAL: ID = SKU. Si envía varios IDs o productos, resuélvelos uno a uno.',
+      '4) PROHIBIDO sugerir productos al azar. Catálogo general → enlace; tipo concreto (cadena, anillo…) → el sistema lista variantes del producto padre en WC con *ID* visible.',
+      '5) Stock y precios: SIEMPRE WooCommerce por SKU/ID (verificar_stock, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
+      '6) IDENTIFICADOR PRINCIPAL: ID = SKU interno. Al cliente siempre dile *ID*, nunca "SKU".',
       '7) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a escribir *Finalizar pedido*.',
       '8) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce.',
       '9) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
       '10) Usa la menor cantidad de herramientas posible por mensaje.',
-      'Tu trabajo es armar el carrito, no asesorar sobre el catálogo. No inventes productos ni precios.',
+      'Tu trabajo es armar el carrito. No inventes productos ni precios.',
       phaseHint,
       profileLines ? `\nInformación del negocio:\n${profileLines}` : '',
     ]

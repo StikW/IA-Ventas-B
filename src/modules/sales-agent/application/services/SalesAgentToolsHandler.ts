@@ -9,6 +9,7 @@ import { PendingCartItem } from '../../domain/IChatSessionRepository';
 import { DomainError } from '../../../../shared/domain/errors/DomainError';
 import {
   extractExplicitSkus,
+  extractProductFamilyTerm,
   extractQuantityFromText,
   extractVariantHint,
   cartItemMatchesVariantHint,
@@ -40,6 +41,11 @@ import {
   parseCartRemove,
   parseCartSetQuantity,
 } from '../../domain/cartModification.utils';
+import {
+  buildProductFamilyVariantsMessage,
+  formatSimpleProductLineForUser,
+  formatVariationLineForUser,
+} from '../../domain/productDisplay.utils';
 import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
 import { CartService } from './CartService';
 
@@ -208,6 +214,100 @@ export class SalesAgentToolsHandler {
       '\nIMPORTANTE: Cuando el cliente elija una opción, usa agregar_producto_por_sku con el SKU exacto de esa variación.'
     );
     return lines.join('\n');
+  }
+
+  /**
+   * Cliente pregunta por un tipo de producto (cadena, anillo…): busca el padre en WC y
+   * devuelve variaciones con *ID* visible (internamente SKU).
+   */
+  async resolveProductFamilyBrowse(
+    tenantId: string,
+    userText: string
+  ): Promise<{ ok: boolean; message: string }> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) {
+      return { ok: false, message: 'WooCommerce no está conectado para este negocio.' };
+    }
+
+    const family = extractProductFamilyTerm(userText);
+    if (!family) return { ok: false, message: '' };
+
+    try {
+      const parsed = parseProductSelectionQuery(normalizeUserTypos(userText));
+      const variantHint = parsed.variantHint ?? extractVariantHint(userText);
+      const searchQuery = (parsed.productQuery || family).trim() || family;
+
+      const products = await this.searchProductsWithFallback(config, searchQuery);
+      if (!products.length) {
+        return {
+          ok: false,
+          message: `No encontré ${family} en la tienda en este momento.`,
+        };
+      }
+
+      const parent = this.pickBestParentProduct(products, userText, family);
+      if (!parent) {
+        return { ok: false, message: `No encontré ${family} en la tienda en este momento.` };
+      }
+
+      if (parent.type === 'variable') {
+        if (!this.massiBot.isConfigured(config)) {
+          return {
+            ok: false,
+            message: 'Este producto tiene variaciones; configura MASSI Bot API para listarlas.',
+          };
+        }
+
+        let variations = await this.massiBot.getProductVariations(config, parent.id);
+        if (!variations.length) {
+          return { ok: false, message: `*${parent.name}* no tiene opciones publicadas aún.` };
+        }
+
+        if (variantHint) {
+          const filtered = variations.filter((variation) =>
+            cartItemMatchesVariantHint({ name: variation.name, sku: variation.sku }, variantHint)
+          );
+          if (filtered.length) variations = filtered;
+        }
+
+        const lines = variations.slice(0, 15).map((variation) => formatVariationLineForUser(variation));
+        return {
+          ok: true,
+          message: buildProductFamilyVariantsMessage(parent.name, lines, variantHint),
+        };
+      }
+
+      return {
+        ok: true,
+        message: buildProductFamilyVariantsMessage(parent.name, [formatSimpleProductLineForUser(parent)]),
+      };
+    } catch (err) {
+      return { ok: false, message: this.formatStoreError(err) };
+    }
+  }
+
+  private pickBestParentProduct(
+    products: WooCommerceProduct[],
+    userText: string,
+    family: string
+  ): WooCommerceProduct | undefined {
+    const parsed = parseProductSelectionQuery(normalizeUserTypos(userText));
+    const queryTokens = tokenizeProductQuery(parsed.productQuery || family);
+
+    let best: { product: WooCommerceProduct; score: number } | undefined;
+
+    for (const product of products) {
+      const blob = normalizeProductText(product.name);
+      let score = 0;
+      if (blob.includes(family)) score += 25;
+      if (product.type === 'variable') score += 15;
+      for (const token of queryTokens) {
+        if (blob.includes(token)) score += 10;
+      }
+      if (!best || score > best.score) best = { product, score };
+    }
+
+    return best?.product;
   }
 
   async checkStock(

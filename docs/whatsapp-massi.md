@@ -96,7 +96,7 @@ El webhook responde `{ route }` **después** de que el agente envió sus textos 
 
 **Encadenado con `gotoFlow`:** WhatsApp no admite Reply y CTA URL en el mismo mensaje, así que el flow del saludo con carrito redirige al del catálogo (`options.gotoFlow`). El cliente recibe: texto del agente con el resumen → mensaje con el botón *Vaciar carrito* → mensaje con el botón *Ver catálogo*. El provisioning lo deja puesto al crear el answer. En un flow que ya existía se puede activar con `builderbot_update_answer` mandando **solo** `options.gotoFlow` (verificado en MASSI, ago 2026: los botones del panel sobrevivieron); mandar `message` sí arriesga borrarlos.
 
-**El agente nunca sugiere productos.** El LLM no tiene herramientas de búsqueda por nombre ni de listado de variaciones: solo RAG→SKU, stock por SKU, carrito y checkout. Si el mensaje del cliente no resuelve a un SKU (*"quiero una cadena"*), `buildProductLookupHelpReply` pide el **ID** y devuelve `route: catalog`, así el botón del catálogo llega detrás. La excepción es la falta de stock, donde el detalle sí se cuenta (`STOCK_ISSUE_PATTERN` en `SalesAgentService`).
+**Catálogo vs tipo de producto:** consultas generales (`qué productos tienen`, `catálogo`, `precios`) → enlace + botón. Si nombran un tipo (`cadena`, `anillo`, `arete`…) → `resolveProductFamilyBrowse` lista variantes del producto padre en WooCommerce; al cliente siempre se dice *ID*, nunca "SKU". El LLM no tiene herramientas de búsqueda por nombre.
 
 **El checkout no puede ser botón (verificado jul 2026):** su URL cambia por conversación (`phone=…&items=SKU:qty`) y el campo CTA URL del panel **no pasa por el motor de plantillas**. Se probaron dos variantes y WhatsApp abrió el texto literal en ambas:
 
@@ -256,8 +256,9 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 
 | Cliente | Sistema |
 |---------|---------|
-| `¿qué productos tienen?`, `catálogo`, `qué venden`, `precios`, `lista de precios` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + `route: catalog` → flow con botón **Ver catálogo**. **No** consulta WooCommerce ni RAG: solo enruta al catálogo |
-| `quiero una cadena` (descripción sin SKU resoluble) | `buildProductLookupHelpReply`: pide el **ID** + `route: catalog`. Nunca se listan opciones ni precios |
+| `¿qué productos tienen?`, `catálogo`, `precios` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + `route: catalog` → botón **Ver catálogo** |
+| `quiero una cadena`, `tienen anillos`, `aretes` | **Determinista** → `resolveProductFamilyBrowse`: producto padre WC + variantes; al cliente se muestra *ID* (internamente SKU) |
+| `quiero una cadena` (descripción sin SKU resoluble, fallback) | `buildProductLookupHelpReply`: pide el **ID** + `route: catalog` |
 | Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito |
 | Cliente describe producto (*cadena 50 cm*, *balín #6*) | **RAG** (`resolveSkuFromRag` + parser `.txt`) → SKU → stock WC → carrito; fallback búsqueda WC por nombre |
 | `busco zapatos`, consulta abierta al LLM | LLM → `buscar_en_documentos` (RAG) + `agregar_producto_por_sku` / `buscar_productos_tienda` |
