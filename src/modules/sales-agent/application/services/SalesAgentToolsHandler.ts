@@ -747,7 +747,7 @@ export class SalesAgentToolsHandler {
       return { ok: false, message: this.formatStoreError(err) };
     }
 
-    return { ok: false, message: `Producto "${id}" no encontrado en WooCommerce.` };
+    return { ok: false, message: `Producto "${id}" no encontrado en la tienda.` };
   }
 
   private toOrderItemResult(
