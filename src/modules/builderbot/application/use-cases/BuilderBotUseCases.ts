@@ -135,6 +135,7 @@ export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContex
     const sessionStatus: BuilderBotSessionStatus = config.sessionStatus ?? 'unknown';
     const phone = config.phone;
     const webhookUrl = buildWebhookUrl(tenantId);
+    const orderWebhookUrl = `${webhookUrl}/order`;
     const webhookNeedsSync = config.webhookUrl !== webhookUrl;
 
     return {
@@ -146,6 +147,7 @@ export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContex
       sessionStatus,
       platformApiKeyPrefix: config.platformApiKeyPrefix,
       webhookUrl,
+      orderWebhookUrl,
       appPublicUrl: env.APP_PUBLIC_URL,
       webhookNeedsSync,
       apiMode: resolveBuilderBotApiMode(),

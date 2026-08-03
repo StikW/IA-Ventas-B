@@ -34,8 +34,18 @@ import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent } from '../../domain/whatsappFlow.constants';
 import { isCartClearIntent, isCartCorrectionIntent, isCartRemoveIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
 import { hasConcreteProductSpec, isCatalogBrowseIntent, isProductFamilyBrowseIntent, normalizeUserTypos, extractVariantHint } from '../../domain/productSelection.utils';
+import { WhatsAppCatalogOrderProduct } from '../../../builderbot/domain/whatsappCatalogOrder.utils';
 
 const AGENT_ACTOR = 'system:sales-agent';
+
+export interface WhatsAppCatalogOrderInput {
+  tenantId: string;
+  deviceId: string;
+  customerPhone: string;
+  customerName?: string;
+  products: WhatsAppCatalogOrderProduct[];
+  messageId?: string;
+}
 
 /**
  * Distingue «no hay stock» (hay que contarlo) de «no identifiqué el producto» (pedir ID).
@@ -190,6 +200,105 @@ export class SalesAgentService {
     @inject(CreateOrderUseCase) private readonly createOrder: CreateOrderUseCase,
     @inject(AuditService) private readonly audit: AuditService
   ) {}
+
+  /**
+   * Pedido del catálogo nativo de WhatsApp (EVENTS.ORDER / flow IA Ventas — Orden).
+   * Carga retailerId+qty en el carrito de sesión y responde con el mismo prompt post-agregar.
+   */
+  async handleWhatsAppCatalogOrder(input: WhatsAppCatalogOrderInput): Promise<SalesAgentMessageResult> {
+    if (!hasBuilderBot) return { replied: false, reason: 'BUILDERBOT_NOT_CONFIGURED' };
+    if (!input.products.length) return { replied: false, reason: 'EMPTY_ORDER' };
+
+    const session = await this.chatRepo.find(input.tenantId, input.customerPhone);
+    const history = session?.messages ?? [];
+    const mutableContext: SalesContext = {
+      ...(session?.salesContext ?? { phase: 'browsing' }),
+    };
+
+    const added: OrderItem[] = [];
+    const failures: string[] = [];
+
+    for (const product of input.products) {
+      const built = await this.tools.buildOrderItemByRetailerId(
+        input.tenantId,
+        product.retailerId,
+        product.quantity
+      );
+      if (built.ok && built.item) {
+        added.push(built.item);
+      } else {
+        failures.push(built.message || `No pude agregar ${product.retailerId}.`);
+      }
+    }
+
+    const userText = `[pedido catálogo WhatsApp] ${input.products
+      .map((p) => `${p.retailerId} x${p.quantity}`)
+      .join(', ')}`;
+
+    if (!added.length) {
+      const body = [
+        'Recibí tu pedido del catálogo, pero no pude cargar los productos en el carrito.',
+        ...failures.map((f) => `· ${f}`),
+        '',
+        'Envíame el *ID* del producto o vuelve a elegir desde el catálogo.',
+      ].join('\n');
+      const now = new Date().toISOString();
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText,
+        reply: body,
+        salesContext: {
+          ...mutableContext,
+          phase: 'browsing',
+          flowStep: 'discovery',
+          customerName: input.customerName ?? mutableContext.customerName,
+        },
+        outbound: { kind: 'text', body },
+        uiRoute: 'catalog',
+        now,
+        ragHits: 0,
+      });
+      return { replied: true, reply: body, bbcResponse };
+    }
+
+    this.addItemsToCart(input, mutableContext, added, input.customerName);
+
+    const addedNames = added.map((item) => `· ${item.name} x${item.quantity}`).join('\n');
+    const introParts = [
+      '¡Listo! Cargué tu pedido del catálogo de WhatsApp en el carrito:',
+      addedNames,
+    ];
+    if (failures.length) {
+      introParts.push('', 'No pude agregar:', ...failures.map((f) => `· ${f}`));
+    }
+    introParts.push('', 'Así va tu carrito:');
+
+    const cartPrompt = this.conversationFlow.buildCartActionPrompt(
+      mutableContext,
+      introParts.join('\n')
+    );
+    const now = new Date().toISOString();
+    const bbcResponse = await this.persistAndReply({
+      tenantId: input.tenantId,
+      deviceId: input.deviceId,
+      customerPhone: input.customerPhone,
+      messageId: input.messageId,
+      history,
+      userText,
+      reply: cartPrompt.replyText,
+      salesContext: cartPrompt.salesContext,
+      outbound: cartPrompt.outbound,
+      uiRoute: cartPrompt.uiRoute,
+      now,
+      ragHits: 0,
+    });
+
+    return { replied: true, reply: cartPrompt.replyText, bbcResponse };
+  }
 
   async handleIncomingMessage(input: SalesAgentMessageInput): Promise<SalesAgentMessageResult> {
     if (!hasOpenAI) return { replied: false, reason: 'OPENAI_NOT_CONFIGURED' };
@@ -853,7 +962,7 @@ export class SalesAgentService {
   }
 
   private addItemsToCart(
-    input: SalesAgentMessageInput,
+    input: { customerPhone: string },
     salesContext: SalesContext,
     newItems: OrderItem[],
     customerNameArg?: unknown

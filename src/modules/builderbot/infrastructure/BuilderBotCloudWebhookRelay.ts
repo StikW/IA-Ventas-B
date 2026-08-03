@@ -8,6 +8,10 @@ const RELAY_FLOW_LABEL = 'ia_ventas_webhook_relay';
 const RELAY_FLOW_NAME = 'IA Ventas — Agente';
 const RELAY_FLOW_KEYWORDS = ['EVENTS.WELCOME'];
 
+const ORDER_FLOW_LABEL = 'ia_ventas_order_relay';
+const ORDER_FLOW_NAME = 'IA Ventas — Orden';
+const ORDER_FLOW_KEYWORDS = ['EVENTS.ORDER'];
+
 type FlowRecord = { id?: string; label?: string; name?: string; keywords?: string[] };
 type AnswerRecord = {
   id?: string;
@@ -22,6 +26,16 @@ type HttpRule = {
   condition: string;
 };
 
+type HttpPlugin = {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: Record<string, string>;
+  rules: HttpRule[];
+  messageMapping: string;
+  avoidResponse: boolean;
+};
+
 @injectable()
 export class BuilderBotCloudWebhookRelay {
   constructor(
@@ -32,6 +46,11 @@ export class BuilderBotCloudWebhookRelay {
     const uiFlows = await this.uiFlowsRelay.sync(projectId);
     const flowId = await this.ensureRelayFlow(projectId);
     await this.ensureHttpAnswer(projectId, flowId, webhookUrl, uiFlows);
+
+    const orderFlowId = await this.ensureOrderFlow(projectId);
+    const orderWebhookUrl = `${webhookUrl.replace(/\/$/, '')}/order`;
+    await this.ensureOrderHttpAnswer(projectId, orderFlowId, orderWebhookUrl, uiFlows);
+
     await rebootBuilderBotCloudDeploy(projectId);
   }
 
@@ -66,20 +85,60 @@ export class BuilderBotCloudWebhookRelay {
     return flowId;
   }
 
-  private buildHttpPlugin(webhookUrl: string, uiFlows: BuilderBotUiFlowIds) {
+  /** Flow EVENTS.ORDER (catálogo nativo WhatsApp). Reutiliza el creado a mano si existe. */
+  private async ensureOrderFlow(projectId: string): Promise<string> {
+    const listed = await callBuilderBotMcpTool<{ flows?: FlowRecord[] }>('builderbot_list_flows', { projectId });
+    const existing = (listed.flows ?? []).find((flow) => {
+      const name = flow.name?.trim() ?? '';
+      return (
+        flow.label === ORDER_FLOW_LABEL ||
+        name === ORDER_FLOW_NAME ||
+        flow.keywords?.includes('EVENTS.ORDER') ||
+        (name.includes('IA Ventas') && /orden/i.test(name))
+      );
+    });
+    if (existing?.id) return existing.id;
+
+    const created = await callBuilderBotMcpTool<Record<string, unknown>>('builderbot_create_flow', {
+      projectId,
+      name: ORDER_FLOW_NAME,
+      label: ORDER_FLOW_LABEL,
+      keywords: ORDER_FLOW_KEYWORDS,
+      listenKeywords: false,
+      sort: 1,
+    });
+
+    const flow = (created.flow ?? created) as FlowRecord;
+    const flowId = String(flow.id ?? created.id ?? '');
+    if (!flowId) {
+      throw new DomainError(
+        'BuilderBot no devolvió el ID del flow de pedido catálogo',
+        'BUILDERBOT_WEBHOOK_SYNC_FAILED'
+      );
+    }
+
+    return flowId;
+  }
+
+  private buildHttpHeaders(): Record<string, string> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const secret = env.BUILDERBOT_WEBHOOK_SECRET;
     if (secret) headers['x-webhook-secret'] = secret;
+    return headers;
+  }
 
-    const rules: HttpRule[] = [
+  private buildRouteRules(uiFlows: BuilderBotUiFlowIds): HttpRule[] {
+    return [
       { conditionRule: 'route', conditionValue: 'catalog', conditionFlowId: uiFlows.catalogFlowId },
       { conditionRule: 'route', conditionValue: 'cart', conditionFlowId: uiFlows.cartFlowId },
     ].map((rule) => ({ ...rule, condition: '===' }));
+  }
 
+  private buildHttpPlugin(webhookUrl: string, uiFlows: BuilderBotUiFlowIds): HttpPlugin {
     return {
       url: webhookUrl,
       method: 'POST',
-      headers,
+      headers: this.buildHttpHeaders(),
       body: {
         event: 'message.incoming',
         from: '{from}',
@@ -87,10 +146,29 @@ export class BuilderBotCloudWebhookRelay {
         name: '{name}',
         text: '{body}',
       },
-      rules,
+      rules: this.buildRouteRules(uiFlows),
       // BBC solo evalúa `rules` cuando procesa la respuesta: con `avoidResponse: true` nunca
       // salta al flow UI. El texto lo envía IA Ventas vía API v2, así que el mensaje mapeado
       // se deja vacío para que no llegue nada extra al cliente.
+      messageMapping: '',
+      avoidResponse: false,
+    };
+  }
+
+  private buildOrderHttpPlugin(orderWebhookUrl: string, uiFlows: BuilderBotUiFlowIds): HttpPlugin {
+    return {
+      url: orderWebhookUrl,
+      method: 'POST',
+      headers: this.buildHttpHeaders(),
+      body: {
+        event: 'message.incoming',
+        from: '{from}',
+        phone: '{from}',
+        name: '{name}',
+        text: '{body}',
+        order: '{orderData}',
+      },
+      rules: this.buildRouteRules(uiFlows),
       messageMapping: '',
       avoidResponse: false,
     };
@@ -102,15 +180,36 @@ export class BuilderBotCloudWebhookRelay {
     webhookUrl: string,
     uiFlows: BuilderBotUiFlowIds
   ): Promise<void> {
+    await this.upsertHttpAnswer(projectId, flowId, webhookUrl, {
+      http: this.buildHttpPlugin(webhookUrl, uiFlows),
+    });
+  }
+
+  private async ensureOrderHttpAnswer(
+    projectId: string,
+    flowId: string,
+    orderWebhookUrl: string,
+    uiFlows: BuilderBotUiFlowIds
+  ): Promise<void> {
+    await this.upsertHttpAnswer(projectId, flowId, orderWebhookUrl, {
+      http: this.buildOrderHttpPlugin(orderWebhookUrl, uiFlows),
+    });
+  }
+
+  private async upsertHttpAnswer(
+    projectId: string,
+    flowId: string,
+    targetUrl: string,
+    plugins: { http: HttpPlugin }
+  ): Promise<void> {
     const listed = await callBuilderBotMcpTool<{ answers?: AnswerRecord[] }>('builderbot_list_answers', {
       projectId,
       flowId,
     });
 
-    const plugins = { http: this.buildHttpPlugin(webhookUrl, uiFlows) };
     const answers = listed.answers ?? [];
     const relayHttp = answers.find(
-      (answer) => answer.type === 'add_http' && answer.plugins?.http?.url === webhookUrl
+      (answer) => answer.type === 'add_http' && answer.plugins?.http?.url === targetUrl
     );
     const legacyHttp = answers.find((answer) => answer.type === 'add_http');
     const httpAnswer = relayHttp ?? legacyHttp;

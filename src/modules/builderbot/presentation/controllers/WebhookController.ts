@@ -4,6 +4,7 @@ import { env } from '../../../../shared/infrastructure/config/env';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
 import { emptyBbcWebhookResponse } from '../../domain/BbcWebhookAgentResponse';
 import { HandleBuilderBotWebhookUseCase } from '../../application/use-cases/HandleBuilderBotWebhookUseCase';
+import { HandleWhatsAppCatalogOrderUseCase } from '../../application/use-cases/HandleWhatsAppCatalogOrderUseCase';
 import { ProcessSalesAgentWebhookUseCase } from '../../application/use-cases/ProcessSalesAgentWebhookUseCase';
 
 function normalizeHeaders(req: Request): Record<string, string | undefined> {
@@ -86,6 +87,21 @@ export class WebhookController {
             );
           });
       }
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** Pedido del catálogo nativo WhatsApp (flow BBC EVENTS.ORDER → IA Ventas — Orden). */
+  async handleOrder(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const useCase = container.resolve(HandleWhatsAppCatalogOrderUseCase);
+      const result = await useCase.execute({
+        tenantId: String(req.params.tenantId),
+        payload: req.body,
+        headers: normalizeHeaders(req),
+      });
+      res.status(200).json(result.bbcResponse);
     } catch (err) {
       next(err);
     }

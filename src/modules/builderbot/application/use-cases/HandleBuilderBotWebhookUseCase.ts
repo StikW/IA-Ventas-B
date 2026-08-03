@@ -9,6 +9,7 @@ import { BusinessStatus } from '../../../tenant/domain/entities/Business.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
 import { BuilderBotWebhookEvent, BuilderBotWebhookResult } from '../../domain/BuilderBotWebhook.types';
 import { IBuilderBotConfigRepository } from '../../domain/IBuilderBotCloudService';
+import { isWhatsAppCatalogOrderEventText } from '../../domain/whatsappCatalogOrder.utils';
 import { BuilderBotWebhookParser } from '../services/BuilderBotWebhookParser';
 
 const WEBHOOK_ACTOR = 'system:builderbot-webhook';
@@ -47,7 +48,7 @@ export class HandleBuilderBotWebhookUseCase
     @inject('IBusinessRepository') private readonly businessRepo: IBusinessRepository,
     @inject('IBuilderBotConfigRepository') private readonly builderBotConfigRepo: IBuilderBotConfigRepository,
     @inject(AuditService) private readonly audit: AuditService,
-    private readonly parser: BuilderBotWebhookParser
+    @inject(BuilderBotWebhookParser) private readonly parser: BuilderBotWebhookParser
   ) {}
 
   async execute(input: {
@@ -94,19 +95,14 @@ export class HandleBuilderBotWebhookUseCase
     const logPayload = {
       tenantId: input.tenantId,
       payloadKeys: payloadKeys(input.payload),
+      payload: input.payload,
       eventsProcessed: events.length,
       eventTypes: events.map((event) => event.type),
       incomingCount,
     };
 
     if (incomingCount === 0 && events.some((event) => event.type === 'unknown')) {
-      logger.warn(
-        {
-          ...logPayload,
-          payloadSample: JSON.stringify(input.payload).slice(0, 500),
-        },
-        'BuilderBot webhook sin mensajes reconocidos'
-      );
+      logger.warn(logPayload, 'BuilderBot webhook sin mensajes reconocidos');
     } else {
       logger.info(logPayload, 'BuilderBot webhook procesado');
     }
@@ -127,6 +123,7 @@ export class HandleBuilderBotWebhookUseCase
             event.type === 'message.incoming' &&
             !!event.from &&
             !!event.text?.trim() &&
+            !isWhatsAppCatalogOrderEventText(event.text) &&
             !isBuilderBotTemplateLiteral(event.from) &&
             !isBuilderBotTemplateLiteral(event.text) &&
             (!event.messageType || isIncomingTextMessage(event.messageType))

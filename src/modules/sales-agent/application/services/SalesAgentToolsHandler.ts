@@ -685,6 +685,83 @@ export class SalesAgentToolsHandler {
       return { ok: false, message: `Producto con SKU "${sku}" no encontrado.` };
     }
 
+    return this.toOrderItemResult(resolved, quantity);
+  }
+
+  /**
+   * Resuelve el `retailer_id` del catálogo Meta/WhatsApp → ítem de carrito WC.
+   * Orden: SKU exacto → ID numérico WC → búsqueda por texto.
+   */
+  async buildOrderItemByRetailerId(
+    tenantId: string,
+    retailerId: string,
+    quantity = 1
+  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) {
+      return { ok: false, message: 'WooCommerce no conectado.' };
+    }
+
+    const id = retailerId.trim();
+    if (!id) {
+      return { ok: false, message: 'Producto sin retailerId.' };
+    }
+
+    try {
+      const bySku = await this.resolveProductBySku(config, id);
+      if (bySku) return this.toOrderItemResult(bySku, quantity);
+
+      const numericId = Number.parseInt(id, 10);
+      if (Number.isFinite(numericId) && String(numericId) === id) {
+        const product = await this.wcService.getProductById(config, numericId);
+        if (product) {
+          const resolved = {
+            productId: product.id,
+            sku: product.sku || id,
+            name: product.name,
+            price: product.price,
+            stockStatus: product.stockStatus,
+            stockQuantity: product.stockQuantity,
+          };
+          return this.toOrderItemResult(resolved, quantity);
+        }
+      }
+
+      const matches = await this.wcService.searchProducts(config, id);
+      const exact =
+        matches.find((p) => p.sku.trim().toLowerCase() === id.toLowerCase()) ??
+        matches.find((p) => String(p.id) === id) ??
+        matches[0];
+      if (exact) {
+        const resolved = {
+          productId: exact.id,
+          sku: exact.sku || id,
+          name: exact.name,
+          price: exact.price,
+          stockStatus: exact.stockStatus,
+          stockQuantity: exact.stockQuantity,
+        };
+        return this.toOrderItemResult(resolved, quantity);
+      }
+    } catch (err) {
+      return { ok: false, message: this.formatStoreError(err) };
+    }
+
+    return { ok: false, message: `Producto "${id}" no encontrado en WooCommerce.` };
+  }
+
+  private toOrderItemResult(
+    resolved: {
+      productId: number;
+      variationId?: number;
+      sku: string;
+      name: string;
+      price: string;
+      stockStatus: string;
+      stockQuantity: number | null;
+    },
+    quantity: number
+  ): { ok: boolean; message: string; item?: OrderItem } {
     if (!this.isResolvedAvailable(resolved, quantity)) {
       return {
         ok: false,
