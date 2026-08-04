@@ -13,8 +13,12 @@ export function joinTextBlocks(blocks: (string | undefined)[]): string {
 
 export function renderButtonOptions(buttons: { body: string }[]): string {
   if (!buttons.length) return '';
+  if (buttons.length === 1) {
+    const label = buttons[0].body.trim();
+    return `Cuando quieras cerrar, escribe *${label}*.`;
+  }
   const options = buttons.map((btn) => `• *${btn.body.trim()}*`).join('\n');
-  return `Responde con una de estas opciones:\n${options}`;
+  return `Puedes escribir una de estas opciones:\n${options}`;
 }
 
 /** `intro` reemplaza la etiqueta del botón cuando el mensaje ya presenta el enlace. */

@@ -257,10 +257,11 @@ export class ConversationFlowService {
     const idPrompt = [
       '🛍️ *¿Cómo seguimos?*',
       '',
-      '1️⃣ Si ya viste algo que te gustó, envíame el *ID del producto* y lo agrego a tu pedido.',
-      '2️⃣ Si no lo tienes a mano, descríbeme lo que buscas (por ejemplo: _una cadena, anillo, balín, etc..._) y yo lo busco por ti.',
+      '1️⃣ Arma tu pedido en el *catálogo de WhatsApp* y envíamelo: lo cargo en tu carrito al instante.',
+      '2️⃣ Si ya viste algo (en la tienda o en WhatsApp), envíame el *ID del producto* y lo agrego.',
+      '3️⃣ Si no lo tienes a mano, descríbeme lo que buscas (por ejemplo: _una cadena, anillo, balín, etc..._) y yo lo busco por ti.',
       '',
-      'Y si prefieres mirar con calma, aquí abajo te dejo el catálogo 👇',
+      'Y si prefieres mirar con calma en la web, aquí abajo te dejo el catálogo oficial 👇',
     ].join('\n');
 
     const body = [introBlock, introBlock ? '' : null, idPrompt].filter((line) => line !== null).join('\n');

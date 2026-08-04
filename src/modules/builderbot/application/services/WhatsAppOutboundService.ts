@@ -4,6 +4,7 @@ import { hasBuilderBot } from '../../../../shared/infrastructure/config/env';
 import { logger } from '../../../../shared/infrastructure/logger/logger';
 import { normalizeBuilderBotPhone } from '../../infrastructure/builderBotPhone';
 import { IBuilderBotCloudService, IBuilderBotConfigRepository } from '../../domain/IBuilderBotCloudService';
+import { ClearWhatsAppCartUseCase } from '../use-cases/ClearWhatsAppCartUseCase';
 
 export type WhatsAppOutboundPurpose = 'otp' | 'order_status' | 'generic';
 
@@ -18,7 +19,8 @@ export interface SendWhatsAppTextInput {
 export class WhatsAppOutboundService {
   constructor(
     @inject('IBuilderBotCloudService') private readonly builderBot: IBuilderBotCloudService,
-    @inject('IBuilderBotConfigRepository') private readonly builderBotConfigRepo: IBuilderBotConfigRepository
+    @inject('IBuilderBotConfigRepository') private readonly builderBotConfigRepo: IBuilderBotConfigRepository,
+    @inject(ClearWhatsAppCartUseCase) private readonly clearWhatsAppCart: ClearWhatsAppCartUseCase
   ) {}
 
   async sendText(input: SendWhatsAppTextInput): Promise<{ phone: string; sentAt: string }> {
@@ -58,6 +60,22 @@ export class WhatsAppOutboundService {
         'No se pudo enviar mensaje WhatsApp saliente'
       );
       throw err;
+    }
+
+    // Tras notificar estado de pedido, el carrito conversacional ya no aplica.
+    if (input.purpose === 'order_status') {
+      try {
+        await this.clearWhatsAppCart.execute({
+          tenantId: input.tenantId,
+          phone,
+          reason: 'order_status',
+        });
+      } catch (err) {
+        logger.warn(
+          { err, tenantId: input.tenantId, phone },
+          'No se pudo vaciar el carrito tras order_status'
+        );
+      }
     }
 
     logger.info(

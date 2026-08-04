@@ -72,11 +72,17 @@ const sendChannelMessageSchema = z.object({
   purpose: z.enum(['otp', 'order_status', 'generic']).optional(),
 });
 
+const clearChannelCartSchema = z.object({
+  phone: z.string().min(8).max(24),
+  reason: z.string().max(64).optional(),
+});
+
 export function createBuilderBotRoutes(): Router {
   const router = Router();
   router.use(apiKeyMiddleware);
 
   router.post('/messages', validateBody(sendChannelMessageSchema), channelController.sendMessage.bind(channelController));
+  router.post('/cart/clear', validateBody(clearChannelCartSchema), channelController.clearCart.bind(channelController));
   router.post('/orders', validateBody(createOrderSchema), orderController.create.bind(orderController));
   router.get('/catalog/products', catalogController.listProducts.bind(catalogController));
   router.get('/catalog/stock/:sku', catalogController.getStock.bind(catalogController));
