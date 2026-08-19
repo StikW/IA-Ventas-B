@@ -81,6 +81,8 @@ export interface BuilderBotConfigData {
   projectId?: string;
   /** URL del panel BBC para vincular WhatsApp en ventana emergente. */
   connectUrl?: string;
+  /** Si es false, el webhook no dispara el agente (plantillas salientes siguen activas). */
+  agentEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
 }

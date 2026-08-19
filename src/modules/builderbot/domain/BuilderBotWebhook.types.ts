@@ -37,4 +37,6 @@ export interface BuilderBotWebhookResult {
     mediaUrl?: string;
     caption?: string;
   }>;
+  /** Agente de ventas activo para este tenant (plantillas salientes no dependen de esto). */
+  agentEnabled: boolean;
 }

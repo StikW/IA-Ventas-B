@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { builderBotController } from '../../../modules/builderbot/presentation/controllers/BuilderBotController';
-import { connectPhoneSchema, linkBotSchema } from '../../../modules/builderbot/presentation/validators/builderbot.validators';
+import { connectPhoneSchema, linkBotSchema, setAgentEnabledSchema } from '../../../modules/builderbot/presentation/validators/builderbot.validators';
 import { authMiddleware, requireRole, tenantMiddleware } from '../middlewares/auth.middleware';
 import { validateBody } from '../middlewares/validate.middleware';
 
@@ -18,6 +18,7 @@ export function createBuilderBotTenantRoutes(): Router {
   router.post('/connect-phone', validateBody(connectPhoneSchema), builderBotController.connectPhone.bind(builderBotController));
   router.post('/refresh-status', builderBotController.refreshStatus.bind(builderBotController));
   router.post('/sync-webhook', builderBotController.syncWebhook.bind(builderBotController));
+  router.patch('/agent-enabled', validateBody(setAgentEnabledSchema), builderBotController.setAgentEnabled.bind(builderBotController));
 
   return router;
 }

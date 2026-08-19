@@ -7,6 +7,7 @@ import { resolveBuilderBotApiMode } from '../../infrastructure/builderBotApiMode
 import { createBuilderBotCloudProject } from '../../infrastructure/BuilderBotMcpHttpClient';
 import { buildBuilderBotConnectUrl } from '../../infrastructure/builderBotConnectUrl';
 import { BuilderBotCloudWebhookRelay } from '../../infrastructure/BuilderBotCloudWebhookRelay';
+import { isSalesAgentEnabled } from '../../domain/salesAgentEnabled.utils';
 import { UserRole } from '../../../identity/domain/entities/User.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
 import {
@@ -94,6 +95,7 @@ export class ProvisionBuilderBotForTenantUseCase
       webhookUrl,
       projectId: mode === 'cloud-v2' ? projectId : undefined,
       connectUrl,
+      agentEnabled: true,
       createdAt: now,
       updatedAt: now,
     };
@@ -158,7 +160,32 @@ export class GetBuilderBotConfigUseCase implements UseCase<{ actor: TenantContex
           ? buildBuilderBotConnectUrl(config.projectId ?? config.deviceId)
           : undefined),
       updatedAt: config.updatedAt,
+      agentEnabled: isSalesAgentEnabled(config),
     };
+  }
+}
+
+@injectable()
+export class SetBuilderBotAgentEnabledUseCase
+  implements UseCase<{ actor: TenantContext; enabled: boolean }, { agentEnabled: boolean; updatedAt: string }>
+{
+  constructor(@inject('IBuilderBotConfigRepository') private readonly repo: IBuilderBotConfigRepository) {}
+
+  async execute(input: { actor: TenantContext; enabled: boolean }) {
+    const tenantId = resolveTenantId(input.actor);
+    const config = await this.repo.findByTenantId(tenantId);
+    if (!config?.deviceId?.trim()) {
+      throw new NotFoundError('WhatsApp no provisionado para este negocio');
+    }
+
+    const now = new Date().toISOString();
+    await this.repo.save({
+      ...config,
+      agentEnabled: input.enabled,
+      updatedAt: now,
+    });
+
+    return { agentEnabled: input.enabled, updatedAt: now };
   }
 }
 
@@ -310,6 +337,7 @@ export class LinkBuilderBotBotUseCase
       projectId: resolveBuilderBotApiMode() === 'cloud-v2' ? botId : undefined,
       connectUrl:
         resolveBuilderBotApiMode() === 'cloud-v2' ? buildBuilderBotConnectUrl(botId) : undefined,
+      agentEnabled: true,
       createdAt: now,
       updatedAt: now,
     };

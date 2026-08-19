@@ -10,6 +10,7 @@ import { SalesAgentService } from '../../../sales-agent/application/services/Sal
 import { BbcWebhookAgentResponse, emptyBbcWebhookResponse } from '../../domain/BbcWebhookAgentResponse';
 import { IBuilderBotConfigRepository } from '../../domain/IBuilderBotCloudService';
 import { parseWhatsAppCatalogOrder } from '../../domain/whatsappCatalogOrder.utils';
+import { isSalesAgentEnabled } from '../../domain/salesAgentEnabled.utils';
 
 const WEBHOOK_ACTOR = 'system:builderbot-order-webhook';
 
@@ -63,6 +64,14 @@ export class HandleWhatsAppCatalogOrderUseCase
         resource: 'builderbot_order_webhook',
         metadata: { payloadKeys: payloadKeys(input.payload) },
       });
+      return { received: true, bbcResponse: emptyBbcWebhookResponse(), addedCount: 0 };
+    }
+
+    if (!isSalesAgentEnabled(config)) {
+      logger.info(
+        { tenantId: input.tenantId, from: order.from },
+        'Pedido catálogo WhatsApp ignorado: agente desactivado'
+      );
       return { received: true, bbcResponse: emptyBbcWebhookResponse(), addedCount: 0 };
     }
 

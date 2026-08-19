@@ -11,6 +11,7 @@ import { BuilderBotWebhookEvent, BuilderBotWebhookResult } from '../../domain/Bu
 import { IBuilderBotConfigRepository } from '../../domain/IBuilderBotCloudService';
 import { isWhatsAppCatalogOrderEventText } from '../../domain/whatsappCatalogOrder.utils';
 import { BuilderBotWebhookParser } from '../services/BuilderBotWebhookParser';
+import { isSalesAgentEnabled } from '../../domain/salesAgentEnabled.utils';
 
 const WEBHOOK_ACTOR = 'system:builderbot-webhook';
 
@@ -148,6 +149,7 @@ export class HandleBuilderBotWebhookUseCase
           mediaUrl: event.mediaUrl,
           caption: event.caption,
         })),
+      agentEnabled: isSalesAgentEnabled(config),
     };
   }
 

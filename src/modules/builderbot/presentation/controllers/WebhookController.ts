@@ -51,7 +51,7 @@ export class WebhookController {
 
       let bbcResponse = emptyBbcWebhookResponse();
 
-      if (result.incomingMessages.length > 0) {
+      if (result.agentEnabled && result.incomingMessages.length > 0) {
         const agentUseCase = container.resolve(ProcessSalesAgentWebhookUseCase);
         try {
           const agentResult = await agentUseCase.execute({
@@ -67,11 +67,20 @@ export class WebhookController {
             'Error en procesamiento del agente de ventas (webhook BBC)'
           );
         }
+      } else if (!result.agentEnabled && (result.incomingMessages.length > 0 || result.incomingImages.length > 0)) {
+        logger.info(
+          {
+            tenantId: result.tenantId,
+            messageCount: result.incomingMessages.length,
+            imageCount: result.incomingImages.length,
+          },
+          'Mensaje WhatsApp entrante ignorado: agente desactivado'
+        );
       }
 
       res.status(200).json(bbcResponse);
 
-      if (result.incomingImages.length > 0) {
+      if (result.agentEnabled && result.incomingImages.length > 0) {
         const agentUseCase = container.resolve(ProcessSalesAgentWebhookUseCase);
         void agentUseCase
           .execute({

@@ -28,6 +28,7 @@ import {
   ProvisionBuilderBotForTenantUseCase,
   ProvisionWhatsAppUseCase,
   RefreshBuilderBotStatusUseCase,
+  SetBuilderBotAgentEnabledUseCase,
   SyncBuilderBotWebhookUseCase,
 } from '../../../modules/builderbot/application/use-cases/BuilderBotUseCases';
 import { SalesAgentToolsHandler } from '../../../modules/sales-agent/application/services/SalesAgentToolsHandler';
@@ -114,6 +115,7 @@ export function registerDependencies(): void {
   container.registerSingleton(ConnectBuilderBotPhoneUseCase, ConnectBuilderBotPhoneUseCase);
   container.registerSingleton(LinkBuilderBotBotUseCase, LinkBuilderBotBotUseCase);
   container.registerSingleton(SyncBuilderBotWebhookUseCase, SyncBuilderBotWebhookUseCase);
+  container.registerSingleton(SetBuilderBotAgentEnabledUseCase, SetBuilderBotAgentEnabledUseCase);
   container.registerSingleton(CreateOrderUseCase, CreateOrderUseCase);
   container.registerSingleton(UpdateOrderStatusUseCase, UpdateOrderStatusUseCase);
 }

@@ -17,3 +17,7 @@ export const linkBotSchema = z.object({
     .max(80)
     .regex(/^[a-zA-Z0-9-]+$/, 'ID de bot inválido'),
 });
+
+export const setAgentEnabledSchema = z.object({
+  enabled: z.boolean(),
+});
