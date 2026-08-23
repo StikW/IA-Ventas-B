@@ -2,7 +2,8 @@
 
 > Guía operativa: agente LLM en texto libre + **flows UI de BBC para los botones**. La API v2 solo envía texto, así que los botones se configuran a mano en el panel y el webhook los dispara con `{ route }`.  
 > **Catálogo:** cualquier producto WooCommerce (simple o variable) identificado por **SKU**.  
-> **Contexto de negocio** (QR en tienda, clientes remotos, formularios WC, tickets, OTP): [`business-flow-massi.md`](./business-flow-massi.md).
+> **Contexto de negocio** (QR en tienda, clientes remotos, formularios WC, tickets, OTP): [`business-flow-massi.md`](./business-flow-massi.md).  
+> **BuilderBot (guía reutilizable, no específica de este repo):** [`../../docs/builderbot-guia.md`](../../docs/builderbot-guia.md).
 
 ---
 
@@ -261,9 +262,10 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 |---------|---------|
 | `¿qué productos tienen?`, `catálogo`, `precios` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + `route: catalog` → botón **Ver catálogo** |
 | `quiero una cadena`, `tienen anillos`, `aretes` | **Determinista** → `resolveProductFamilyBrowse`: producto padre WC + variantes; al cliente se muestra *ID* (internamente SKU) |
+| `tienen balines #4`, `hay anillos talla 6?` | **Consulta de disponibilidad** (`isAvailabilityQuestion`): lista opciones con *ID*. **No** agrega al carrito hasta que diga *quiero / dame / agrega* o envíe un ID |
 | `quiero una cadena` (descripción sin SKU resoluble, fallback) | `buildProductLookupHelpReply`: pide el **ID** + `route: catalog` |
 | Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito |
-| Cliente describe producto (*cadena 50 cm*, *balín #6*) | **RAG** (`resolveSkuFromRag` + parser `.txt`) → SKU → stock WC → carrito; fallback búsqueda WC por nombre |
+| Cliente **pide** producto (*quiero cadena 50 cm*, *dame el balín #6*) | **RAG** (`resolveSkuFromRag` + parser `.txt`) → SKU → stock WC → carrito; fallback búsqueda WC por nombre |
 | `busco zapatos`, consulta abierta al LLM | LLM → `buscar_en_documentos` (RAG) + `agregar_producto_por_sku` / `buscar_productos_tienda` |
 
 **Regla:** el agente **nunca inventa** productos ni precios. **RAG** identifica SKU; **WooCommerce** confirma stock y precio.
@@ -300,8 +302,8 @@ Matching contra **ítems ya en carrito** (no busca productos nuevos en tienda sa
 
 | Cliente | Sistema |
 |---------|---------|
-| `eso es todo`, `finalizar con la compra`, `Finalizar pedido` | Valida stock → resumen del carrito + enlace **Continuar compra** al formulario WC |
-| `reenvía el link` / `formulario` | Reenvía la misma URL (`flowStep: checkout_redirect`) |
+| `eso es todo`, `finalizar con la compra`, `Finalizar pedido` | Valida stock → enlace **Continuar compra** al formulario WC → **vacía el carrito WhatsApp** (los SKU van en `items=`) y guarda `lastCheckoutUrl` |
+| `reenvía el link` / `formulario` | Reenvía `lastCheckoutUrl` (o regenera si aún hay carrito) |
 
 URL generada (`checkoutLink.utils.ts`):
 

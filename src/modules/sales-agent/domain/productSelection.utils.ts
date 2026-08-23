@@ -58,6 +58,47 @@ export const VARIANT_STRIP_PATTERN = new RegExp(
 export const PURCHASE_INTENT_PATTERN =
   /quiero|me gustar[ií]a|quisiera|dame|necesito|comprar|llevar|tomar|pedir|solicito/i;
 
+const ADD_VERB_PATTERN = /\b(?:agrega|agregar|a[nñ]ade|a[nñ]adir)\b/;
+
+/** "quiero saber si tienen" sigue siendo consulta, no pedido. */
+const PURCHASE_AS_QUESTION_PATTERN = /\b(?:saber|conocer|consultar|ver|preguntar)\s+si\b/;
+
+/**
+ * El cliente pide agregar o llevar un producto (no solo pregunta si existe).
+ * "quiero saber si tienen balines" no cuenta.
+ */
+export function hasExplicitPurchaseIntent(text: string): boolean {
+  const t = normalizeProductText(normalizeUserTypos(text));
+  if (PURCHASE_AS_QUESTION_PATTERN.test(t)) return false;
+  return PURCHASE_INTENT_PATTERN.test(t) || ADD_VERB_PATTERN.test(t);
+}
+
+/**
+ * Pregunta de disponibilidad o listado: "tienen balines #4", "hay anillos?", "venden dijes".
+ * No implica agregar al carrito aunque el mensaje nombre medida o SKU.
+ */
+export function isAvailabilityQuestion(text: string): boolean {
+  if (hasExplicitPurchaseIntent(text)) return false;
+  const t = normalizeProductText(normalizeUserTypos(text));
+  return (
+    /^(qu[eé]|cu[aá]les|cu[aá]nto|tienen|tienes|hay|venden|manejan|muestr|existen?|me\s+muestras)/.test(
+      t
+    ) || /\b(?:tienen|tienes|hay|venden|existe|existen|disponible|disponibles)\b/.test(t)
+  );
+}
+
+/**
+ * Variante + tipo de producto, pero el cliente está pidiendo (no preguntando).
+ * "quiero balín #4" → true. "tienen balines #4" → false.
+ */
+export function isDirectVariantAddIntent(text: string): boolean {
+  return (
+    Boolean(extractVariantHint(text)) &&
+    !isProductOptionsBrowseIntent(text) &&
+    !isAvailabilityQuestion(text)
+  );
+}
+
 export const QUANTITY_PATTERN =
   /\b(\d+)\s*(?:ud?s?\.?|unidades?|pares?|piezas?|pzs?)\b|(?:cantidad|qty|x)\s*(\d+)\b/i;
 
@@ -368,6 +409,7 @@ export function isCartSiblingVariantIntent(text: string, cartHasItems: boolean):
   if (isSameProductReference(text)) return true;
 
   const t = normalizeProductText(text);
+  if (isAvailabilityQuestion(text)) return false;
   if (/^(qu[eé]|cu[aá]les|cu[aá]nto|hay|tienen|muestr)/.test(t)) return false;
 
   if (/\b(agregar|a[nñ]adir)\b/.test(t) && PURCHASE_INTENT_PATTERN.test(t)) return true;
@@ -379,6 +421,7 @@ export function isCartSiblingVariantIntent(text: string, cartHasItems: boolean):
 
 /** Texto describe un producto concreto (no solo "agregar algo más"). */
 export function hasConcreteProductSpec(text: string): boolean {
+  if (isAvailabilityQuestion(text)) return false;
   const t = normalizeProductText(text);
   if (extractVariantHint(text)) return true;
   if (looksLikeSku(text.trim())) return true;

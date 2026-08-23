@@ -93,7 +93,7 @@ Cuando el cliente **ya sabe qué comprar**, el negocio necesita capturar según 
 
 1. Valida stock del carrito WhatsApp.
 2. Genera URL: `{checkoutFormUrl || checkoutPagePath || storeUrl/checkout/}?phone=…&source=whatsapp&public_store=…&items=SKU:qty,…`
-3. Envía mensaje con el enlace; sesión → `flowStep: checkout_redirect`.
+3. Envía mensaje con el enlace; vacía `cartItems` de la sesión (el pedido vive en la URL) y guarda `lastCheckoutUrl` por si pide reenviar; sesión → `flowStep: checkout_redirect`.
 4. Cliente completa en WC: recoger, domicilio, transferencia, efectivo.
 5. Staff valida pago en WC → ticket prioritario → email (WhatsApp proactivo: roadmap).
 

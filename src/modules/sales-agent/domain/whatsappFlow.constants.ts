@@ -1,6 +1,6 @@
 /** IDs estables para botones WhatsApp (Meta button_reply.id) */
 import { isCartClearIntent, isCartCorrectionIntent, isCartKeepOnlyIntent, isCartRemoveIntent, isCartReviewIntent, isCartSetQuantityIntent } from './cartModification.utils';
-import { extractVariantHint, hasConcreteProductSpec, isProductOptionsBrowseIntent } from './productSelection.utils';
+import { extractVariantHint, hasConcreteProductSpec, isAvailabilityQuestion, isProductOptionsBrowseIntent } from './productSelection.utils';
 
 export const WA_BTN = {
   MENU_BUY: 'massi:menu:buy',
@@ -77,7 +77,8 @@ export function isProductSelectionIntent(text: string): boolean {
     isCartCorrectionIntent(text) ||
     isCartRemoveIntent(text) ||
     isCartSetQuantityIntent(text) ||
-    isProductOptionsBrowseIntent(text)
+    isProductOptionsBrowseIntent(text) ||
+    isAvailabilityQuestion(text)
   ) {
     return false;
   }

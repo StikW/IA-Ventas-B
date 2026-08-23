@@ -4,7 +4,10 @@ import {
   extractProductFamilyTerm,
   extractQuantityFromText,
   extractVariantHint,
+  hasConcreteProductSpec,
+  isAvailabilityQuestion,
   isCatalogBrowseIntent,
+  isDirectVariantAddIntent,
   isProductFamilyBrowseIntent,
   isProductOptionsBrowseIntent,
   isThemeBrowseIntent,
@@ -168,5 +171,28 @@ describe('isThemeBrowseIntent', () => {
   it('resume la forma para el título del listado', () => {
     expect(themeListLabel('tienen joyas en forma de animales?')).toBe('animales');
     expect(themeListLabel('joyas en forma de corazón')).toBe('corazon');
+  });
+});
+
+describe('isAvailabilityQuestion', () => {
+  it('trata "tienen / hay" como consulta, no como pedido', () => {
+    expect(isAvailabilityQuestion('Tienen balines #4')).toBe(true);
+    expect(isAvailabilityQuestion('hay anillos talla 6?')).toBe(true);
+    expect(isAvailabilityQuestion('venden dijes de corazón')).toBe(true);
+    expect(isAvailabilityQuestion('quiero saber si tienen balines #4')).toBe(true);
+  });
+
+  it('no se activa cuando el cliente pide agregar', () => {
+    expect(isAvailabilityQuestion('quiero balín #4')).toBe(false);
+    expect(isAvailabilityQuestion('dame el balín #4')).toBe(false);
+    expect(isAvailabilityQuestion('agrega balines #4')).toBe(false);
+  });
+
+  it('no agrega al carrito si solo preguntan disponibilidad con variante', () => {
+    expect(isDirectVariantAddIntent('Tienen balines #4')).toBe(false);
+    expect(hasConcreteProductSpec('Tienen balines #4')).toBe(false);
+    expect(isDirectVariantAddIntent('quiero balín #4')).toBe(true);
+    expect(hasConcreteProductSpec('quiero balín #4')).toBe(true);
+    expect(isDirectVariantAddIntent('balín #4')).toBe(true);
   });
 });

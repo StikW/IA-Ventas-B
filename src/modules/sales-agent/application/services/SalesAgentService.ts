@@ -34,7 +34,7 @@ import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent, WA_BTN, WA_BTN_LABEL } from '../../domain/whatsappFlow.constants';
 import { isCartClearIntent, isCartCorrectionIntent, isCartIncrementIntent, isCartKeepOnlyIntent, isCartRemoveIntent, isCartReviewIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
-import { extractAllVariantHints, hasConcreteProductSpec, isCatalogBrowseIntent, isProductFamilyBrowseIntent, isProductOptionsBrowseIntent, isThemeBrowseIntent, normalizeUserTypos, extractVariantHint } from '../../domain/productSelection.utils';
+import { extractAllVariantHints, hasConcreteProductSpec, isCatalogBrowseIntent, isDirectVariantAddIntent, isProductFamilyBrowseIntent, isThemeBrowseIntent, normalizeUserTypos } from '../../domain/productSelection.utils';
 import { findOfferedOption } from '../../domain/optionReference.utils';
 import { EMOJI, warmAddedOpener } from '../../domain/tone.utils';
 import { WhatsAppCatalogOrderProduct } from '../../../builderbot/domain/whatsappCatalogOrder.utils';
@@ -572,7 +572,7 @@ export class SalesAgentService {
     }
 
     if (isProductFamilyBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
-      const hasDirectSelection = Boolean(extractVariantHint(text)) && !isProductOptionsBrowseIntent(text);
+      const hasDirectSelection = isDirectVariantAddIntent(text);
 
       if (hasDirectSelection) {
         const selection = await this.tools.resolveSelectionsFromText(input.tenantId, text, 1, {
@@ -1417,6 +1417,7 @@ export class SalesAgentService {
       '4) PROHIBIDO sugerir productos al azar. Catálogo general → enlace; tipo concreto (cadena, anillo…) → el sistema lista variantes del producto padre en WC con *ID* visible.',
       '4b) Si el cliente nombra un producto que tiene varias tallas/medidas SIN elegir una, NUNCA agregues nada: lista sus opciones numeradas con su *ID* y espera su elección. Agregar todas las variaciones de un producto es un error grave.',
       '4c) Nunca menciones precios que no vengan de WooCommerce en este turno. Si no tienes el precio, no escribas "a consultar": consulta con las herramientas o pide el *ID*.',
+      '4d) Si el cliente PREGUNTA disponibilidad ("tienen…", "hay…", "venden…") NUNCA agregues al carrito: lista opciones con *ID* y espera a que elija o diga "quiero".',
       '5) Stock y precios: SIEMPRE WooCommerce por SKU/ID (verificar_stock, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
       '6) IDENTIFICADOR PRINCIPAL: ID = SKU interno. Al cliente siempre dile *ID*, nunca "SKU".',
       '7) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a pulsar *Finalizar pedido* (botón o texto).',
