@@ -1,21 +1,59 @@
 /** Utilidades genéricas para selección de productos (cualquier catálogo WooCommerce). */
 
-/** Atributos de variación mencionados en texto libre (medida, peso, talla, color, etc.). */
-export const VARIANT_HINT_PATTERN =
-  /\b(?:de\s+|talla\s+|medida\s+|size\s+|modelo\s+|color\s+)?(\d+\s*(?:cm|mm|gr?|kt|k|ml|oz|lb)|talla\s+[xsml\d]+|#\s*\d+)\b/i;
+/**
+ * Atributos de variación mencionados en texto libre, en orden de especificidad.
+ *
+ * Los valores reales de WooCommerce son heterogéneos: "10 x 9 mm", "8 × 7 mm" (con el signo
+ * ×), tallas fraccionarias "7 1/2" o "91/4", pesos "1,1 g", tamaños cualitativos
+ * ("Grande 15 MM") y colores en femenino/plural. Se recorren de más específico a más
+ * general enmascarando lo ya capturado, para que "10 x 9 mm" no se reduzca a "9 mm".
+ */
+const DIMENSION_HINT_PATTERN = /\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?(?:\s*(?:cm|mm))?/;
+const FRACTION_HINT_PATTERN = /\d{1,2}\s*\d?\s*\/\s*\d/;
+const MEASURE_HINT_PATTERN = /\d+(?:[.,]\d+)?\s*(?:cm|mm|gr|g|kt|k|ml|oz|lb)\b/;
+const HASH_HINT_PATTERN = /#\s*\d+/;
+const LABELED_SIZE_HINT_PATTERN =
+  /(?:talla|tamano|tama[nñ]o|size|medida|modelo)\s*:?\s*([a-z\d./#-]+)/;
+const QUALITATIVE_SIZE_HINT_PATTERN =
+  /\b(extra\s?grande|grande|mediana|mediano|media|medio|peque[nñ]a|peque[nñ]o|mini|chica|chico)\b/;
+const COLOR_HINT_PATTERN_SOURCE =
+  /\b(?:color\s+)?(rojas?|rojos?|azul(?:es)?|verdes?|negr[oa]s?|blanc[oa]s?|dorad[oa]s?|platead[oa]s?|rosad[oa]s?|rosa|morad[oa]s?|lilas?|fucsias?|amarill[oa]s?|gris(?:es)?|beige|marr[oó]n(?:es)?|nude|celeste|turquesa|violeta|naranja)\b/;
+/** Último recurso: "talla 8", "el de 12" sin unidad, sin confundir con cantidades. */
+const BARE_SIZE_HINT_PATTERN =
+  /\b(?:de|talla|tamano|tama[nñ]o|numero|n[uú]mero)\s+(\d{1,2})(?!\s*(?:ud|uds|unidad|unidades|par|pares|pieza|piezas|cm|mm|gr|g)\b)/;
 
-/** Colores y tallas textuales comunes en variaciones WooCommerce. */
-export const COLOR_HINT_PATTERN =
-  /\b(?:color\s+)?(rojo|azul|verde|negro|blanco|dorado|plateado|rosado|morado|amarillo|gris|beige|marron|marr[oó]n|nude|celeste)\b/i;
+const ORDERED_HINT_PATTERNS = [
+  DIMENSION_HINT_PATTERN,
+  FRACTION_HINT_PATTERN,
+  MEASURE_HINT_PATTERN,
+  HASH_HINT_PATTERN,
+  LABELED_SIZE_HINT_PATTERN,
+  QUALITATIVE_SIZE_HINT_PATTERN,
+  COLOR_HINT_PATTERN_SOURCE,
+  BARE_SIZE_HINT_PATTERN,
+];
 
-export const TEXT_SIZE_HINT_PATTERN = /\b(?:talla\s+|size\s+)([xsml\d]{1,3}|[\wáéíóúñ]+)\b/i;
+/** Mantenido por compatibilidad: coincide con la forma más común (medida con unidad). */
+export const VARIANT_HINT_PATTERN = MEASURE_HINT_PATTERN;
+
+export const COLOR_HINT_PATTERN = COLOR_HINT_PATTERN_SOURCE;
+
+export const TEXT_SIZE_HINT_PATTERN = LABELED_SIZE_HINT_PATTERN;
 
 /** Palabras sueltas que no son nombre de producto al buscar en carrito activo. */
 export const SELECTION_NOISE_WORDS = /^(otra|otro|misma|mismo|más|mas|de|en|la|el|un|una|agregar|a[nñ]adir)$/i;
 
 /** Fragmentos a quitar del nombre de producto al buscar (no son nombres de producto). */
-export const VARIANT_STRIP_PATTERN =
-  /\b(?:de\s+|talla\s+|medida\s+|size\s+)?(\d+\s*(?:cm|mm|gr?|kt|k|ml|oz|lb)|talla\s+[xsml\d]+|#\s*\d+)\b/gi;
+export const VARIANT_STRIP_PATTERN = new RegExp(
+  [
+    DIMENSION_HINT_PATTERN.source,
+    FRACTION_HINT_PATTERN.source,
+    MEASURE_HINT_PATTERN.source,
+    HASH_HINT_PATTERN.source,
+    /(?:talla|tamano|tama[nñ]o|size|medida)\s*:?\s*[a-z\d./#-]+/.source,
+  ].join('|'),
+  'gi'
+);
 
 export const PURCHASE_INTENT_PATTERN =
   /quiero|me gustar[ií]a|quisiera|dame|necesito|comprar|llevar|tomar|pedir|solicito/i;
@@ -45,8 +83,63 @@ export function normalizeUserTypos(text: string): string {
     .replace(/\bcadenas\b/gi, 'cadena');
 }
 
+/**
+ * Tipos de producto conocidos de partida. La lista real la aporta el catálogo del negocio
+ * vía `registerCatalogFamilyTerms`, porque cada tienda nombra sus categorías distinto
+ * (en MASSI los aretes se llaman «topos» y hay familias como «herraje» o «canutillo»).
+ */
+const BASE_FAMILY_TERMS = [
+  'cadena',
+  'anillo',
+  'arete',
+  'topo',
+  'topito',
+  'candonga',
+  'zarcillo',
+  'collar',
+  'gargantilla',
+  'pulsera',
+  'esclava',
+  'manilla',
+  'balin',
+  'dije',
+  'colgante',
+  'medalla',
+  'herraje',
+  'broche',
+  'canutillo',
+  'tambor',
+  'placa',
+  'argolla',
+  'sortija',
+  'aro',
+];
+
+const catalogFamilyTerms = new Set<string>(BASE_FAMILY_TERMS);
+
+/** Términos de familia detectados en el catálogo real del negocio (categorías WooCommerce). */
+export function registerCatalogFamilyTerms(terms: string[]): void {
+  for (const term of terms) {
+    const normalized = normalizeProductText(term);
+    if (normalized.length >= 4) catalogFamilyTerms.add(normalized);
+  }
+}
+
+export function knownFamilyTerms(): string[] {
+  return [...catalogFamilyTerms];
+}
+
+/** "dijes" ↔ "dije", "balines" ↔ "balin", "cruces" ↔ "cruz". */
+export function tokensRelated(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (a.length < 4 || b.length < 4) return false;
+  if (a.startsWith(b) || b.startsWith(a)) return true;
+  const deCes = (value: string) => (value.endsWith('ces') ? `${value.slice(0, -3)}z` : value);
+  return deCes(a) === deCes(b);
+}
+
 export const PRODUCT_FAMILY_PATTERN =
-  /\b(cadena|cadenas|anillo|anillos|arete|aretes|collar|collares|pulsera|pulseras|bal[ií]n|balines|dije|dijes|argolla|argollas|aro|aros)\b/i;
+  /\b(cadena|cadenas|anillo|anillos|arete|aretes|topo|topos|topito|topitos|candonga|candongas|zarcillo|zarcillos|collar|collares|gargantilla|gargantillas|pulsera|pulseras|esclava|esclavas|manilla|manillas|bal[ií]n|balines|dije|dijes|colgante|colgantes|medalla|medallas|herraje|herrajes|broche|broches|canutillo|canutillos|tambor|tambores|placa|placas|argolla|argollas|sortija|sortijas|aro|aros)\b/i;
 
 /**
  * Códigos de producto inequívocos ("CAD-ORO-45"): con dígito y separador o mayúsculas.
@@ -107,6 +200,7 @@ export function parseMultiProductSelection(text: string): string[] | null {
  */
 export function isCatalogBrowseIntent(text: string): boolean {
   if (isProductFamilyBrowseIntent(text)) return false;
+  if (hasThemeOrShapeQuery(text)) return false;
 
   const t = normalizeProductText(normalizeUserTypos(text));
   return (
@@ -117,11 +211,20 @@ export function isCatalogBrowseIntent(text: string): boolean {
   );
 }
 
-/** Tipo de producto mencionado (cadena, anillo, arete…). Singular, sin plural final. */
+/**
+ * Tipo de producto mencionado (dije, topo, herraje…). Se compara contra las familias
+ * conocidas del catálogo, así que basta con que el negocio publique la categoría.
+ */
 export function extractProductFamilyTerm(text: string): string | null {
+  for (const token of tokenizeProductQuery(normalizeUserTypos(text))) {
+    for (const family of catalogFamilyTerms) {
+      if (tokensRelated(token, family)) return token;
+    }
+  }
+
   const match = normalizeUserTypos(text).match(PRODUCT_FAMILY_PATTERN);
   if (!match?.[1]) return null;
-  return match[1].toLowerCase().replace(/s$/, '');
+  return normalizeProductText(match[1]).replace(/s$/, '');
 }
 
 /**
@@ -130,11 +233,15 @@ export function extractProductFamilyTerm(text: string): string | null {
  */
 export function isProductFamilyBrowseIntent(text: string): boolean {
   if (extractExplicitSkus(text).length) return false;
+  if (hasThemeOrShapeQuery(text)) return false;
+
+  const t = normalizeProductText(normalizeUserTypos(text));
+  // Ajustes de carrito: no abrir el listado de la familia.
+  if (/(?:ya\s+)?no\s+(?:lo\s+|la\s+|los\s+|las\s+)?quiero/.test(t)) return false;
+  if (/(?:otra|otro)\s+(?:unidad|pieza|mas|m[aá]s)\b|una?\s+m[aá]s\b/.test(t)) return false;
 
   const family = extractProductFamilyTerm(text);
   if (!family) return false;
-
-  const t = normalizeProductText(normalizeUserTypos(text)).trim();
 
   // Solo catálogo general, sin tipo de producto.
   if (/^(cat[aá]logo|ver\s+cat[aá]logo|lista\s+de\s+precios)$/.test(t)) return false;
@@ -143,27 +250,77 @@ export function isProductFamilyBrowseIntent(text: string): boolean {
   return true;
 }
 
-export function extractVariantHint(text: string): string | undefined {
-  const all = extractAllVariantHints(text);
-  if (all.length) return all.at(-1);
-
-  const color = text.match(COLOR_HINT_PATTERN);
-  if (color?.[1]) return color[1].trim();
-
-  const textSize = text.match(TEXT_SIZE_HINT_PATTERN);
-  if (textSize?.[1]) return textSize[1].trim();
-
-  return undefined;
+/**
+ * El cliente pide las variaciones de un producto ya nombrado, no un listado de la familia.
+ * Ej.: "qué opciones tienes del anillo dama flor con circones".
+ */
+export function isProductOptionsBrowseIntent(text: string): boolean {
+  const t = normalizeProductText(normalizeUserTypos(text));
+  return (
+    /\b(?:opciones|variaciones|tallas|medidas|colores)\b/.test(t) ||
+    /\bqu[eé]\s+(?:tienes|tienen|hay)\s+(?:de|del|de\s+la)\b/.test(t)
+  );
 }
 
-/** Todas las medidas/variantes mencionadas (ej. "45cm y otra de 50cm" → ambas). */
-export function extractAllVariantHints(text: string): string[] {
-  const matches = [...text.matchAll(new RegExp(VARIANT_HINT_PATTERN.source, 'gi'))];
-  const hints = matches
-    .map((match) => match[1]?.replace(/\s+/g, ' ').trim())
-    .filter((hint): hint is string => !!hint);
+/**
+ * Motivo o silueta: "en forma de virgen", "figura de corazón".
+ * No depende de cómo empiece la frase ("tienen…", "busco…").
+ */
+export function hasThemeOrShapeQuery(text: string): boolean {
+  const t = normalizeProductText(normalizeUserTypos(text));
+  return /\bforma\s+de\b/.test(t) || /\bfiguras?\s+de\b/.test(t) || /\bmotivo\s+de\b/.test(t);
+}
 
-  return [...new Set(hints)];
+/** Etiqueta corta para el listado: "joyas en forma de animales" → "animales". */
+export function themeListLabel(text: string): string {
+  const t = normalizeProductText(normalizeUserTypos(text));
+  const shape = t.match(/\b(?:forma|figura|figuras|motivo)\s+de\s+(.+?)(?:\s*\?|$)/);
+  const label = shape?.[1]?.replace(/\b(hay|tienen|tienes|disponibles?)\b/g, '').trim();
+  return label || 'eso que buscas';
+}
+
+/**
+ * Pregunta por un motivo o forma, no por un tipo de producto: "alguna joya en forma de corazón".
+ * Si nombra una familia ("tienen dijes") se usa el listado de familia, no este camino.
+ */
+export function isThemeBrowseIntent(text: string): boolean {
+  if (extractExplicitSkus(text).length) return false;
+  if (isProductFamilyBrowseIntent(text)) return false;
+  return hasThemeOrShapeQuery(text);
+}
+
+export function extractVariantHint(text: string): string | undefined {
+  return extractAllVariantHints(text).at(-1);
+}
+
+/**
+ * Todas las medidas/variantes mencionadas (ej. "45cm y otra de 50cm" → ambas).
+ * Recorre los patrones de más específico a más general enmascarando lo ya capturado.
+ */
+export function extractAllVariantHints(text: string): string[] {
+  let remaining = normalizeProductText(text);
+  const found: Array<{ hint: string; at: number }> = [];
+
+  for (const pattern of ORDERED_HINT_PATTERNS) {
+    const global = new RegExp(pattern.source, 'gi');
+    const spans: Array<[number, number]> = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = global.exec(remaining)) !== null) {
+      if (!match[0].length) break;
+      const hint = (match[1] ?? match[0]).replace(/\s+/g, ' ').trim();
+      if (hint && !SEARCH_STOP_WORDS.test(hint)) found.push({ hint, at: match.index });
+      spans.push([match.index, match.index + match[0].length]);
+    }
+
+    // El enmascarado conserva la longitud, así que las posiciones siguen siendo válidas.
+    for (const [start, end] of spans.reverse()) {
+      remaining = remaining.slice(0, start) + ' '.repeat(end - start) + remaining.slice(end);
+    }
+  }
+
+  // Orden del mensaje, no de los patrones: "45 cm y otra de 60 cm" debe terminar en 60 cm.
+  return [...new Set(found.sort((a, b) => a.at - b.at).map((entry) => entry.hint))];
 }
 
 /** Detecta pedido con varias medidas/variantes en un solo mensaje (mismo producto). */
@@ -247,7 +404,12 @@ export function parseProductSelectionQuery(query: string): { productQuery: strin
 }
 
 export function extractQuantityFromText(text: string, defaultQty = 1): number {
-  const match = text.match(QUANTITY_PATTERN);
+  // "Promo x5" y "10 x 9 mm" son nombres de variación, no cantidades.
+  const sanitized = text
+    .replace(/\bpromo\s*x\s*\d+/gi, ' ')
+    .replace(/\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?/gi, ' ');
+
+  const match = sanitized.match(QUANTITY_PATTERN);
   const raw = match?.[1] ?? match?.[2];
   if (!raw) return defaultQty;
   const qty = Number.parseInt(raw, 10);
@@ -260,19 +422,89 @@ export function looksLikeSku(text: string): boolean {
   return SKU_LIKE_PATTERN.test(trimmed) && !/\s/.test(trimmed);
 }
 
-/** Compara medidas/variantes tolerando "45 cm" vs "45cm". */
+function compactVariant(value: string): string {
+  return normalizeProductText(value)
+    .replace(/\s+/g, '')
+    .replace(/[^\da-z#/.]/g, '');
+}
+
+/**
+ * Medidas presentes en un texto, como unidades comparables: "10 x 9 mm" → `10x9mm`,
+ * "7 1/2" → `71/2`. Sin esto, comparar por subcadena hace que la talla 5 coincida
+ * con "5 1/2", "15" o "0.95 g".
+ */
+function variantTokens(text: string): string[] {
+  let remaining = normalizeProductText(text);
+  const tokens: string[] = [];
+
+  for (const pattern of [
+    DIMENSION_HINT_PATTERN,
+    FRACTION_HINT_PATTERN,
+    MEASURE_HINT_PATTERN,
+    HASH_HINT_PATTERN,
+  ]) {
+    const global = new RegExp(pattern.source, 'gi');
+    const spans: Array<[number, number]> = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = global.exec(remaining)) !== null) {
+      if (!match[0].length) break;
+      tokens.push(compactVariant(match[0]));
+      spans.push([match.index, match.index + match[0].length]);
+    }
+
+    for (const [start, end] of spans.reverse()) {
+      remaining = remaining.slice(0, start) + ' '.repeat(end - start) + remaining.slice(end);
+    }
+  }
+
+  for (const bare of remaining.matchAll(/\d+(?:[.,]\d+)?/g)) {
+    tokens.push(compactVariant(bare[0]));
+  }
+
+  return tokens.filter(Boolean);
+}
+
+function leadingNumber(token: string): string | null {
+  return token.match(/^\d+(?:\.\d+)?/)?.[0] ?? null;
+}
+
+/** Compara medidas/variantes tolerando "45 cm" vs "45cm" y colores en plural. */
 export function variantHintsMatch(a: string, b: string): boolean {
-  const compact = (value: string) =>
-    value
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/\p{M}/gu, '')
-      .replace(/\s+/g, '')
-      .replace(/[^\da-z#]/gi, '');
-  const left = compact(a);
-  const right = compact(b);
+  const left = compactVariant(a);
+  const right = compactVariant(b);
   if (!left || !right) return false;
-  return left === right || left.includes(right) || right.includes(left);
+  if (left === right) return true;
+
+  const tokensA = variantTokens(a);
+  const tokensB = variantTokens(b);
+
+  if (tokensA.length && tokensB.length) {
+    for (const ta of tokensA) {
+      for (const tb of tokensB) {
+        if (ta === tb) return true;
+        // Número sin unidad ("el de 10") frente a la medida completa ("10 mm").
+        if (/^\d+(?:\.\d+)?$/.test(tb) && leadingNumber(ta) === tb) return true;
+        if (/^\d+(?:\.\d+)?$/.test(ta) && leadingNumber(tb) === ta) return true;
+        // "10x9mm" contiene "9mm": el cliente puede omitir una dimensión.
+        if (tb.length >= 3 && ta.includes(tb)) return true;
+        if (ta.length >= 3 && tb.includes(ta)) return true;
+      }
+    }
+    return false;
+  }
+
+  // Variantes por palabra (colores, tamaños cualitativos). Solo si el término es corto:
+  // comparar frases completas produciría falsos positivos.
+  const wordsA = tokenizeProductQuery(a);
+  const wordsB = tokenizeProductQuery(b);
+  if (!wordsA.length || !wordsB.length) return false;
+
+  const shorter = wordsA.length <= wordsB.length ? wordsA : wordsB;
+  const longer = shorter === wordsA ? wordsB : wordsA;
+  if (shorter.length > 3) return false;
+
+  return shorter.every((word) => longer.some((candidate) => tokensRelated(candidate, word)));
 }
 
 export function cartItemMatchesVariantHint(item: { name: string; sku: string }, hint: string): boolean {
@@ -283,5 +515,7 @@ export function cartItemMatchesVariantHint(item: { name: string; sku: string }, 
 export function tokenizeProductQuery(text: string): string[] {
   return normalizeProductText(text)
     .split(/\s+/)
+    // La puntuación de WhatsApp ("dijes?", "cadena,") no forma parte del término.
+    .map((word) => word.replace(/^[^a-z0-9#]+/g, '').replace(/[^a-z0-9]+$/g, ''))
     .filter((word) => word.length > 1 && !SEARCH_STOP_WORDS.test(word));
 }

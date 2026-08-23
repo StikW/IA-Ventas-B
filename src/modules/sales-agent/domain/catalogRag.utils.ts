@@ -66,6 +66,27 @@ export function parseCatalogProductFields(block: string): CatalogProductFields {
   return fields as CatalogProductFields;
 }
 
+/** Nombres y SKUs mencionados en chunks RAG, para armar un listado (no un solo SKU). */
+export function extractCatalogRefsFromChunks(chunks: Array<{ content: string }>): {
+  names: string[];
+  skus: string[];
+} {
+  const names: string[] = [];
+  const skus: string[] = [];
+
+  for (const chunk of chunks) {
+    for (const match of chunk.content.matchAll(/producto:\s*(.+)/gi)) {
+      const name = match[1]!.trim();
+      if (name) names.push(name);
+    }
+    for (const match of chunk.content.matchAll(/sku:\s*([A-Za-z0-9][A-Za-z0-9._-]{2,})/gi)) {
+      skus.push(match[1]!);
+    }
+  }
+
+  return { names: [...new Set(names)], skus: [...new Set(skus)] };
+}
+
 /** Extrae SKUs de un bloque (soporta varios SKUs en líneas consecutivas). */
 export function extractSkusFromCatalogField(skuField: string | undefined): string[] {
   if (!skuField?.trim()) return [];
@@ -94,16 +115,39 @@ function extractHashSize(text: string): string | null {
   return null;
 }
 
-/** Pack de balines u otras variaciones numéricas (1, 2, 5, 10 unidades). */
+const UNIT_WORDS = /^(?:mm|cm|m|gr|g|kg|kt|k|ml|oz|lb|pulgadas?|quilates?)$/;
+
+/**
+ * Distingue "2 Balines" o "Promo x5" (packs) de "10 x 9 mm" o "7 1/2" (medidas y tallas).
+ * Sin esta comprobación, una variación por dimensiones se interpreta como cantidad y
+ * el agente elige el SKU con sufijo `-10`.
+ */
+export function looksLikePackLabel(label: string): boolean {
+  const normalized = normalizeProductText(label);
+  if (!normalized) return false;
+  if (/\d\s*[x×]\s*\d/.test(normalized)) return false;
+  if (/\//.test(normalized)) return false;
+  if (/^promo\s*x?\s*\d+$/.test(normalized)) return true;
+
+  const match = normalized.match(/^(\d+)\s+([a-z]+)/);
+  if (!match) return false;
+  return !UNIT_WORDS.test(match[2]!);
+}
+
+/** Cantidad de unidades por variación tipo pack (1, 2, 5, 10). */
 export function extractPackSizeHint(text: string, variaciones?: string): number | null {
   const normalized = normalizeProductText(text);
 
-  const inline = normalized.match(/\b(1|2|5|10)\s*bal[ií]n/);
+  const inline = normalized.match(/\b(1|2|5|10)\s*(?:bal[ií]n|balines|unidades?|piezas?|pares?)\b/);
   if (inline) return Number.parseInt(inline[1]!, 10);
+
+  const promo = normalized.match(/promo\s*x?\s*(\d+)/);
+  if (promo) return Number.parseInt(promo[1]!, 10);
 
   if (variaciones) {
     for (const label of variaciones.split('|').map((part) => part.trim())) {
-      const num = label.match(/^(\d+)/);
+      if (!looksLikePackLabel(label)) continue;
+      const num = label.match(/(\d+)/);
       if (!num) continue;
       const pack = Number.parseInt(num[1]!, 10);
       const labelNorm = normalizeProductText(label);
@@ -183,17 +227,28 @@ export function pickSkuFromCatalogBlock(
     if (byPack) return byPack;
   }
 
-  if (fields.variaciones && (variantHint || userText)) {
+  if (fields.variaciones) {
     const labels = fields.variaciones.split('|').map((part) => part.trim());
-    for (let i = 0; i < labels.length; i++) {
-      const label = labels[i]!;
-      if (variantHintsMatch(label, variantHint ?? '') || variantHintsMatch(label, userText)) {
-        return skus[i] ?? skus[0]!;
+
+    if (variantHint || userText) {
+      for (let i = 0; i < labels.length; i++) {
+        const label = labels[i]!;
+        if (variantHintsMatch(label, variantHint ?? '') || variantHintsMatch(label, userText)) {
+          return skus[i] ?? skus[0]!;
+        }
       }
+    }
+
+    // En variaciones tipo pack la unidad es el caso por defecto.
+    if (labels.length && labels.every(looksLikePackLabel)) {
+      const single = skus.find((sku) => skuPackCode(sku) === 1);
+      if (single) return single;
     }
   }
 
-  return skus[0]!;
+  // Varias tallas o medidas sin pista del cliente: no se adivina. El agente ofrece las
+  // opciones de WooCommerce en lugar de elegir un SKU al azar.
+  return null;
 }
 
 export interface RagCatalogMatch {

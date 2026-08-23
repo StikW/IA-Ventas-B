@@ -49,11 +49,20 @@ const UI_FLOWS: UiFlowSpec[] = [
     sort: 11,
     gotoFlow: 'catalogFlowId',
   },
+  {
+    key: 'finalizeFlowId',
+    label: 'ia_ventas_ui_finalize',
+    name: 'IA Ventas — Finalizar Pedido',
+    keyword: '__ia_ventas_route_finalize__',
+    message: '¿Listo para cerrar tu pedido?\n\nToca el botón de abajo para continuar con tu compra 👇',
+    sort: 12,
+  },
 ];
 
 export interface BuilderBotUiFlowIds {
   catalogFlowId: string;
   cartFlowId: string;
+  finalizeFlowId: string;
 }
 
 type FlowRecord = { id?: string; label?: string; name?: string; keywords?: string[] };
@@ -83,9 +92,15 @@ export class BuilderBotCloudUiFlowsRelay {
 
   private async ensureFlow(projectId: string, spec: UiFlowSpec): Promise<string> {
     const listed = await callBuilderBotMcpTool<{ flows?: FlowRecord[] }>('builderbot_list_flows', { projectId });
-    const existing = (listed.flows ?? []).find(
-      (flow) => flow.label === spec.label || flow.name === spec.name || flow.keywords?.includes(spec.keyword)
-    );
+    const existing = (listed.flows ?? []).find((flow) => {
+      const name = flow.name?.trim() ?? '';
+      return (
+        flow.label === spec.label ||
+        name === spec.name ||
+        flow.keywords?.includes(spec.keyword) ||
+        (spec.key === 'finalizeFlowId' && name.includes('IA Ventas') && /finalizar/i.test(name))
+      );
+    });
     if (existing?.id) return existing.id;
 
     const created = await callBuilderBotMcpTool<Record<string, unknown>>('builderbot_create_flow', {

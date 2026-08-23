@@ -27,7 +27,7 @@ export class ChatSessionRepositoryDynamo implements IChatSessionRepository {
 
     return {
       tenantId,
-      customerPhone,
+      customerPhone: String(result.Item.customerPhone ?? customerPhone),
       messages: (result.Item.messages as ChatMessage[]) ?? [],
       salesContext: result.Item.salesContext as ChatSession['salesContext'],
       updatedAt: String(result.Item.updatedAt ?? ''),

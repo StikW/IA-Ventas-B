@@ -25,11 +25,29 @@ export interface PendingCartItem {
   unitPrice: number;
 }
 
+/**
+ * Opción que el agente acaba de mostrar en un listado (familia o variaciones).
+ * Permite resolver referencias posicionales («el primero», «la segunda») sin volver
+ * a interpretar el catálogo.
+ */
+export interface OfferedOption {
+  productId: number;
+  name: string;
+  /** Ausente en productos variables: en WooCommerce el SKU vive en cada variación. */
+  sku?: string;
+  /** El cliente aún debe elegir una variación antes de poder agregarlo. */
+  variable?: boolean;
+}
+
 export interface SalesContext {
   phase: SalesPhase;
   flowStep?: ConversationFlowStep;
   cartItems?: PendingCartItem[];
   customerName?: string;
+  /** Último listado mostrado, para resolver «el primero» o «la última». */
+  lastOptions?: OfferedOption[];
+  /** SKUs agregados en el turno anterior, para «solo los que te dije». */
+  lastAddedSkus?: string[];
   lastOrderId?: string;
   /** Pedido WooCommerce MASSI creado vía massi-bot-api */
   massiWooOrderId?: number;

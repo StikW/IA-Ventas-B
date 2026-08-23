@@ -225,8 +225,8 @@ Reglas de negocio descritas por el equipo:
 - **Notificaciones estado pedido** por WhatsApp + email WC en paralelo.
 - Consulta pedidos recientes por teléfono.
 - Saludo configurable por perfil negocio.
-- Tras agregar al carrito: resumen + botón **Finalizar pedido** (el resto de la conversación es texto libre).
-- Saludo con carrito previo: resumen + botones **Finalizar pedido** / **Vaciar carrito** + botón **Ver catálogo**.
+- Tras agregar al carrito: resumen (agente) + flow **Finalizar Pedido** con botón Reply (respaldo: escribir *Finalizar pedido*).
+- Saludo con carrito previo: resumen + flow **Vaciar Carrito** + botón **Ver catálogo** (`gotoFlow`); finalizar por texto.
 - Cierre de compra: botón **Continuar compra** (CTA URL) al formulario WC.
 
 ### ⚠️ Parcial / en prueba
@@ -285,7 +285,7 @@ Reglas de negocio descritas por el equipo:
 
 1. Escanea QR → catálogo web.
 2. Abre WhatsApp → “quiero cadena lazo 60 cm”.
-3. Agente agrega al carrito → resumen + botón **Finalizar pedido** → el cliente lo pulsa.
+3. Agente agrega al carrito → resumen + botón **Finalizar pedido** (flow BBC) → el cliente lo pulsa → link formulario WC.
 4. Recibe **link al formulario WC** con productos pre-cargados.
 5. Completa recoger en tienda + transferencia en la web.
 6. Staff valida en WooCommerce → ticket prioritario.
@@ -310,4 +310,4 @@ Reglas de negocio descritas por el equipo:
 
 ---
 
-*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress. Última revisión: 30 julio 2026 — OTP + notificaciones WhatsApp vía IA Ventas; validación comprobantes `/validacion-de-pagos/`.*
+*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress. Última revisión: agosto 2026 — flow Finalizar Pedido; toggle agente; OTP + notificaciones WhatsApp vía IA Ventas.*

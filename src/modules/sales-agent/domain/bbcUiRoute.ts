@@ -15,12 +15,13 @@ function hasButton(message: OutboundWhatsAppMessage, id: string): boolean {
 /**
  * Elige el flow UI que BBC debe ejecutar tras los mensajes de texto del agente.
  *
- * Solo el saludo tiene flow, y se distingue por sus botones: *Vaciar carrito* aparece
- * únicamente al saludar con carrito. Tras agregar o modificar productos el agente sigue
- * en texto libre.
+ * Solo ciertos momentos usan flows UI:
+ * - *Vaciar carrito* al saludar con carrito (`cart`).
+ * - *Finalizar pedido* tras agregar/modificar carrito (`finalize`).
+ * - *Ver catálogo* en discovery o consultas de catálogo (`catalog`).
  *
- * El checkout tampoco tiene flow: su botón CTA necesita una URL distinta por conversación
- * (`items=SKU:qty&phone=…`) y el panel solo admite URLs fijas.
+ * El enlace de checkout no tiene flow: la URL cambia por conversación y el CTA URL del
+ * panel no resuelve variables.
  */
 export function resolveBbcUiRoute(
   outbound: OutboundWhatsAppMessage | OutboundWhatsAppMessage[]
@@ -28,6 +29,8 @@ export function resolveBbcUiRoute(
   const messages = Array.isArray(outbound) ? outbound : [outbound];
 
   if (messages.some((message) => hasButton(message, WA_BTN.CART_CLEAR))) return 'cart';
+
+  if (messages.some((message) => hasButton(message, WA_BTN.CART_FINALIZE))) return 'finalize';
 
   const usesCatalogCta = messages.some(
     (message) => message.kind === 'cta_url' && message.displayText === CATALOG_CTA_LABEL

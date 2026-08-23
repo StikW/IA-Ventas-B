@@ -32,6 +32,7 @@ import {
   SyncBuilderBotWebhookUseCase,
 } from '../../../modules/builderbot/application/use-cases/BuilderBotUseCases';
 import { SalesAgentToolsHandler } from '../../../modules/sales-agent/application/services/SalesAgentToolsHandler';
+import { CatalogIndexService } from '../../../modules/sales-agent/application/services/CatalogIndexService';
 import { ConversationFlowService } from '../../../modules/sales-agent/application/services/ConversationFlowService';
 import { OrderNotificationService } from '../../../modules/commerce/application/services/OrderNotificationService';
 import { WhatsAppOutboundService } from '../../../modules/builderbot/application/services/WhatsAppOutboundService';
@@ -74,6 +75,7 @@ export function registerDependencies(): void {
   container.registerSingleton(BuilderBotWebhookParser, BuilderBotWebhookParser);
   container.registerSingleton('IChatSessionRepository', ChatSessionRepositoryDynamo);
   container.registerSingleton(OpenAIChatAdapter, OpenAIChatAdapter);
+  container.registerSingleton(CatalogIndexService, CatalogIndexService);
   container.registerSingleton(SalesAgentToolsHandler, SalesAgentToolsHandler);
   container.registerSingleton(ConversationFlowService, ConversationFlowService);
   container.registerSingleton(SalesAgentService, SalesAgentService);

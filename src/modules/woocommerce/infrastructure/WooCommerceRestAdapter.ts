@@ -174,6 +174,23 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     return products.map((p) => this.mapProduct(p));
   }
 
+  async listAllProducts(config: WooCommerceConfigData, maxProducts = 1000): Promise<WooCommerceProduct[]> {
+    const perPage = 100;
+    const all: WooCommerceProduct[] = [];
+
+    for (let page = 1; all.length < maxProducts; page++) {
+      const batch = await this.request<Array<Record<string, unknown>>>(
+        config,
+        `/products?per_page=${perPage}&page=${page}&status=publish&orderby=id&order=asc`
+      );
+
+      all.push(...batch.map((p) => this.mapProduct(p)));
+      if (batch.length < perPage) break;
+    }
+
+    return all.slice(0, maxProducts);
+  }
+
   async searchProducts(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]> {
     const q = query.trim();
     if (!q) return [];
@@ -198,6 +215,16 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     );
     if (!products.length) return null;
     return this.mapProduct(products[0]);
+  }
+
+  async listProductVariations(config: WooCommerceConfigData, productId: number): Promise<WooCommerceProduct[]> {
+    if (!productId || productId <= 0) return [];
+
+    const variations = await this.request<Array<Record<string, unknown>>>(
+      config,
+      `/products/${productId}/variations?per_page=100&status=publish`
+    );
+    return variations.map((variation) => this.mapVariation(variation, productId));
   }
 
   async getProductById(config: WooCommerceConfigData, productId: number): Promise<WooCommerceProduct | null> {
@@ -241,7 +268,31 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     };
   }
 
+  private mapVariation(p: Record<string, unknown>, _parentId: number): WooCommerceProduct {
+    const attributes = Array.isArray(p.attributes) ? (p.attributes as Array<Record<string, unknown>>) : [];
+    const label = attributes
+      .map((attribute) => String(attribute.option ?? attribute.name ?? '').trim())
+      .filter(Boolean)
+      .join(' · ');
+
+    return {
+      id: p.id as number,
+      name: label || String(p.name ?? `Variación ${p.id}`),
+      sku: (p.sku as string) ?? '',
+      price: p.price as string,
+      stockQuantity: p.stock_quantity as number | null,
+      stockStatus: p.stock_status as string,
+      description: '',
+      status: (p.status as string) ?? 'publish',
+      type: 'variation',
+      tags: attributes.map((attribute) => `${attribute.name ?? ''}: ${attribute.option ?? ''}`),
+    };
+  }
+
   private mapProduct(p: Record<string, unknown>): WooCommerceProduct {
+    const taxonomy = (raw: unknown): Array<Record<string, unknown>> =>
+      Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+
     return {
       id: p.id as number,
       name: p.name as string,
@@ -252,6 +303,12 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
       description: (p.short_description as string) ?? '',
       status: p.status as string,
       type: p.type ? String(p.type) : undefined,
+      categories: taxonomy(p.categories).map((c) => ({
+        id: Number(c.id ?? 0),
+        name: String(c.name ?? ''),
+        slug: String(c.slug ?? ''),
+      })),
+      tags: taxonomy(p.tags).map((t) => String(t.name ?? '')),
     };
   }
 }

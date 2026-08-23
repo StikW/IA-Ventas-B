@@ -169,6 +169,31 @@ Sin SKU el agente no puede resolver stock ni armar el link de checkout con `item
 
 > **Solo se venden productos publicados en WC.** Si el cliente pide algo que no está en la tienda (ej. anillos no publicados), el agente avisa y no lo inventa.
 
+### 9.1 Higiene del catálogo (importante con cientos de productos)
+
+El agente identifica productos por el **nombre**, la **categoría** y las **etiquetas**. Con
+catálogos grandes estas convenciones determinan si acierta o pide elegir:
+
+| Convención | Por qué |
+|------------|---------|
+| El nombre empieza por el **tipo de producto** ("Dije …", "Herraje …", "Topos …") | De ahí sale la familia que reconoce el agente en *«tienen dijes»* |
+| Palabras separadas por **espacios**, no guiones | `Balín-Diamantado-#6-Oro` se lee como una sola palabra; `Balín Diamantado #6 Oro` se indexa bien |
+| **Un solo nombre de atributo** para la talla (`Talla` o `Tamaño`, no ambos ni `TAMAÑO`) | Nombres mezclados dificultan filtrar variaciones |
+| El **peso va en su propio campo**, no dentro de la talla (`11 1/2 · 3.36 g`) | El valor de talla debe ser solo la talla |
+| Toda variación con **SKU** | Sin SKU no entra al carrito ni al link de checkout |
+| Toda categoría **coherente con el nombre** | Un "Balín Liso" en la categoría "Balín Diamantado" genera coincidencias ambiguas |
+| Sin **nombres duplicados** exactos | El agente no puede distinguirlos y pide elegir |
+| Sin productos en **"Sin categorizar"** | Pierden la familia y solo se encuentran por nombre |
+
+Para auditar el catálogo y generar el `.txt` del RAG en un paso:
+
+```bash
+cd backend
+npm run catalog:txt -- --store https://mitienda.com --key ck_xxx --secret cs_xxx --out catalogo.txt
+```
+
+El informe de inconsistencias sale por **stderr**; el `.txt` se sube en `/business/documents`.
+
 ---
 
 ## 10. Checklist de verificación
@@ -194,10 +219,10 @@ Con el flujo de negocio actual (**modo `link`**, default) y los cambios reciente
 | Componente | Sigue igual |
 |------------|-------------|
 | Flow **IA Ventas — Agente** | Relay HTTP `add_http` → webhook IA Ventas |
-| `avoidResponse: true` | El texto lo envía IA Ventas vía **API v2** |
+| `avoidResponse: false` | Obligatorio — con `true` BBC no evalúa reglas `{ route }` |
+| `messageMapping: ''` | El texto lo envía IA Ventas vía **API v2** |
 | QR / emparejar WhatsApp | Panel `/business/whatsapp` |
 | **Re-sincronizar webhook** | Tras deploy que toque relay o flows |
-| Sin `messageMapping` | Obligatorio — no activar en BBC |
 
 ### 11.2 Lo que **cambia** con modo `link` (default)
 
@@ -219,13 +244,13 @@ Con el flujo de negocio actual (**modo `link`**, default) y los cambios reciente
 ### 11.4 Limpieza opcional en BBC
 
 - **Eliminar** flows **IA Ventas — Menú UI** y **IA Ventas — Pago UI** si existen.
-- **No tocar** flow **IA Ventas — Agente** (relay HTTP).
-- Mantener solo **Saludo Sin Carrito** y **Saludo Con Carrito** (+ botones manuales).
+- **No tocar** flows **IA Ventas — Agente** (relay HTTP) ni **IA Ventas — Orden** (`EVENTS.ORDER`).
+- Mantener flows UI con botones manuales: **Catalogo**, **Vaciar Carrito**, **Finalizar Pedido** (ver [`whatsapp-massi.md`](./whatsapp-massi.md) § «Configurar botones»).
 
 ### 11.5 Acciones recomendadas tras deploy
 
 1. `git pull` + `npm run build` + `pm2 restart` en EC2 (incluye ruta `POST /channel/messages`)
-2. Panel → WhatsApp → **Re-sincronizar BuilderBot** (relay + flows saludo; idempotente)
+2. Panel → WhatsApp → **Re-sincronizar BuilderBot** (relay + flows UI + regla `finalize`; idempotente)
 3. Subir plugins WP: `dist/massi-bot-api-ia-ventas.zip` + `dist/massi-tickets-ia-ventas-update.zip` (`node dist/build-plugin-zips.mjs`)
 4. **MASSI → API** (WP): modo **4 IA Ventas**, URL + API Key
 5. Verificar relay → `{APP_PUBLIC_URL}/api/v1/webhooks/builderbot/{tenantId}`
@@ -319,4 +344,4 @@ cd ~/IA-Ventas-B && git pull && cd backend && npm run build && pm2 restart all
 
 ---
 
-*Última actualización: 30 julio 2026 — OTP/notificaciones IA Ventas, zip bestzip, validación `/validacion-de-pagos/`, sin flow Pago UI.*
+*Última actualización: agosto 2026 — flow Finalizar Pedido; toggle agente; OTP/notificaciones IA Ventas.*

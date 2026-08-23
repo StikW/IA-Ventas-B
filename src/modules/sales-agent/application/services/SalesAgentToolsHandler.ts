@@ -4,7 +4,7 @@ import { RagSearchService } from '../../../knowledge/application/services/RagSea
 import { OrderItem } from '../../../commerce/domain/entities/Order.types';
 import { IMassiBotService, MassiBotVariation } from '../../../massi-bot/domain/IMassiBotService';
 import { IWooCommerceConfigRepository, IWooCommerceService, WooCommerceConfigData, WooCommerceProduct } from '../../../woocommerce/domain/IWooCommerceService';
-import { SalesContext } from '../../domain/IChatSessionRepository';
+import { OfferedOption, SalesContext } from '../../domain/IChatSessionRepository';
 import { PendingCartItem } from '../../domain/IChatSessionRepository';
 import { DomainError } from '../../../../shared/domain/errors/DomainError';
 import {
@@ -21,33 +21,80 @@ import {
   parseMultiProductSelection,
   normalizeUserTypos,
   isCatalogBrowseIntent,
+  isProductOptionsBrowseIntent,
+  themeListLabel,
   parseProductSelectionQuery,
   SELECTION_NOISE_WORDS,
   tokenizeProductQuery,
   VARIANT_STRIP_PATTERN,
 } from '../../domain/productSelection.utils';
-import { RagCatalogMatch, resolveSkuFromRagChunks } from '../../domain/catalogRag.utils';
+import { extractCatalogRefsFromChunks, RagCatalogMatch, resolveSkuFromRagChunks } from '../../domain/catalogRag.utils';
 import { buildCheckoutFormUrl } from '../../domain/checkoutLink.utils';
 import {
   buildProductQueryFromTarget,
   describeCartTarget,
+  extractCartTarget,
   extractSpokenQuantity,
   hasProductReference,
   isCartClearIntent,
   isCartCorrectionIntent,
+  isCartIncrementIntent,
+  isCartIncrementPhrase,
+  isCartKeepOnlyIntent,
   isCartRemoveIntent,
   isCartSetQuantityIntent,
   parseCartCorrection,
+  parseCartKeepOnly,
   parseCartRemove,
   parseCartSetQuantity,
+  splitCartEditClauses,
 } from '../../domain/cartModification.utils';
 import {
+  buildAmbiguousProductMessage,
+  buildFamilyProductListMessage,
   buildProductFamilyVariantsMessage,
   formatSimpleProductLineForUser,
   formatVariationLineForUser,
+  toOfferedOptionFromProduct,
+  toOfferedOptionFromVariation,
+  PRODUCT_LIST_MAX_LINES,
 } from '../../domain/productDisplay.utils';
+import { CatalogMatch, catalogQueryTokens, isDecisiveMatch, rankCatalogEntries } from '../../domain/catalogMatch.utils';
+import { EMOJI } from '../../domain/tone.utils';
 import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
 import { CartService } from './CartService';
+import { CatalogIndexService } from './CatalogIndexService';
+
+/** Variaciones que caben en un mensaje de WhatsApp sin volverse ilegible. */
+const PRODUCT_VARIATION_MAX_LINES = 12;
+
+export interface ProductResolution {
+  ok: boolean;
+  message: string;
+  item?: OrderItem;
+  /**
+   * El mensaje ya contiene un listado de opciones con su ID. El agente debe mostrarlo
+   * en vez de responder con la ayuda genérica de «envíame el ID».
+   */
+  needsChoice?: boolean;
+  /** Opciones listadas, para resolver después «el primero». */
+  options?: OfferedOption[];
+}
+
+export interface ProductResolutionBatch {
+  ok: boolean;
+  message: string;
+  items?: OrderItem[];
+  needsChoice?: boolean;
+  options?: OfferedOption[];
+}
+
+/** Listado de productos u opciones mostrado al cliente. */
+export interface ProductBrowseResult {
+  ok: boolean;
+  message: string;
+  options?: OfferedOption[];
+}
 
 export interface StockCheckResult {
   available: boolean;
@@ -65,7 +112,8 @@ export class SalesAgentToolsHandler {
     @inject(RagSearchService) private readonly ragSearch: RagSearchService,
     @inject('IWooCommerceConfigRepository') private readonly wcConfigRepo: IWooCommerceConfigRepository,
     @inject('IWooCommerceService') private readonly wcService: IWooCommerceService,
-    @inject('IMassiBotService') private readonly massiBot: IMassiBotService
+    @inject('IMassiBotService') private readonly massiBot: IMassiBotService,
+    @inject(CatalogIndexService) private readonly catalogIndex: CatalogIndexService
   ) {}
 
   async searchDocuments(tenantId: string, query: string): Promise<string> {
@@ -140,9 +188,9 @@ export class SalesAgentToolsHandler {
       let index = 1;
 
       for (const product of products.slice(0, 8)) {
-        if (product.type === 'variable' && this.massiBot.isConfigured(config)) {
+        if (product.type === 'variable') {
           try {
-            const variations = await this.massiBot.getProductVariations(config, product.id);
+            const variations = await this.loadVariations(config, product);
             lines.push(`${index}. *${product.name}*`);
             for (const variation of variations.slice(0, 12)) {
               const label = variation.name.replace(product.name, '').trim() || variation.name;
@@ -199,9 +247,9 @@ export class SalesAgentToolsHandler {
     ];
     for (const p of products.slice(0, 5)) {
       lines.push(this.formatProduct(p));
-      if (p.type === 'variable' && this.massiBot.isConfigured(config)) {
+      if (p.type === 'variable') {
         try {
-          const variations = await this.massiBot.getProductVariations(config, p.id);
+          const variations = await this.loadVariations(config, p);
           for (const v of variations.slice(0, 12)) {
             lines.push(`    ↳ ${this.formatVariationLine(v)}`);
           }
@@ -220,10 +268,7 @@ export class SalesAgentToolsHandler {
    * Cliente pregunta por un tipo de producto (cadena, anillo…): busca el padre en WC y
    * devuelve variaciones con *ID* visible (internamente SKU).
    */
-  async resolveProductFamilyBrowse(
-    tenantId: string,
-    userText: string
-  ): Promise<{ ok: boolean; message: string }> {
+  async resolveProductFamilyBrowse(tenantId: string, userText: string): Promise<ProductBrowseResult> {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
       return { ok: false, message: 'WooCommerce no está conectado para este negocio.' };
@@ -235,55 +280,253 @@ export class SalesAgentToolsHandler {
     try {
       const parsed = parseProductSelectionQuery(normalizeUserTypos(userText));
       const variantHint = parsed.variantHint ?? extractVariantHint(userText);
-      const searchQuery = (parsed.productQuery || family).trim() || family;
 
-      const products = await this.searchProductsWithFallback(config, searchQuery);
-      if (!products.length) {
+      const { products: familyProducts, resolvedTerm, matches } =
+        await this.catalogIndex.findFamilyRanked(
+          config.tenantId,
+          config,
+          family,
+          userText,
+          variantHint
+        );
+
+      // El cliente nombró un producto concreto ("opciones del anillo dama flor"):
+      // sus variaciones con ID, no otro listado de la familia.
+      if (matches.length && this.shouldDescribeNamedProduct(userText, matches)) {
+        return await this.describeProductOptions(config, matches[0]!.entry.product, variantHint);
+      }
+
+      // Varios productos del mismo tipo: se listan para que el cliente elija por ID.
+      if (familyProducts.length > 1) {
+        const shown = familyProducts.slice(0, PRODUCT_LIST_MAX_LINES);
         return {
-          ok: false,
-          message: `No encontré ${family} en la tienda en este momento.`,
+          ok: true,
+          message: buildFamilyProductListMessage(resolvedTerm, shown, familyProducts.length),
+          options: shown.map(toOfferedOptionFromProduct),
         };
       }
 
-      const parent = this.pickBestParentProduct(products, userText, family);
+      const parent =
+        familyProducts[0] ??
+        this.pickBestParentProduct(
+          await this.searchProductsWithFallback(config, (parsed.productQuery || family).trim() || family),
+          userText,
+          family
+        );
+
       if (!parent) {
         return { ok: false, message: `No encontré ${family} en la tienda en este momento.` };
       }
 
-      if (parent.type === 'variable') {
-        if (!this.massiBot.isConfigured(config)) {
-          return {
-            ok: false,
-            message: 'Este producto tiene variaciones; configura MASSI Bot API para listarlas.',
-          };
-        }
+      return await this.describeProductOptions(config, parent, variantHint);
+    } catch (err) {
+      return { ok: false, message: this.formatStoreError(err) };
+    }
+  }
 
-        let variations = await this.massiBot.getProductVariations(config, parent.id);
-        if (!variations.length) {
-          return { ok: false, message: `*${parent.name}* no tiene opciones publicadas aún.` };
-        }
+  /**
+   * Opciones de un producto que ya se le mostró al cliente. Se usa cuando responde con la
+   * posición ("el primero") sobre un producto variable, que no tiene SKU propio.
+   */
+  async describeProductOptionsById(tenantId: string, productId: number): Promise<ProductBrowseResult> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) {
+      return { ok: false, message: 'WooCommerce no está conectado para este negocio.' };
+    }
 
-        if (variantHint) {
-          const filtered = variations.filter((variation) =>
-            cartItemMatchesVariantHint({ name: variation.name, sku: variation.sku }, variantHint)
-          );
-          if (filtered.length) variations = filtered;
-        }
+    try {
+      const entries = await this.catalogIndex.getEntries(tenantId, config);
+      const product =
+        entries.find((entry) => entry.product.id === productId)?.product ??
+        (await this.wcService.getProductById(config, productId));
 
-        const lines = variations.slice(0, 15).map((variation) => formatVariationLineForUser(variation));
+      if (!product) {
+        return { ok: false, message: 'Ese producto ya no está disponible en la tienda.' };
+      }
+
+      return await this.describeProductOptions(config, product);
+    } catch (err) {
+      return { ok: false, message: this.formatStoreError(err) };
+    }
+  }
+
+  /**
+   * Motivo o forma ("alguna joya en forma de corazón"): lista coincidencias del índice
+   * con su ID, sin pasar por el LLM ni inventar precios.
+   */
+  async resolveThemeBrowse(tenantId: string, userText: string): Promise<ProductBrowseResult> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) {
+      return { ok: false, message: 'WooCommerce no está conectado para este negocio.' };
+    }
+
+    try {
+      const variantHint = extractVariantHint(userText);
+      let matches = await this.catalogIndex.search(
+        tenantId,
+        config,
+        userText,
+        variantHint,
+        PRODUCT_LIST_MAX_LINES
+      );
+
+      if (!matches.length) {
+        matches = await this.searchThemeProductsFromRag(tenantId, config, userText);
+      }
+
+      if (!matches.length) {
         return {
-          ok: true,
-          message: buildProductFamilyVariantsMessage(parent.name, lines, variantHint),
+          ok: false,
+          message:
+            'No encontré piezas con esa forma en la tienda. Prueba con un nombre más concreto (elefante, corazón, virgen…) o el *ID*.',
         };
       }
 
+      if (this.shouldDescribeNamedProduct(userText, matches) && matches[0]!.entry.product.type === 'variable') {
+        return await this.describeProductOptions(config, matches[0]!.entry.product, variantHint);
+      }
+
+      const shown = matches.map((match) => match.entry.product).slice(0, PRODUCT_LIST_MAX_LINES);
       return {
         ok: true,
-        message: buildProductFamilyVariantsMessage(parent.name, [formatSimpleProductLineForUser(parent)]),
+        message: buildFamilyProductListMessage(themeListLabel(userText), shown, matches.length),
+        options: shown.map(toOfferedOptionFromProduct),
       };
     } catch (err) {
       return { ok: false, message: this.formatStoreError(err) };
     }
+  }
+
+  /**
+   * "animales" no aparece en los nombres; el RAG del .txt sí relaciona elefante, mariposa…
+   * Solo se listan productos que existan en WooCommerce.
+   */
+  private async searchThemeProductsFromRag(
+    tenantId: string,
+    config: WooCommerceConfigData,
+    userText: string
+  ): Promise<CatalogMatch[]> {
+    if (!hasOpenAI) return [];
+
+    try {
+      const rag = await this.ragSearch.search({ tenantId, query: userText, topK: 10, minScore: 0.3 });
+      if (!rag.results.length) return [];
+
+      const entries = await this.catalogIndex.getEntries(tenantId, config);
+      if (!entries.length) return [];
+
+      const hints = extractCatalogRefsFromChunks(rag.results);
+      const found = new Map<number, CatalogMatch>();
+
+      const add = (match: CatalogMatch) => {
+        const current = found.get(match.entry.product.id);
+        if (!current || match.score > current.score) found.set(match.entry.product.id, match);
+      };
+
+      for (const sku of hints.skus) {
+        const entry = entries.find((row) => row.product.sku?.toLowerCase() === sku.toLowerCase());
+        if (entry) add({ entry, score: 10, matchedTokens: 1 });
+      }
+
+      for (const name of hints.names) {
+        const ranked = rankCatalogEntries(entries, catalogQueryTokens(name), undefined, 1);
+        if (ranked[0]) add(ranked[0]);
+      }
+
+      return [...found.values()]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, PRODUCT_LIST_MAX_LINES);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * El cliente señaló un producto concreto (nombre propio, no solo "anillo") o pidió
+   * explícitamente sus opciones. En ambos casos se listan las variaciones, no la familia.
+   */
+  private shouldDescribeNamedProduct(userText: string, matches: CatalogMatch[]): boolean {
+    if (!matches.length) return false;
+    if (isDecisiveMatch(matches)) return true;
+    if (!isProductOptionsBrowseIntent(userText)) return false;
+
+    const extra = catalogQueryTokens(userText).filter((token) => !extractProductFamilyTerm(token));
+    return extra.length >= 1;
+  }
+
+  /**
+   * MASSI es la fuente preferida de variaciones; si falla o no está, WooCommerce REST
+   * alcanza para listar tallas/colores con SKU.
+   */
+  private async loadVariations(
+    config: WooCommerceConfigData,
+    parent: Pick<WooCommerceProduct, 'id'> & { name?: string }
+  ): Promise<MassiBotVariation[]> {
+    if (this.massiBot.isConfigured(config)) {
+      try {
+        const fromMassi = await this.massiBot.getProductVariations(config, parent.id);
+        if (Array.isArray(fromMassi) && fromMassi.length) return fromMassi;
+      } catch {
+        // Sigue con WooCommerce: un 404/502 de MASSI no debe tumbar el listado.
+      }
+    }
+
+    const parentName = parent.name?.trim() ?? '';
+    const fromStore = await this.wcService.listProductVariations(config, parent.id);
+    return fromStore.map((variation) => ({
+      id: variation.id,
+      parentId: parent.id,
+      name: [parentName, variation.name].filter(Boolean).join(' - '),
+      sku: variation.sku,
+      price: variation.price,
+      stockStatus: variation.stockStatus,
+      stockQuantity: variation.stockQuantity,
+      attributes: (variation.tags ?? [])
+        .map((tag) => {
+          const [name, value] = tag.split(':').map((part) => part.trim());
+          return { name: name || 'Opción', value: value || tag };
+        })
+        .filter((attribute) => attribute.value),
+      isVariation: true,
+    }));
+  }
+
+  /** Un producto concreto: sus variaciones con ID, o su ficha si es simple. */
+  private async describeProductOptions(
+    config: WooCommerceConfigData,
+    parent: WooCommerceProduct,
+    variantHint?: string
+  ): Promise<ProductBrowseResult> {
+    if (parent.type !== 'variable') {
+      return {
+        ok: true,
+        message: buildProductFamilyVariantsMessage(parent.name, [
+          formatSimpleProductLineForUser(parent, 1),
+        ]),
+        options: [toOfferedOptionFromProduct(parent)],
+      };
+    }
+
+    let variations = await this.loadVariations(config, parent);
+    if (!variations.length) {
+      return { ok: false, message: `*${parent.name}* no tiene opciones publicadas aún.` };
+    }
+
+    if (variantHint) {
+      const filtered = variations.filter((variation) =>
+        cartItemMatchesVariantHint({ name: variation.name, sku: variation.sku }, variantHint)
+      );
+      if (filtered.length) variations = filtered;
+    }
+
+    const shown = variations.slice(0, PRODUCT_VARIATION_MAX_LINES);
+    const lines = shown.map((variation, index) => formatVariationLineForUser(variation, index + 1));
+
+    return {
+      ok: true,
+      message: buildProductFamilyVariantsMessage(parent.name, lines, variantHint),
+      options: shown.map((variation) => toOfferedOptionFromVariation(variation, parent.name)),
+    };
   }
 
   private pickBestParentProduct(
@@ -359,9 +602,9 @@ export class SalesAgentToolsHandler {
       if (found[0]) productId = found[0].id;
     }
 
-    if (productId && variantHint && !variationId && this.massiBot.isConfigured(config)) {
+    if (productId && variantHint && !variationId) {
       try {
-        const variations = await this.massiBot.getProductVariations(config, productId);
+        const variations = await this.loadVariations(config, { id: productId });
         const matched = this.matchVariation(variations, variantHint);
         if (matched) {
           variationId = matched.id;
@@ -372,9 +615,9 @@ export class SalesAgentToolsHandler {
       }
     }
 
-    if (variationId && productId && this.massiBot.isConfigured(config)) {
+    if (variationId && productId) {
       try {
-        const variations = await this.massiBot.getProductVariations(config, productId);
+        const variations = await this.loadVariations(config, { id: productId });
         const variation = variations.find((v) => v.id === variationId);
         if (!variation) {
           return {
@@ -427,8 +670,8 @@ export class SalesAgentToolsHandler {
         };
       }
 
-      if (product.type === 'variable' && this.massiBot.isConfigured(config)) {
-        const variations = await this.massiBot.getProductVariations(config, productId);
+      if (product.type === 'variable') {
+        const variations = await this.loadVariations(config, product);
         if (!variations.length) {
           return {
             available: false,
@@ -491,11 +734,7 @@ export class SalesAgentToolsHandler {
   async listVariations(tenantId: string, productId: number): Promise<string> {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) return 'WooCommerce no conectado.';
-    if (!this.massiBot.isConfigured(config)) {
-      return 'Variaciones MASSI requieren MASSI Bot API configurada.';
-    }
-
-    const variations = await this.massiBot.getProductVariations(config, productId);
+    const variations = await this.loadVariations(config, { id: productId });
     if (!variations.length) return `Sin variaciones para productId=${productId}.`;
 
     return variations
@@ -668,7 +907,7 @@ export class SalesAgentToolsHandler {
     tenantId: string,
     sku: string,
     quantity = 1
-  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+  ): Promise<ProductResolution> {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
       return { ok: false, message: 'WooCommerce no conectado.' };
@@ -696,7 +935,7 @@ export class SalesAgentToolsHandler {
     tenantId: string,
     retailerId: string,
     quantity = 1
-  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+  ): Promise<ProductResolution> {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
       return { ok: false, message: 'WooCommerce no conectado.' };
@@ -792,7 +1031,8 @@ export class SalesAgentToolsHandler {
   async applyCartModification(
     tenantId: string,
     userText: string,
-    cartItems: PendingCartItem[]
+    cartItems: PendingCartItem[],
+    context?: { lastAddedSkus?: string[] }
   ): Promise<{ handled: boolean; items: PendingCartItem[]; message: string }> {
     const items = cartItems ?? [];
 
@@ -800,8 +1040,12 @@ export class SalesAgentToolsHandler {
       return {
         handled: true,
         items: CartService.clear(),
-        message: 'Listo, vacié tu carrito. ¿Qué te gustaría pedir?',
+        message: `Listo, vacié tu carrito ${EMOJI.check} ¿Con qué empezamos de nuevo?`,
       };
+    }
+
+    if (isCartKeepOnlyIntent(userText)) {
+      return await this.applyCartKeepOnly(tenantId, userText, items, context?.lastAddedSkus);
     }
 
     if (!items.length) {
@@ -875,7 +1119,8 @@ export class SalesAgentToolsHandler {
     }
 
     if (isCartRemoveIntent(userText)) {
-      const req = parseCartRemove(userText);
+      const clauses = splitCartEditClauses(userText);
+      const req = parseCartRemove(clauses.reject);
 
       if (!hasProductReference(req.target)) {
         return {
@@ -900,15 +1145,119 @@ export class SalesAgentToolsHandler {
       }
 
       const label = removed.removedNames.length === 1 ? removed.removedNames[0] : removed.removedNames.join(', ');
-      const note =
+      const notes = [
         removed.removedQty < req.target.quantity && !req.removeAll
           ? `Solo había ${removed.removedQty}; ${removed.removedQty === 1 ? 'lo quité' : 'los quité'}.`
-          : `Quité ${removed.removedQty} de ${label}.`;
+          : `Quité ${removed.removedQty} de ${label}.`,
+      ];
 
-      return { handled: true, items: removed.items, message: note };
+      let next = removed.items;
+      if (clauses.want) {
+        const adjusted = await this.applyCartWantClause(tenantId, clauses.want, next);
+        next = adjusted.items;
+        if (adjusted.note) notes.push(adjusted.note);
+      }
+
+      return { handled: true, items: next, message: notes.join(' ') };
+    }
+
+    if (isCartIncrementIntent(userText)) {
+      const adjusted = await this.applyCartWantClause(tenantId, userText, items);
+      return { handled: true, items: adjusted.items, message: adjusted.note || 'Actualicé tu carrito.' };
     }
 
     return { handled: false, items, message: '' };
+  }
+
+  /** Suma 1 a un ítem del carrito ("otra unidad de X") o lo agrega si aún no está. */
+  private async applyCartWantClause(
+    tenantId: string,
+    wantText: string,
+    items: PendingCartItem[]
+  ): Promise<{ items: PendingCartItem[]; note: string }> {
+    const increment = isCartIncrementPhrase(wantText);
+    const target = extractCartTarget(wantText, increment ? 1 : extractSpokenQuantity(wantText, 1));
+    const existing = CartService.findByTarget(items, target);
+
+    if (existing && increment) {
+      const next = CartService.setQuantityByTarget(items, target, existing.quantity + 1);
+      return { items: next, note: `Dejé ${existing.quantity + 1} de ${existing.name}.` };
+    }
+
+    if (existing && !increment) {
+      const next = CartService.setQuantityByTarget(items, target, target.quantity);
+      return { items: next, note: `Dejé ${target.quantity} de ${existing.name}.` };
+    }
+
+    const query = buildProductQueryFromTarget(target);
+    if (!query.trim()) {
+      return { items, note: 'Dime el *ID* o el nombre de lo que quieres agregar.' };
+    }
+
+    const resolved = await this.resolveSelectionFromTextInner(tenantId, query, target.quantity, {
+      cartItems: items,
+    });
+    if (resolved.ok && resolved.item) {
+      const next = CartService.merge(items, [{ ...resolved.item, quantity: target.quantity }]);
+      return { items: next, note: `Agregué ${target.quantity} de ${resolved.item.name}.` };
+    }
+
+    return { items, note: resolved.message };
+  }
+
+  /**
+   * "Solo quiero X y Y": el carrito queda exactamente con eso. Si no se identifica qué
+   * quiere conservar, el carrito no se toca y se le pide precisión: perder productos por
+   * una interpretación dudosa es mucho peor que preguntar.
+   */
+  private async applyCartKeepOnly(
+    tenantId: string,
+    userText: string,
+    items: PendingCartItem[],
+    lastAddedSkus?: string[]
+  ): Promise<{ handled: boolean; items: PendingCartItem[]; message: string }> {
+    const parsed = parseCartKeepOnly(userText);
+    if (!parsed) return { handled: false, items, message: '' };
+
+    // "solo los dos que te dije": lo agregado en el turno anterior es la referencia fiable.
+    if (parsed.previousReference) {
+      const wanted = new Set(lastAddedSkus ?? []);
+      const kept = items.filter((item) => wanted.has(item.sku));
+      if (kept.length) {
+        return {
+          handled: true,
+          items: kept,
+          message: `${EMOJI.check} Dejé tu carrito solo con lo que me pediste:`,
+        };
+      }
+      return { handled: true, items, message: this.buildKeepOnlyHelp(items) };
+    }
+
+    const resolved = await this.resolveSelectionsFromText(tenantId, parsed.wanted, 1);
+    if (resolved.ok && resolved.items?.length) {
+      const kept = CartService.merge(undefined, resolved.items);
+      const note = resolved.message ? ` ${resolved.message}` : '';
+      return {
+        handled: true,
+        items: kept,
+        message: `${EMOJI.check} Perfecto, dejé tu carrito solo con lo que me pediste.${note}`,
+      };
+    }
+
+    if (!items.length) return { handled: false, items, message: '' };
+    return { handled: true, items, message: this.buildKeepOnlyHelp(items) };
+  }
+
+  private buildKeepOnlyHelp(items: PendingCartItem[]): string {
+    const lines = items.map((item, index) => `${index + 1}. ${item.name} — *${item.sku}*`);
+    return [
+      'Quiero asegurarme de no borrar algo por error 🙌 Este es tu carrito ahora:',
+      '',
+      ...lines,
+      '',
+      'Dime los *ID* que quieres conservar (por ejemplo: «solo quiero ' +
+        `${items[0]?.sku ?? 'ABC-01'}») y dejo el carrito con eso.`,
+    ].join('\n');
   }
 
   /** Resuelve selección en texto libre → producto/variación WooCommerce por SKU (cualquier catálogo). */
@@ -917,10 +1266,15 @@ export class SalesAgentToolsHandler {
     userText: string,
     quantity = 1,
     context?: { cartItems?: PendingCartItem[] }
-  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+  ): Promise<ProductResolution> {
     const batch = await this.resolveSelectionsFromText(tenantId, userText, quantity, context);
     if (!batch.ok || !batch.items?.length) {
-      return { ok: false, message: batch.message };
+      return {
+        ok: false,
+        message: batch.message,
+        needsChoice: batch.needsChoice,
+        options: batch.options,
+      };
     }
     return { ok: true, message: batch.message, item: batch.items[0] };
   }
@@ -931,11 +1285,17 @@ export class SalesAgentToolsHandler {
     userText: string,
     quantity = 1,
     context?: { cartItems?: PendingCartItem[] }
-  ): Promise<{ ok: boolean; message: string; items?: OrderItem[] }> {
+  ): Promise<ProductResolutionBatch> {
     try {
       const trimmed = normalizeUserTypos(userText.trim());
 
-      if (isCartCorrectionIntent(trimmed) || isCartRemoveIntent(trimmed) || isCartClearIntent(trimmed) || isCartSetQuantityIntent(trimmed)) {
+      if (
+        isCartCorrectionIntent(trimmed) ||
+        isCartRemoveIntent(trimmed) ||
+        isCartClearIntent(trimmed) ||
+        isCartSetQuantityIntent(trimmed) ||
+        isCartIncrementIntent(trimmed)
+      ) {
         return { ok: false, message: 'Operación de carrito no aplicable aquí.' };
       }
 
@@ -1008,6 +1368,8 @@ export class SalesAgentToolsHandler {
         ok: single.ok,
         message: single.message,
         items: single.item ? [single.item] : undefined,
+        needsChoice: single.needsChoice,
+        options: single.options,
       };
     } catch (err) {
       return { ok: false, message: this.formatStoreError(err) };
@@ -1019,7 +1381,7 @@ export class SalesAgentToolsHandler {
     userText: string,
     quantity = 1,
     context?: { cartItems?: PendingCartItem[] }
-  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+  ): Promise<ProductResolution> {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
       return { ok: false, message: 'WooCommerce no conectado.' };
@@ -1046,7 +1408,7 @@ export class SalesAgentToolsHandler {
     }
 
     const cartHasItems = !!context?.cartItems?.length;
-    let siblingAttempt: { ok: boolean; message: string; item?: OrderItem } | null = null;
+    let siblingAttempt: ProductResolution | null = null;
 
     const anchor = cartHasItems ? context!.cartItems![context!.cartItems!.length - 1] : undefined;
     const anchorBase = anchor ? normalizeProductText(anchor.name.split(' - ')[0] || anchor.name) : '';
@@ -1087,6 +1449,11 @@ export class SalesAgentToolsHandler {
       }
     }
 
+    // El `search` de WooCommerce coincide con la frase literal, así que descarta plurales y
+    // descripciones de varias palabras. El índice local puntúa todo el catálogo por tokens.
+    const fromIndex = await this.resolveFromCatalogIndex(config, tenantId, trimmed, variantHint, qty);
+    if (fromIndex) return fromIndex;
+
     const searchQuery = this.buildSearchQuery(trimmed, parsed.productQuery, context?.cartItems);
     const products = await this.searchProductsWithFallback(config, searchQuery);
 
@@ -1123,9 +1490,9 @@ export class SalesAgentToolsHandler {
     let bestScore = 0;
 
     for (const product of products.slice(0, 5)) {
-      if (product.type === 'variable' && this.massiBot.isConfigured(config)) {
+      if (product.type === 'variable') {
         try {
-          const variations = await this.massiBot.getProductVariations(config, product.id);
+          const variations = await this.loadVariations(config, product);
           for (const variation of variations) {
             const score = this.scoreVariationMatch(variation, product.name, userText, variantHint);
             if (score > bestScore) {
@@ -1189,20 +1556,93 @@ export class SalesAgentToolsHandler {
     return itemResult;
   }
 
+  /**
+   * Resuelve una descripción en lenguaje natural contra el índice local del catálogo.
+   * Devuelve `null` cuando no hay candidatos, para que sigan los caminos de búsqueda WC.
+   */
+  private async resolveFromCatalogIndex(
+    config: WooCommerceConfigData,
+    tenantId: string,
+    userText: string,
+    variantHint: string | undefined,
+    quantity: number
+  ): Promise<ProductResolution | null> {
+    const parsed = parseProductSelectionQuery(normalizeUserTypos(userText));
+    const query = parsed.productQuery?.trim() || userText;
+
+    const matches = await this.catalogIndex.search(
+      tenantId,
+      config,
+      query,
+      variantHint,
+      PRODUCT_LIST_MAX_LINES
+    );
+    if (!matches.length) return null;
+
+    if (!isDecisiveMatch(matches)) {
+      const products = matches.map((match) => match.entry.product);
+      return {
+        ok: false,
+        needsChoice: true,
+        message: buildAmbiguousProductMessage(products),
+        options: products.map(toOfferedOptionFromProduct),
+      };
+    }
+
+    const product = matches[0]!.entry.product;
+
+    if (product.type === 'variable') {
+      const variations = await this.loadVariations(config, product);
+      if (!variations.length) return null;
+
+      const chosen =
+        (variantHint ? this.matchVariation(variations, variantHint) : undefined) ??
+        (variations.length === 1 ? variations[0] : undefined);
+
+      if (!chosen) {
+        const listed = await this.describeProductOptions(config, product, variantHint);
+        return {
+          ok: false,
+          needsChoice: listed.ok,
+          message: listed.message,
+          options: listed.options,
+        };
+      }
+
+      const sku = chosen.sku?.trim() || (await this.resolveSkuForVariation(config, chosen)) || '';
+      if (!sku) {
+        return {
+          ok: false,
+          message: `Encontré "${chosen.name}" pero no tiene ID asignado en la tienda.`,
+        };
+      }
+
+      return await this.buildOrderItemBySku(tenantId, sku, quantity);
+    }
+
+    const sku = product.sku?.trim();
+    if (!sku) return null;
+
+    return await this.buildOrderItemBySku(tenantId, sku, quantity);
+  }
+
   /** Misma familia de producto que el carrito, otra variación (ej. 50cm → 60cm). */
   private async resolveSiblingVariation(
     tenantId: string,
     anchor: PendingCartItem,
     variantHint: string,
     quantity: number
-  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+  ): Promise<ProductResolution> {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
-    if (!config?.connected || !this.massiBot.isConfigured(config)) {
+    if (!config?.connected) {
       return { ok: false, message: 'No se pudo resolver variación desde el carrito.' };
     }
 
     try {
-      const variations = await this.massiBot.getProductVariations(config, anchor.productId);
+      const variations = await this.loadVariations(config, {
+        id: anchor.productId,
+        name: anchor.name,
+      });
       const matched = this.matchVariation(variations, variantHint);
       if (!matched) {
         return {
@@ -1255,6 +1695,12 @@ export class SalesAgentToolsHandler {
     if (err instanceof DomainError && err.code === 'WOOCOMMERCE_NOT_CONFIGURED') {
       return 'La tienda WooCommerce no está configurada.';
     }
+    if (err instanceof DomainError && err.code === 'MASSI_BOT_ERROR') {
+      if (/error 50[234]/.test(err.message)) {
+        return 'No pude conectar con la tienda en este momento (error temporal). Intenta de nuevo en unos segundos.';
+      }
+      return 'No pude consultar las opciones de ese producto. Intenta de nuevo en un momento.';
+    }
     return 'Ocurrió un error al consultar la tienda. Intenta de nuevo.';
   }
 
@@ -1296,7 +1742,7 @@ export class SalesAgentToolsHandler {
     userText: string,
     variantHint: string | undefined,
     qty: number
-  ): Promise<{ ok: boolean; message: string; item?: OrderItem }> {
+  ): Promise<ProductResolution> {
     const query = searchQuery.trim();
     if (!query) {
       return { ok: false, message: 'Consulta de producto vacía.' };
@@ -1315,9 +1761,9 @@ export class SalesAgentToolsHandler {
     let bestScore = 0;
 
     for (const product of products.slice(0, 5)) {
-      if (product.type === 'variable' && this.massiBot.isConfigured(config)) {
+      if (product.type === 'variable') {
         try {
-          const variations = await this.massiBot.getProductVariations(config, product.id);
+          const variations = await this.loadVariations(config, product);
           for (const variation of variations) {
             const score = this.scoreVariationMatch(variation, product.name, userText, variantHint);
             if (score > bestScore) {

@@ -24,7 +24,7 @@ sequenceDiagram
   API->>IA: LLM + herramientas (si hace falta)
   API->>BBC: API v2 sendTextMessage (texto dinámico)
   BBC->>C: Respuesta texto
-  API-->>BBC: {"route":"catalog" | "cart"}
+  API-->>BBC: {"route":"catalog" | "cart" | "finalize"}
   BBC->>C: Flow UI con botones
 
   C->>BBC: finalizar compra (modo link)
@@ -40,7 +40,7 @@ sequenceDiagram
 
 | Componente | Rol |
 |------------|-----|
-| **BuilderBot Cloud** | WhatsApp, relay webhook (`add_http`), flows UI **Saludo Sin/Carrito** con botones |
+| **BuilderBot Cloud** | WhatsApp, relay webhook (`add_http`), flows UI **Catalogo / Vaciar Carrito / Finalizar Pedido** |
 | **IA Ventas `sales-agent`** | Agente LLM + atajos deterministas (carrito, SKU, modificar carrito); checkout link o pago legacy |
 | **WooCommerce REST** (`ck_`/`cs_`) | Búsqueda catálogo, productos simples, fallback stock por SKU |
 | **Plugin `massi-bot-api` (WordPress)** | Variaciones enriquecidas, lookup por SKU, pedidos MASSI, tickets, comprobantes |
@@ -53,6 +53,8 @@ sequenceDiagram
 | Texto (saludo, resumen de carrito) | `POST /api/v2/{projectId}/messages` — `sendTextMessage` |
 | Botón **Ver catálogo** (CTA URL) | Webhook `{ "route": "catalog" }` → flow **IA Ventas — Catalogo** |
 | Botón **Vaciar carrito** (saludo con carrito) | Webhook `{ "route": "cart" }` → flow **IA Ventas — Vaciar Carrito** |
+| Botón **Finalizar pedido** (tras agregar al carrito) | Webhook `{ "route": "finalize" }` → flow **IA Ventas — Finalizar Pedido** |
+| Agente pausado | Toggle panel → `agentEnabled: false`; ignora webhooks; `/channel/messages` sigue |
 | OTP / estado pedido (MASSI Tickets) | `POST /api/v1/channel/messages` desde WordPress (`purpose: otp` \| `order_status`) |
 | Pago legacy (`checkoutMode: whatsapp`) | Texto por API v2 (cloud-v2); botones nativos solo en wa-api — **sin** flow Pago UI en BBC |
 | Enlace al formulario WC (finalizar compra) | Texto por API v2 — **sin botón** (ver «El checkout no puede ser botón») |
@@ -84,15 +86,16 @@ Los botones **solo** existen en flows del panel BBC. Ni la API v2 ni el MCP pued
 
 El webhook responde `{ route }` **después** de que el agente envió sus textos por API v2 (`WebhookController` espera al agente), así que el flow con botones llega siempre al final:
 
-**Solo el saludo usa flows.** Al agregar o modificar productos el agente sigue en texto libre.
+**Flows UI:** el agente envía texto dinámico por API v2; BBC ejecuta un flow con botones según `{ route }` al final del webhook.
 
 | `route` | Cuándo | Flow UI | Botones en el panel |
 |---------|--------|---------|---------------------|
 | `catalog` | Saludo **sin** carrito · consulta de catálogo · tras vaciar el carrito · **producto no identificado** | **IA Ventas — Catalogo** | CTA URL **Ver catálogo** → `{storeUrl}{shopPagePath}` |
 | `cart` | Saludo **con** carrito | **IA Ventas — Vaciar Carrito** → `gotoFlow` al de catálogo | Reply **Vaciar carrito** |
-| `none` | Todo lo demás (incl. checkout y pago legacy) | — | Texto plano |
+| `finalize` | Tras **agregar o modificar** carrito (`buildCartActionPrompt`) | **IA Ventas — Finalizar Pedido** | Reply **Finalizar pedido** |
+| `none` | Checkout link, pago legacy, texto libre | — | Texto plano |
 
-`resolveBbcUiRoute` distingue el saludo por sus botones: **Vaciar carrito** solo aparece al saludar con carrito. Cuando la ruta delega en un flow, `dispatchOutbound` **omite** del texto lo que el flow va a mostrar (las opciones en `cart`, el enlace del catálogo en `catalog` y en `cart`).
+`resolveBbcUiRoute` prioriza `cart` (si hay botón vaciar) sobre `finalize` (solo botón finalizar). Cuando la ruta delega en un flow, `dispatchOutbound` **omite** del texto lo que el flow va a mostrar (enlace catálogo en `catalog`/`cart`, hint «escribe Finalizar pedido» en `finalize`).
 
 **Encadenado con `gotoFlow`:** WhatsApp no admite Reply y CTA URL en el mismo mensaje, así que el flow del saludo con carrito redirige al del catálogo (`options.gotoFlow`). El cliente recibe: texto del agente con el resumen → mensaje con el botón *Vaciar carrito* → mensaje con el botón *Ver catálogo*. El provisioning lo deja puesto al crear el answer. En un flow que ya existía se puede activar con `builderbot_update_answer` mandando **solo** `options.gotoFlow` (verificado en MASSI, ago 2026: los botones del panel sobrevivieron); mandar `message` sí arriesga borrarlos.
 
@@ -123,7 +126,7 @@ Relay HTTP (`sync-webhook`):
 
 - `avoidResponse: false`
 - `messageMapping: ''`
-- Reglas: `route === "catalog" | "cart"` → su flow UI
+- Reglas: `route === "catalog" | "cart" | "finalize"` → su flow UI
 
 **Diagnóstico:** `builderbot_read_logs` (MCP) devuelve los logs del contenedor, con el módulo `conditions` (evaluación de reglas), `pluginHttp` (`Goto flow …`) y `crmCloud` (`respondedBy: BOT` = lo envió un flow; `HOST` = lo envió IA Ventas por API v2).
 
@@ -269,7 +272,7 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 
 | Cliente | Sistema |
 |---------|---------|
-| `quiero [producto] [variante]` | Atajo determinista → resuelve variación → agrega → resumen + invitación a enviar otro *ID* · sin flow: **Finalizar pedido** va como opción escrita |
+| `quiero [producto] [variante]` | Atajo determinista → resuelve variación → agrega → resumen (agente) + flow **Finalizar Pedido** (botón Reply) |
 | `cadena 45cm y balín #3` (varios productos) | `parseMultiProductSelection` → resuelve cada segmento; éxito parcial si uno no existe en WC |
 | `dos unidades de CAD-ORO-45 y una de CAD-ORO-60` | Segmenta por **ID explícito** (`extractExplicitSkus`, separadores `,` / `y`) aunque no se nombre el producto; cantidad por segmento (`extractSpokenQuantity`, también en palabras) y los IDs repetidos suman unidades |
 | `otra de 45 cm` (con carrito activo) | Misma familia de producto → variación hermana por atributo |
@@ -390,9 +393,9 @@ Bot:     Link de nuestro Catálogo Oficial
 Cliente: BAL-DI6-01
 Bot:     ¡Listo! Agregué Balín diamantado #6…
          Dime el ID de otro producto si quieres agregar más.
-
-         Responde con una de estas opciones:
-         • *Finalizar pedido*
+Bot:     ¿Listo para cerrar tu pedido?              ← flow Finalizar Pedido
+         Toca el botón de abajo…
+         [ Finalizar pedido ]                       ← botón Reply
 
 Cliente: quisiera eliminar mi carrito
 Bot:     Listo, vacié tu carrito. ¿Qué te gustaría pedir?
@@ -582,6 +585,14 @@ Violarlas produce fallos **silenciosos**, no errores:
 |-------|--------------------------|
 | Vaciar carrito | `massi:cart:clear` |
 
+**IA Ventas — Finalizar Pedido** (`¿Listo para cerrar tu pedido?…`) → **+ Reply**:
+
+| Texto | ID (si el panel lo pide) |
+|-------|--------------------------|
+| Finalizar pedido | `massi:cart:finalize` |
+
+> **No agregues keywords** como `hola` en flows UI: el enrutamiento es automático vía `{ route }`. Keywords centinela `__ia_ventas_route_*__` con `listenKeywords: false`.
+
 3. Deploy / Reboot del bot en BBC.
 
 > **Flow Pago UI:** ya **no** se provisiona (jul 2026). Si existe en BBC de un negocio antiguo, puedes eliminarlo; el pago legacy va por texto API v2.
@@ -647,7 +658,8 @@ Luego en panel → WhatsApp → **Re-sincronizar webhook**.
 - [ ] **hola** (con carrito previo) → saludo + resumen + opciones **Finalizar pedido** / **Vaciar carrito** + enlace catálogo
 - [ ] Escribir **Vaciar carrito** → carrito vacío + vuelve a pedir ID
 - [ ] **qué productos tienen** → enlace catálogo (no lista en chat)
-- [ ] **ID/SKU** o descripción natural → carrito + opción **Finalizar pedido**
+- [ ] **ID/SKU** o descripción natural → carrito + botón **Finalizar pedido** (flow)
+- [ ] Pulsar **Finalizar pedido** → enlace **Continuar compra** → formulario WC con `items=SKU:qty`
 - [ ] **quisiera eliminar mi carrito** → vacía carrito
 - [ ] **Dos productos** en un mensaje (`cadena y balín`) → ambos si existen en WC
 - [ ] Segunda variante del mismo producto (*otra de X*) → suma al carrito
@@ -697,4 +709,4 @@ El plugin:
 
 ---
 
-*Última actualización: 30 julio 2026 — OTP/notificaciones vía `/channel/messages`; flows BBC solo saludo (sin Pago UI); validación comprobantes en `/validacion-de-pagos/`.*
+*Última actualización: agosto 2026 — flow **Finalizar Pedido** (`route: finalize`); toggle agente; OTP/notificaciones vía `/channel/messages`; validación comprobantes en `/validacion-de-pagos/`.*

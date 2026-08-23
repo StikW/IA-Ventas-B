@@ -64,7 +64,9 @@ function tokenMatchesProductBlob(token: string, blob: string): boolean {
 function stripCartTargetNoise(text: string): string {
   return text
     .replace(/^(?:por favor\s+)?(?:me\s+)?(?:quiero\s+)?(?:eliminar|quitar|sacar|remover|borrar)\s+/i, '')
-    .replace(/^no\s+quiero\s+/i, '')
+    .replace(/^(?:ya\s+)?no\s+(?:lo\s+|la\s+|los\s+|las\s+)?quiero\s+/i, '')
+    .replace(/^(?:otra|otro)\s+(?:unidad|pieza|m[aá]s)\s+(?:de|del|de\s+la|de\s+el)?\s*/i, '')
+    .replace(/^(?:una?\s+m[aá]s)\s+(?:de|del|de\s+la)?\s*/i, '')
     .replace(/^(?:deja(?:r)?\s+(?:solo|solamente)|pon(?:er)?|baja(?:r)?\s+a|cambia(?:r)?\s+a)\s+/i, '')
     .replace(/^(?:las?|los?|el|la|del|de la|de)\s+/i, '')
     .trim();
@@ -156,6 +158,16 @@ export function findBestCartMatch(items: PendingCartItem[], target: CartTargetSp
   return findCartMatches(items, target)[0];
 }
 
+/** "cómo va mi carrito", "qué hay en el carrito": solo quiere ver el resumen. */
+export function isCartReviewIntent(text: string): boolean {
+  const t = normalizeProductText(text);
+  return (
+    /(?:como|qu[eé])\s+(?:va|hay|tiene|tienes|est[aá])\s+(?:mi\s+|el\s+|en\s+(?:el\s+|mi\s+)?)?carrito/.test(t) ||
+    /(?:ver|mostrar|muestra|ense[nñ]a)\s+(?:mi\s+|el\s+)?carrito/.test(t) ||
+    /resumen\s+(?:de\s+)?(?:mi\s+|el\s+)?(?:carrito|pedido)/.test(t)
+  );
+}
+
 export function isCartClearIntent(text: string): boolean {
   const t = normalizeProductText(text);
 
@@ -174,12 +186,83 @@ export function isCartClearIntent(text: string): boolean {
   return false;
 }
 
+/**
+ * Referencias al carrito entero o a algo dicho antes: "todo el carrito", "los productos
+ * que te dije". No nombran un producto, así que buscarlas en el catálogo siempre falla.
+ */
+const VAGUE_TARGET_PATTERN =
+  /^(?:todo|todos|toda|todas|nada|eso|esto|lo\s+dem[aá]s|el\s+carrito|mi\s+carrito|el\s+pedido|mi\s+pedido|los?\s+productos?|las?\s+cosas?)\b|que\s+te\s+(?:dije|mencione|ped[ií]|comente|pase)|\b(?:anterior(?:mente)?|antes|previo|arriba|mencionados?|los\s+mismos|lo\s+mismo)\b/;
+
+export function isVagueCartTarget(text: string): boolean {
+  const t = normalizeProductText(text)
+    .replace(/^(?:de\s+|del\s+|los\s+|las\s+|el\s+|la\s+)+/, '')
+    .trim();
+  if (!t) return true;
+  return VAGUE_TARGET_PATTERN.test(t);
+}
+
+/**
+ * "solo quiero saber el precio" no debe tocar el carrito. Sin `que`: es pronombre relativo
+ * en frases legítimas como "solo los que te dije".
+ */
+const QUESTION_PATTERN =
+  /\?|\b(?:cu[aá]nto|cu[aá]l|c[oó]mo|cuando|donde|tienen|hay|precio|vale|cuesta|saber|informacion)\b/;
+
+/** El cliente quita algo puntual, aunque diga "solo": no redefine el carrito. */
+const REMOVAL_VERB_PATTERN = /\b(?:quitar|quita|eliminar|elimina|sacar|saca|remover|borrar|borra|vaciar)\b/;
+
 export function isCartCorrectionIntent(text: string): boolean {
+  if (isCartKeepOnlyIntent(text)) return false;
   const t = normalizeProductText(text);
   return (
     /no\s+quiero/.test(t) &&
     /(?:solo|solamente|nom[aá]s|nada\s+m[aá]s|unicamente|\bquiero\s+(?:solo|una?|un\b))/.test(t)
   );
+}
+
+/**
+ * El cliente redefine el carrito completo: "solo quiero la cadena de 45 y el anillo talla 7",
+ * "no quiero todo el carrito, solo los dos que te dije". Distinto de una corrección puntual
+ * ("no quiero las de 50cm, solo una de 45cm"), que sí conserva el resto del carrito.
+ */
+export function isCartKeepOnlyIntent(text: string): boolean {
+  const t = normalizeProductText(text);
+  if (QUESTION_PATTERN.test(t) || REMOVAL_VERB_PATTERN.test(t)) return false;
+
+  // "no quiero todo el carrito, solo …": el rechazo apunta al carrito entero.
+  if (
+    /no\s+quiero\s+(?:todo|todos|toda|todas|nada)\b/.test(t) &&
+    /\b(?:solo|solamente|unicamente)\b/.test(t)
+  ) {
+    return true;
+  }
+
+  if (/^(?:pues\s+|entonces\s+|ok\s+|bueno\s+|mira\s+)?(?:solo|solamente|unicamente)\s+(?:quiero|necesito|deseo|me\s+llevo|llevo|me\s+quedo)\b/.test(t)) {
+    return true;
+  }
+
+  if (/^(?:me\s+)?(?:quiero|quedo|llevo|necesito|deseo)\s+(?:solo|solamente|unicamente)\b/.test(t)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Parte del mensaje que describe con qué debe quedarse el carrito. `previousReference`
+ * marca los casos en que el cliente apunta a lo último que pidió y no a un producto.
+ */
+export function parseCartKeepOnly(text: string): { wanted: string; previousReference: boolean } | null {
+  if (!isCartKeepOnlyIntent(text)) return null;
+
+  const t = normalizeProductText(text);
+  const marker = t.match(/\b(?:solo|solamente|unicamente)\b\s*(.*)$/);
+  const rest = (marker?.[1] ?? '')
+    .replace(/^(?:quiero|necesito|deseo|me\s+llevo|llevo|me\s+quedo(?:\s+con)?)\s+/, '')
+    .trim();
+
+  if (!rest) return null;
+  return { wanted: rest, previousReference: isVagueCartTarget(rest) };
 }
 
 export function isCartSetQuantityIntent(text: string): boolean {
@@ -190,10 +273,54 @@ export function isCartSetQuantityIntent(text: string): boolean {
   );
 }
 
+/** "ya no quiero el dije de corazón": rechaza un ítem del carrito, no pide el catálogo. */
+export function isCartRejectIntent(text: string): boolean {
+  if (isCartCorrectionIntent(text) || isCartKeepOnlyIntent(text) || isCartClearIntent(text)) return false;
+  const t = normalizeProductText(text);
+  if (QUESTION_PATTERN.test(t)) return false;
+  return /(?:ya\s+)?no\s+(?:lo\s+|la\s+|los\s+|las\s+)?quiero/.test(t);
+}
+
+/** "otra unidad del dije de la virgen": suma 1 a un ítem que ya está en el carrito. */
+export function isCartIncrementIntent(text: string): boolean {
+  if (
+    isCartCorrectionIntent(text) ||
+    isCartKeepOnlyIntent(text) ||
+    isCartClearIntent(text) ||
+    isCartRejectIntent(text) ||
+    isCartSetQuantityIntent(text)
+  ) {
+    return false;
+  }
+  const t = normalizeProductText(text);
+  return /(?:otra|otro)\s+(?:unidad|pieza|mas|m[aá]s)\b|una?\s+m[aá]s\b/.test(t);
+}
+
 export function isCartRemoveIntent(text: string): boolean {
   if (isCartClearIntent(text) || isCartCorrectionIntent(text) || isCartSetQuantityIntent(text)) return false;
   const t = normalizeProductText(text);
-  return /eliminar|quitar|sacar|remover|borrar/.test(t);
+  return /eliminar|quitar|sacar|remover|borrar/.test(t) || isCartRejectIntent(text);
+}
+
+/**
+ * "ya no quiero X y quiero otra unidad de Y": quitar una cosa y ajustar otra en el mismo mensaje.
+ */
+const CART_EDIT_SPLIT =
+  /\s+y\s+(?:(?:tambi[eé]n\s+)?(?:quiero|necesito|deseo|agrega(?:r)?|suma(?:r)?|a[nñ]ade(?:r)?|pon(?:er)?))\s+/i;
+
+export function splitCartEditClauses(text: string): { reject: string; want?: string } {
+  const trimmed = text.trim();
+  const match = trimmed.match(CART_EDIT_SPLIT);
+  if (!match || match.index == null) return { reject: trimmed };
+
+  const reject = trimmed.slice(0, match.index).trim();
+  const want = trimmed.slice(match.index + match[0].length).trim();
+  return want ? { reject, want } : { reject: trimmed };
+}
+
+export function isCartIncrementPhrase(text: string): boolean {
+  const t = normalizeProductText(text);
+  return /(?:otra|otro)\s+(?:unidad|pieza|mas|m[aá]s)\b|una?\s+m[aá]s\b/.test(t);
 }
 
 export interface CartCorrectionParts {
@@ -224,8 +351,10 @@ export interface CartRemoveRequest {
 
 export function parseCartRemove(text: string): CartRemoveRequest {
   const t = normalizeProductText(text);
-  const removeAll = /todas?|todo|completo/.test(t);
-  const target = extractCartTarget(text, removeAll ? 99 : 1);
+  const explicitQty = extractQuantityFromText(text, 0);
+  const rejectAll = isCartRejectIntent(text) && explicitQty <= 0;
+  const removeAll = /todas?|todo|completo/.test(t) || rejectAll;
+  const target = extractCartTarget(text, removeAll ? 99 : explicitQty > 0 ? explicitQty : 1);
 
   return { target, removeAll };
 }

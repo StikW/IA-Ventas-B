@@ -6,6 +6,7 @@ import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.ty
 import { BbcUiRoute } from '../../../builderbot/domain/BbcWebhookAgentResponse';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 import { CATALOG_CTA_LABEL, resolveStoreCatalogUrl } from '../../domain/catalogUrl.utils';
+import { EMOJI, warmMorePrompt } from '../../domain/tone.utils';
 import {
   CHECKOUT_CTA_LABEL,
   isCartContinueShoppingIntent,
@@ -211,9 +212,14 @@ export class ConversationFlowService {
     const catalogUrl = await this.resolveCatalogUrl(tenantId);
 
     // Las opciones (vaciar, modificar, catálogo) las explica el flow BBC que llega después.
-    const body = [intro, '', '🛒 Tienes un pedido en curso:', CartService.formatSummary(items)].join(
-      '\n'
-    );
+    const body = [
+      intro,
+      '',
+      '🛒 Tienes un pedido en curso:',
+      CartService.formatSummary(items),
+      '',
+      'Para cerrar la compra, escribe *Finalizar pedido*.',
+    ].join('\n');
 
     const messages: OutboundWhatsAppMessage[] = [
       {
@@ -342,10 +348,19 @@ export class ConversationFlowService {
   buildCartActionPrompt(salesContext: SalesContext, introLine: string): ConversationFlowResult {
     const items = salesContext.cartItems ?? [];
 
+    // Un listado de opciones ya pide el ID y trae su propio cierre; añadirle el resumen
+    // del carrito y otra petición de ID producía mensajes de veinte líneas repetidas.
+    const introAsksForId = /\*ID\*/.test(introLine);
+    const introIsStoreError = /error al consultar|no pude consultar|intenta de nuevo|no est[aá] conectado/i.test(
+      introLine
+    );
+
     if (!items.length) {
-      const emptyBody = [introLine, '', 'Envíame el *ID* del producto que te interesa.']
-        .filter(Boolean)
-        .join('\n');
+      const emptyBody = introAsksForId || introIsStoreError
+        ? introLine
+        : [introLine, '', `Envíame el *ID* del producto que te interesa ${EMOJI.sparkle}`]
+            .filter(Boolean)
+            .join('\n');
       return {
         replyText: emptyBody,
         outbound: { kind: 'text', body: emptyBody },
@@ -353,13 +368,20 @@ export class ConversationFlowService {
       };
     }
 
-    const body = [
-      introLine,
-      '',
-      CartService.formatSummary(items),
-      '',
-      'Dime el *ID* de otro producto si quieres agregar más.',
-    ]
+    // Un listado de opciones (o un fallo al consultarlo) no cierra la compra.
+    if (introAsksForId || introIsStoreError) {
+      return {
+        replyText: introLine,
+        outbound: { kind: 'text', body: introLine },
+        salesContext: {
+          ...salesContext,
+          phase: 'browsing',
+          flowStep: items.length ? 'buying' : 'discovery',
+        },
+      };
+    }
+
+    const body = [introLine, '', CartService.formatSummary(items), '', warmMorePrompt(items.length)]
       .filter(Boolean)
       .join('\n');
 
@@ -370,6 +392,7 @@ export class ConversationFlowService {
         body,
         buttons: [{ id: WA_BTN.CART_FINALIZE, body: WA_BTN_LABEL.CART_FINALIZE }],
       },
+      uiRoute: 'finalize',
       salesContext: {
         ...salesContext,
         phase: 'browsing',

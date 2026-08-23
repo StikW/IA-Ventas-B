@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  extractCatalogRefsFromChunks,
   extractPackSizeHint,
   extractSkusFromCatalogField,
   parseCatalogProductFields,
@@ -71,5 +72,14 @@ describe('catalogRag.utils', () => {
 
   it('detecta pack desde variaciones', () => {
     expect(extractPackSizeHint('2 balines #6', '1 Balín|2 Balines|5 Balines|10 Balines')).toBe(2);
+  });
+
+  it('extrae varios productos de chunks RAG para un listado por forma', () => {
+    const refs = extractCatalogRefsFromChunks([
+      { content: 'Producto: Dije Elefante\nSKU: DJ-ELE-01' },
+      { content: 'Producto: Dije Mariposa\nSKU: DJ-MAR-LIS1' },
+    ]);
+    expect(refs.names).toEqual(['Dije Elefante', 'Dije Mariposa']);
+    expect(refs.skus).toEqual(['DJ-ELE-01', 'DJ-MAR-LIS1']);
   });
 });

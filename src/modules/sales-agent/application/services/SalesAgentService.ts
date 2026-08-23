@@ -15,10 +15,11 @@ import { CreateOrderUseCase } from '../../../commerce/application/use-cases/Orde
 import { OrderItem } from '../../../commerce/domain/entities/Order.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
-import { ChatMessage, IChatSessionRepository, PendingCartItem, SalesContext } from '../../domain/IChatSessionRepository';
+import { ChatMessage, IChatSessionRepository, OfferedOption, PendingCartItem, SalesContext } from '../../domain/IChatSessionRepository';
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
 import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
 import {
+  ConversationFlowResult,
   ConversationFlowService,
   OutboundWhatsAppMessage,
   OutboundWhatsAppPayload,
@@ -31,9 +32,11 @@ import {
 import { CATALOG_CTA_LABEL } from '../../domain/catalogUrl.utils';
 import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
-import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent } from '../../domain/whatsappFlow.constants';
-import { isCartClearIntent, isCartCorrectionIntent, isCartRemoveIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
-import { hasConcreteProductSpec, isCatalogBrowseIntent, isProductFamilyBrowseIntent, normalizeUserTypos, extractVariantHint } from '../../domain/productSelection.utils';
+import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent, WA_BTN, WA_BTN_LABEL } from '../../domain/whatsappFlow.constants';
+import { isCartClearIntent, isCartCorrectionIntent, isCartIncrementIntent, isCartKeepOnlyIntent, isCartRemoveIntent, isCartReviewIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
+import { extractAllVariantHints, hasConcreteProductSpec, isCatalogBrowseIntent, isProductFamilyBrowseIntent, isProductOptionsBrowseIntent, isThemeBrowseIntent, normalizeUserTypos, extractVariantHint } from '../../domain/productSelection.utils';
+import { findOfferedOption } from '../../domain/optionReference.utils';
+import { EMOJI, warmAddedOpener } from '../../domain/tone.utils';
 import { WhatsAppCatalogOrderProduct } from '../../../builderbot/domain/whatsappCatalogOrder.utils';
 
 const AGENT_ACTOR = 'system:sales-agent';
@@ -122,7 +125,7 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'agregar_al_carrito',
       description:
-        'Agrega producto(s) al carrito tras verificar stock por SKU. NO inicia el pago. Después debes preguntar si desea agregar algo más.',
+        'Agrega uno o varios productos al carrito por su ID (SKU). Nombre, precio y stock los toma WooCommerce: no los envíes. PROHIBIDO agregar varias variaciones del mismo producto si el cliente no eligió cada una; en ese caso lista las opciones con su ID y espera. NO inicia el pago.',
       parameters: {
         type: 'object',
         properties: {
@@ -132,14 +135,10 @@ const SALES_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
             items: {
               type: 'object',
               properties: {
-                productId: { type: 'number' },
-                variationId: { type: 'number' },
-                sku: { type: 'string' },
-                name: { type: 'string' },
-                quantity: { type: 'number' },
-                unitPrice: { type: 'number' },
+                sku: { type: 'string', description: 'ID/SKU exacto de la variación en WooCommerce' },
+                cantidad: { type: 'number', description: 'Cantidad (default 1)' },
               },
-              required: ['productId', 'sku', 'name', 'quantity', 'unitPrice'],
+              required: ['sku'],
             },
           },
         },
@@ -431,16 +430,49 @@ export class SalesAgentService {
       return { replied: true, reply: finalizeReply.message, bbcResponse };
     }
 
+    if (isCartReviewIntent(text) && mutableContext.cartItems?.length) {
+      const review = this.conversationFlow.buildCartActionPrompt(
+        mutableContext,
+        `${EMOJI.cart} Así va tu pedido ahora:`
+      );
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: review.replyText,
+        salesContext: { ...mutableContext, ...review.salesContext },
+        outbound: review.outbound,
+        uiRoute: review.uiRoute,
+        now: new Date().toISOString(),
+        ragHits: 0,
+      });
+      return { replied: true, reply: review.replyText, bbcResponse };
+    }
+
     const cartModIntent =
       isCartClearIntent(text) ||
       (mutableContext.cartItems?.length &&
-        (isCartRemoveIntent(text) || isCartCorrectionIntent(text) || isCartSetQuantityIntent(text)));
+        (isCartKeepOnlyIntent(text) ||
+          isCartRemoveIntent(text) ||
+          isCartCorrectionIntent(text) ||
+          isCartSetQuantityIntent(text) ||
+          isCartIncrementIntent(text)));
 
     if (cartModIntent) {
-      const mod = await this.tools.applyCartModification(input.tenantId, text, mutableContext.cartItems ?? []);
+      const mod = await this.tools.applyCartModification(
+        input.tenantId,
+        text,
+        mutableContext.cartItems ?? [],
+        { lastAddedSkus: mutableContext.lastAddedSkus }
+      );
       if (mod.handled) {
         mutableContext.cartItems = mod.items;
         mutableContext.flowStep = mod.items.length ? 'buying' : 'discovery';
+        mutableContext.lastAddedSkus = mod.items.map((item) => item.sku);
+        mutableContext.lastOptions = undefined;
         const now = new Date().toISOString();
         const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, mod.message);
         const bbcResponse = await this.persistAndReply({
@@ -458,6 +490,41 @@ export class SalesAgentService {
         });
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
+    }
+
+    // "el primero", "la segunda": la respuesta se refiere al listado anterior. Sin esto la
+    // frase llega al LLM, que no sabe qué se mostró y acaba volcando al carrito todas las
+    // variaciones del producto padre.
+    // "el 5", "qué opciones hay del 5", "opciones del anillo elefante": se refieren
+    // al último listado, aunque el mensaje también nombre una familia.
+    const optionReference = mutableContext.lastOptions?.length
+      ? findOfferedOption(text, mutableContext.lastOptions)
+      : null;
+
+    if (optionReference) {
+      const chosen = mutableContext.lastOptions![optionReference.index]!;
+      const optionReply = await this.resolveOfferedOption(
+        input,
+        mutableContext,
+        chosen,
+        optionReference.quantity
+      );
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: optionReply.replyText,
+        salesContext: { ...mutableContext, ...optionReply.salesContext },
+        outbound: optionReply.outbound,
+        uiRoute: optionReply.uiRoute,
+        now: new Date().toISOString(),
+        ragHits: 0,
+        listedOptions: optionReply.salesContext.lastOptions,
+      });
+      return { replied: true, reply: optionReply.replyText, bbcResponse };
     }
 
     if (
@@ -497,7 +564,7 @@ export class SalesAgentService {
     }
 
     if (isProductFamilyBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
-      const hasDirectSelection = Boolean(extractVariantHint(text));
+      const hasDirectSelection = Boolean(extractVariantHint(text)) && !isProductOptionsBrowseIntent(text);
 
       if (hasDirectSelection) {
         const selection = await this.tools.resolveSelectionsFromText(input.tenantId, text, 1, {
@@ -505,14 +572,10 @@ export class SalesAgentService {
         });
         if (selection.items?.length) {
           this.addItemsToCart(input, mutableContext, selection.items);
-          const addedNames = selection.items.map((item) => `*${item.name}*`).join(', ');
-          let introLine =
-            selection.items.length === 1
-              ? `¡Listo! Agregué ${addedNames} a tu pedido.`
-              : `¡Listo! Agregué ${selection.items.length} productos a tu pedido: ${addedNames}.`;
-          if (selection.message) introLine = `${introLine} ${selection.message}`;
-
-          const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, introLine);
+          const cartPrompt = this.conversationFlow.buildCartActionPrompt(
+            mutableContext,
+            this.buildAddedIntroLine(selection.items, selection.message)
+          );
           const now = new Date().toISOString();
           const bbcResponse = await this.persistAndReply({
             tenantId: input.tenantId,
@@ -526,6 +589,33 @@ export class SalesAgentService {
             outbound: cartPrompt.outbound,
             now,
             ragHits: 0,
+          });
+          return { replied: true, reply: cartPrompt.replyText, bbcResponse };
+        }
+
+        // Varias coincidencias para la descripción: mostrar el listado con IDs.
+        if (selection.needsChoice) {
+          const cartPrompt = this.conversationFlow.buildCartActionPrompt(
+            mutableContext,
+            selection.message
+          );
+          const bbcResponse = await this.persistAndReply({
+            tenantId: input.tenantId,
+            deviceId: input.deviceId,
+            customerPhone: input.customerPhone,
+            messageId: input.messageId,
+            history,
+            userText: text,
+            reply: cartPrompt.replyText,
+            salesContext: {
+              ...mutableContext,
+              ...cartPrompt.salesContext,
+              lastOptions: selection.options ?? [],
+            },
+            outbound: cartPrompt.outbound,
+            now: new Date().toISOString(),
+            ragHits: 0,
+            listedOptions: selection.options,
           });
           return { replied: true, reply: cartPrompt.replyText, bbcResponse };
         }
@@ -544,10 +634,15 @@ export class SalesAgentService {
           history,
           userText: text,
           reply: cartPrompt.replyText,
-          salesContext: { ...mutableContext, ...cartPrompt.salesContext },
+          salesContext: {
+            ...mutableContext,
+            ...cartPrompt.salesContext,
+            lastOptions: browse.options ?? [],
+          },
           outbound: cartPrompt.outbound,
           now,
           ragHits: 0,
+          listedOptions: browse.options,
         });
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
@@ -571,6 +666,50 @@ export class SalesAgentService {
         ragHits: 0,
       });
       return { replied: true, reply: helpPrompt.replyText, bbcResponse };
+    }
+
+    if (isThemeBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
+      const theme = await this.tools.resolveThemeBrowse(input.tenantId, text);
+      if (theme.ok) {
+        const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, theme.message);
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: cartPrompt.replyText,
+          salesContext: {
+            ...mutableContext,
+            ...cartPrompt.salesContext,
+            lastOptions: theme.options ?? [],
+          },
+          outbound: cartPrompt.outbound,
+          now: new Date().toISOString(),
+          ragHits: 0,
+          listedOptions: theme.options,
+        });
+        return { replied: true, reply: cartPrompt.replyText, bbcResponse };
+      }
+
+      const miss =
+        theme.message ||
+        `No encontré piezas con esa forma en la tienda. Prueba con un nombre más concreto o el *ID*.`;
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: miss,
+        salesContext: mutableContext,
+        outbound: { kind: 'text', body: miss },
+        now: new Date().toISOString(),
+        ragHits: 0,
+      });
+      return { replied: true, reply: miss, bbcResponse };
     }
 
     if (isCatalogBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
@@ -604,15 +743,11 @@ export class SalesAgentService {
       });
       if (selection.items?.length) {
         this.addItemsToCart(input, mutableContext, selection.items);
-        const addedNames = selection.items.map((item) => `*${item.name}*`).join(', ');
-        let introLine =
-          selection.items.length === 1 ?
-            `¡Listo! Agregué ${addedNames} a tu pedido.`
-          : `¡Listo! Agregué ${selection.items.length} productos a tu pedido: ${addedNames}.`;
-        if (selection.message) {
-          introLine = `${introLine} ${selection.message}`;
-        }
-        const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, introLine);
+        mutableContext.lastOptions = undefined;
+        const cartPrompt = this.conversationFlow.buildCartActionPrompt(
+          mutableContext,
+          this.buildAddedIntroLine(selection.items, selection.message)
+        );
         const now = new Date().toISOString();
         const bbcResponse = await this.persistAndReply({
           tenantId: input.tenantId,
@@ -630,8 +765,9 @@ export class SalesAgentService {
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
 
+      // Varias coincidencias o variaciones por elegir: el mensaje ya trae el listado con IDs.
       // Falta de stock: el detalle importa. Producto no identificado: pedir ID + catálogo.
-      if (STOCK_ISSUE_PATTERN.test(selection.message)) {
+      if (selection.needsChoice || STOCK_ISSUE_PATTERN.test(selection.message)) {
         const now = new Date().toISOString();
         const cartPrompt = this.conversationFlow.buildCartActionPrompt(
           mutableContext,
@@ -645,10 +781,15 @@ export class SalesAgentService {
           history,
           userText: text,
           reply: cartPrompt.replyText,
-          salesContext: { ...mutableContext, ...cartPrompt.salesContext },
+          salesContext: {
+            ...mutableContext,
+            ...cartPrompt.salesContext,
+            ...(selection.options ? { lastOptions: selection.options } : {}),
+          },
           outbound: cartPrompt.outbound,
           now,
           ragHits: 0,
+          listedOptions: selection.options,
         });
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
@@ -675,12 +816,17 @@ export class SalesAgentService {
       return { replied: true, reply: helpPrompt.replyText, bbcResponse };
     }
 
+    // Variaciones agregadas por producto padre en este turno: el modelo intentaba volcar
+    // todas las que devolvía el RAG cuando el cliente solo nombraba el producto.
+    const addedThisTurn = new Map<number, number>();
+
     const reply = await this.chat.completeWithTools({
       systemPrompt,
       history,
       userMessage: text,
       tools: SALES_TOOLS,
-      onToolCall: async (name, args) => this.executeTool(name, args, input, mutableContext),
+      onToolCall: async (name, args) =>
+        this.executeTool(name, args, input, mutableContext, addedThisTurn),
     });
 
     const now = new Date().toISOString();
@@ -906,7 +1052,8 @@ export class SalesAgentService {
     name: string,
     args: Record<string, unknown>,
     input: SalesAgentMessageInput,
-    salesContext: SalesContext
+    salesContext: SalesContext,
+    addedThisTurn: Map<number, number>
   ): Promise<string> {
     switch (name) {
       case 'buscar_en_documentos':
@@ -934,16 +1081,34 @@ export class SalesAgentService {
         const built = await this.tools.buildOrderItemBySku(input.tenantId, sku, quantity);
         if (!built.ok || !built.item) return built.message;
 
+        const blocked = this.guardVariationFlood(input.text, [built.item], addedThisTurn);
+        if (blocked) return blocked;
+
         return this.addItemsToCart(input, salesContext, [built.item], args.nombre_cliente);
       }
       case 'agregar_al_carrito': {
-        const newItems = this.parseOrderItems(args.productos);
-        if (!newItems.length) return 'Debes indicar al menos un producto válido con SKU.';
+        const requested = this.parseRequestedSkus(args.productos);
+        if (!requested.length) return 'Debes indicar al menos un ID (SKU) de producto.';
 
-        const stockCheck = await this.tools.validateCartStock(input.tenantId, newItems);
-        if (!stockCheck.ok) return stockCheck.message;
+        const newItems: OrderItem[] = [];
+        const errors: string[] = [];
+        for (const row of requested) {
+          // Nombre y precio salen de WooCommerce: si los pusiera el modelo, podría
+          // cobrarle al cliente un precio que no existe.
+          const built = await this.tools.buildOrderItemBySku(input.tenantId, row.sku, row.quantity);
+          if (built.ok && built.item) newItems.push(built.item);
+          else errors.push(built.message);
+        }
 
-        return this.addItemsToCart(input, salesContext, newItems, args.nombre_cliente);
+        if (!newItems.length) {
+          return errors[0] ?? 'Ninguno de esos ID corresponde a un producto de la tienda.';
+        }
+
+        const blocked = this.guardVariationFlood(input.text, newItems, addedThisTurn);
+        if (blocked) return blocked;
+
+        const added = this.addItemsToCart(input, salesContext, newItems, args.nombre_cliente);
+        return errors.length ? `${added}\nNo pude agregar: ${errors.join(' ')}` : added;
       }
       case 'finalizar_compra':
       case 'preparar_pago': {
@@ -959,6 +1124,59 @@ export class SalesAgentService {
       default:
         return `Herramienta desconocida: ${name}`;
     }
+  }
+
+  private buildAddedIntroLine(items: OrderItem[], note?: string): string {
+    const seed = items.map((item) => item.sku).join('|');
+    const names = items.map((item) => `*${item.name}*`).join(', ');
+    const intro =
+      items.length === 1
+        ? `${warmAddedOpener(seed)} Agregué ${names} a tu pedido ${EMOJI.cart}`
+        : `${warmAddedOpener(seed)} Sumé ${items.length} productos a tu pedido ${EMOJI.cart} ${names}.`;
+
+    return note?.trim() ? `${intro} ${note.trim()}` : intro;
+  }
+
+  /**
+   * El cliente eligió por posición. Un producto variable no tiene SKU propio en
+   * WooCommerce: hay que mostrar sus variaciones, nunca agregarlas todas.
+   */
+  private async resolveOfferedOption(
+    input: SalesAgentMessageInput,
+    salesContext: SalesContext,
+    option: OfferedOption,
+    quantity: number
+  ): Promise<ConversationFlowResult> {
+    if (!option.sku || option.variable) {
+      const listed = await this.tools.describeProductOptionsById(input.tenantId, option.productId);
+      if (!listed.ok) {
+        return {
+          replyText: listed.message,
+          outbound: { kind: 'text', body: listed.message },
+          salesContext,
+        };
+      }
+
+      const prompt = this.conversationFlow.buildCartActionPrompt(salesContext, listed.message);
+      return {
+        ...prompt,
+        salesContext: { ...prompt.salesContext, lastOptions: listed.options ?? [] },
+      };
+    }
+
+    const built = await this.tools.buildOrderItemBySku(input.tenantId, option.sku, quantity);
+    if (!built.ok || !built.item) {
+      return this.conversationFlow.buildCartActionPrompt(salesContext, built.message);
+    }
+
+    this.addItemsToCart(input, salesContext, [built.item]);
+    const qtyLabel = quantity > 1 ? `${quantity} de ` : '';
+    const intro = `${warmAddedOpener(option.sku)} Agregué ${qtyLabel}*${built.item.name}* a tu pedido ${EMOJI.cart}`;
+    const prompt = this.conversationFlow.buildCartActionPrompt(salesContext, intro);
+    return {
+      ...prompt,
+      salesContext: { ...prompt.salesContext, lastOptions: undefined },
+    };
   }
 
   private addItemsToCart(
@@ -977,6 +1195,7 @@ export class SalesAgentService {
       flowStep: 'buying' as const,
       cartItems: merged,
       customerName,
+      lastAddedSkus: newItems.map((item) => item.sku),
     });
 
     const summary = CartService.formatSummary(merged);
@@ -1089,21 +1308,48 @@ export class SalesAgentService {
     };
   }
 
-  private parseOrderItems(raw: unknown): OrderItem[] {
+  private parseRequestedSkus(raw: unknown): { sku: string; quantity: number }[] {
     if (!Array.isArray(raw)) return [];
     return raw
-      .map((item) => {
-        const row = item as Record<string, unknown>;
+      .map((entry) => {
+        const row = entry as Record<string, unknown>;
+        const quantity = Number(row.cantidad ?? row.quantity ?? 1);
         return {
-          productId: Number(row.productId),
-          variationId: row.variationId ? Number(row.variationId) : undefined,
-          sku: String(row.sku ?? ''),
-          name: String(row.name ?? ''),
-          quantity: Number(row.quantity ?? 1),
-          unitPrice: Number(row.unitPrice ?? 0),
+          sku: String(row.sku ?? '').trim(),
+          quantity: Number.isFinite(quantity) && quantity > 0 ? Math.floor(quantity) : 1,
         };
       })
-      .filter((item) => item.productId > 0 && item.sku && item.name && item.quantity > 0);
+      .filter((row) => row.sku.length > 0);
+  }
+
+  /**
+   * El cliente solo puede recibir tantas variaciones de un mismo producto como medidas
+   * haya nombrado. Sin este límite, un "el primero" acababa con seis tallas del mismo
+   * anillo en el carrito porque el modelo agregaba todo lo que devolvía el RAG.
+   */
+  private guardVariationFlood(
+    userText: string,
+    items: OrderItem[],
+    addedThisTurn: Map<number, number>
+  ): string | null {
+    const allowedPerParent = Math.max(1, extractAllVariantHints(userText).length);
+    const counts = new Map(addedThisTurn);
+
+    for (const item of items) {
+      const total = (counts.get(item.productId) ?? 0) + 1;
+      counts.set(item.productId, total);
+
+      if (total > allowedPerParent) {
+        const parentName = item.name.split(' - ')[0]?.trim() || item.name;
+        return [
+          `No agregues varias opciones de "${parentName}" sin que el cliente elija una.`,
+          'Lista las opciones con su *ID* y espera a que indique cuál quiere.',
+        ].join(' ');
+      }
+    }
+
+    for (const [productId, total] of counts) addedThisTurn.set(productId, total);
+    return null;
   }
 
   private buildSystemPrompt(input: {
@@ -1137,22 +1383,25 @@ export class SalesAgentService {
           : input.flowStep === 'checkout_redirect'
             ? 'FASE ACTUAL: ya se envió enlace al formulario WC. Si pide el link → finalizar_compra. NO uses botones de pago en chat.'
             : input.flowStep === 'buying'
-              ? `FASE ACTUAL: carrito con ${input.cartItemCount} producto(s). El cliente cierra escribiendo *Finalizar pedido*; todo lo demás lo maneja por texto. Si agrega o cambia productos, usa agregar_producto_por_sku. NO llames finalizar_compra salvo confirmación explícita.`
+              ? `FASE ACTUAL: carrito con ${input.cartItemCount} producto(s). El cliente cierra con el botón o escribiendo *Finalizar pedido*; todo lo demás lo maneja por texto. Si agrega o cambia productos, usa agregar_producto_por_sku. NO llames finalizar_compra salvo confirmación explícita.`
               : input.flowStep === 'discovery' || input.flowStep === 'menu'
                 ? 'FASE ACTUAL: esperando ID de producto o descripción en lenguaje natural. El sistema intenta RAG→SKU automáticamente; si el LLM interviene, usa buscar_en_documentos para interpretar y luego agregar_producto_por_sku con el SKU. Si sigue sin haber un SKU claro, pide el ID en vez de proponer opciones.'
                 : 'FASE ACTUAL: exploración y venta.';
 
     return [
       `Eres el asistente de ventas por WhatsApp de "${input.businessName}".`,
-      'Responde en español, amable y conciso (máximo 3 párrafos).',
+      'Responde en español, cálido y conciso (máximo 3 párrafos). Usa 1 o 2 emojis por mensaje',
+      'para que suene cercano (💎 ✨ 🛒 😊) y varía tus frases: no repitas siempre la misma.',
       'FLUJO DE VENTA:',
       '1) Si el cliente escribe hola/menú, el sistema ya envió el saludo de bienvenida; no repitas otro saludo genérico.',
       '2) El cliente puede enviar el *ID del producto* (SKU) o describirlo en lenguaje natural (ej. "balín diamantado #6", "cadena de oro 50 cm").',
       '3) Para interpretar descripciones: buscar_en_documentos (RAG del catálogo) → extrae SKU → agregar_producto_por_sku. El backend también intenta RAG→SKU antes del LLM.',
       '4) PROHIBIDO sugerir productos al azar. Catálogo general → enlace; tipo concreto (cadena, anillo…) → el sistema lista variantes del producto padre en WC con *ID* visible.',
+      '4b) Si el cliente nombra un producto que tiene varias tallas/medidas SIN elegir una, NUNCA agregues nada: lista sus opciones numeradas con su *ID* y espera su elección. Agregar todas las variaciones de un producto es un error grave.',
+      '4c) Nunca menciones precios que no vengan de WooCommerce en este turno. Si no tienes el precio, no escribas "a consultar": consulta con las herramientas o pide el *ID*.',
       '5) Stock y precios: SIEMPRE WooCommerce por SKU/ID (verificar_stock, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
       '6) IDENTIFICADOR PRINCIPAL: ID = SKU interno. Al cliente siempre dile *ID*, nunca "SKU".',
-      '7) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a escribir *Finalizar pedido*.',
+      '7) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a pulsar *Finalizar pedido* (botón o texto).',
       '8) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce.',
       '9) NUNCA digas que un producto no existe si no llamaste a las herramientas de tienda en este turno.',
       '10) Usa la menor cantidad de herramientas posible por mensaje.',
@@ -1177,7 +1426,17 @@ export class SalesAgentService {
     uiRoute?: BbcUiRoute;
     now: string;
     ragHits: number;
+    /**
+     * Listado numerado de ESTE mensaje. Si se omite, se borra el anterior: «el 3»
+     * solo puede referirse a lo último que vio el cliente, no a un listado viejo.
+     */
+    listedOptions?: OfferedOption[];
   }): Promise<BbcWebhookAgentResponse> {
+    const salesContext: SalesContext = {
+      ...params.salesContext,
+      lastOptions: params.listedOptions?.length ? params.listedOptions : undefined,
+    };
+
     const updatedMessages: ChatMessage[] = [
       ...params.history,
       { role: 'user', content: params.userText, at: params.now },
@@ -1188,7 +1447,7 @@ export class SalesAgentService {
       tenantId: params.tenantId,
       customerPhone: params.customerPhone,
       messages: updatedMessages,
-      salesContext: params.salesContext,
+      salesContext,
       updatedAt: params.now,
     });
 
@@ -1312,7 +1571,13 @@ export class SalesAgentService {
    */
   private renderOutboundAsText(message: OutboundWhatsAppMessage, route: BbcUiRoute): string {
     if (message.kind === 'buttons') {
-      const options = route === 'cart' ? '' : renderButtonOptions(message.buttons);
+      const flowShowsFinalize =
+        route === 'finalize' &&
+        message.buttons.every(
+          (btn) => btn.id === WA_BTN.CART_FINALIZE || btn.body.trim() === WA_BTN_LABEL.CART_FINALIZE
+        );
+      const options =
+        route === 'cart' || flowShowsFinalize ? '' : renderButtonOptions(message.buttons);
       return joinTextBlocks([message.body, options, message.footer]);
     }
 

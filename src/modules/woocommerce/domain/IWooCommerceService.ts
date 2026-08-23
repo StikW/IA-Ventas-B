@@ -16,6 +16,12 @@ export interface WooCommerceConfigData {
   updatedAt: string;
 }
 
+export interface WooCommerceProductCategory {
+  id: number;
+  name: string;
+  slug: string;
+}
+
 export interface WooCommerceProduct {
   id: number;
   name: string;
@@ -26,6 +32,8 @@ export interface WooCommerceProduct {
   description: string;
   status: string;
   type?: string;
+  categories?: WooCommerceProductCategory[];
+  tags?: string[];
 }
 
 export interface WooCommerceOrderPayload {
@@ -53,9 +61,13 @@ export interface IWooCommerceService {
   resolveCheckoutPagePath(config: WooCommerceConfigData): Promise<string | null>;
   resolveShopPagePath(config: WooCommerceConfigData): Promise<string | null>;
   listProducts(config: WooCommerceConfigData, page?: number): Promise<WooCommerceProduct[]>;
+  /** Catálogo completo paginado. Base del índice local de búsqueda del agente. */
+  listAllProducts(config: WooCommerceConfigData, maxProducts?: number): Promise<WooCommerceProduct[]>;
   searchProducts(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]>;
   getProductBySku(config: WooCommerceConfigData, sku: string): Promise<WooCommerceProduct | null>;
   getProductById(config: WooCommerceConfigData, productId: number): Promise<WooCommerceProduct | null>;
+  /** Variaciones de un producto padre. Respaldo cuando MASSI Bot API falla. */
+  listProductVariations(config: WooCommerceConfigData, productId: number): Promise<WooCommerceProduct[]>;
   createOrder(config: WooCommerceConfigData, order: WooCommerceOrderPayload): Promise<WooCommerceOrderResult>;
   updateOrder(config: WooCommerceConfigData, orderId: number, update: WooCommerceOrderUpdatePayload): Promise<WooCommerceOrderResult>;
 }
