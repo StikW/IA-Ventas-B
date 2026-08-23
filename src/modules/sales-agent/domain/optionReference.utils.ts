@@ -5,7 +5,13 @@
  */
 
 import { OfferedOption } from './IChatSessionRepository';
-import { isProductOptionsBrowseIntent, normalizeProductText, tokenizeProductQuery, tokensRelated } from './productSelection.utils';
+import {
+  extractQuantityFromText,
+  isProductOptionsBrowseIntent,
+  normalizeProductText,
+  tokenizeProductQuery,
+  tokensRelated,
+} from './productSelection.utils';
 
 const ORDINAL_WORDS: Record<string, number> = {
   primer: 1,
@@ -40,9 +46,17 @@ const ORDINAL_WORDS: Record<string, number> = {
 
 const LAST_PATTERN = /\b(?:ultim[oa]|final)\b/;
 
-/** «dos del primero»: la cantidad va antes de la referencia, no dentro de ella. */
-const QUANTITY_BEFORE_REFERENCE =
-  /\b(\d{1,2}|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+(?:de|del|de\s+la|de\s+las|de\s+los)\b/;
+const QTY_WORD = '(\\d{1,2}|un|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)';
+
+/** «dos del primero» / «2 de la opción 4». */
+const QUANTITY_BEFORE_REFERENCE = new RegExp(
+  `\\b${QTY_WORD}\\s+(?:de|del|de\\s+la|de\\s+las|de\\s+los)\\b`
+);
+
+/** «dos unidades del 3», «3 piezas de la opción 2». */
+const QUANTITY_WITH_UNIT = new RegExp(
+  `\\b${QTY_WORD}\\s+(?:unidades?|piezas?|pares?|uds?)\\b`
+);
 
 const WORD_QUANTITY: Record<string, number> = {
   un: 1,
@@ -65,14 +79,21 @@ export interface OptionReference {
   quantity: number;
 }
 
-function parseQuantity(normalized: string): number {
-  const match = normalized.match(QUANTITY_BEFORE_REFERENCE);
-  if (!match) return 1;
-
-  const raw = match[1]!;
+function quantityFromCapture(raw: string): number {
   const numeric = Number.parseInt(raw, 10);
   if (Number.isFinite(numeric)) return numeric > 0 && numeric < 100 ? numeric : 1;
   return WORD_QUANTITY[raw] ?? 1;
+}
+
+function parseQuantity(normalized: string, originalText: string): number {
+  const withUnit = normalized.match(QUANTITY_WITH_UNIT);
+  if (withUnit) return quantityFromCapture(withUnit[1]!);
+
+  const beforeRef = normalized.match(QUANTITY_BEFORE_REFERENCE);
+  if (beforeRef) return quantityFromCapture(beforeRef[1]!);
+
+  const fromDigits = extractQuantityFromText(originalText, 0);
+  return fromDigits > 0 ? fromDigits : 1;
 }
 
 /**
@@ -85,7 +106,7 @@ export function parseOptionReference(text: string, optionCount: number): OptionR
   const t = normalizeProductText(text);
   if (!t) return null;
 
-  const quantity = parseQuantity(t);
+  const quantity = parseQuantity(t, text);
 
   for (const [word, position] of Object.entries(ORDINAL_WORDS)) {
     if (!new RegExp(`\\b${word}\\b`).test(t)) continue;
@@ -136,7 +157,7 @@ export function matchOfferedOptionByName(text: string, options: OfferedOption[])
   if (best.coverage < 0.6 && best.matched < 2) return null;
   if (second && second.matched === best.matched && second.coverage === best.coverage) return null;
 
-  return { index: best.index, quantity: parseQuantity(normalizeProductText(text)) };
+  return { index: best.index, quantity: parseQuantity(normalizeProductText(text), text) };
 }
 
 /**

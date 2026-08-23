@@ -409,11 +409,11 @@ export class ConversationFlowService {
   buildCheckoutLinkReply(
     salesContext: SalesContext,
     checkoutUrl: string,
-    customerPhone: string
+    customerPhone: string,
+    cartSnapshot?: NonNullable<SalesContext['cartItems']>
   ): ConversationFlowResult {
-    const cartSummary = salesContext.cartItems?.length
-      ? `\n\n${this.formatCartSummary(salesContext.cartItems)}`
-      : '';
+    const listedItems = cartSnapshot ?? salesContext.cartItems ?? [];
+    const cartSummary = listedItems.length ? `\n\n${this.formatCartSummary(listedItems)}` : '';
     const body = [
       '¡Perfecto! Tu selección está lista.',
       cartSummary,
@@ -438,6 +438,10 @@ export class ConversationFlowService {
         ...salesContext,
         phase: 'browsing',
         flowStep: 'checkout_redirect',
+        cartItems: [],
+        lastOptions: undefined,
+        lastAddedSkus: undefined,
+        lastCheckoutUrl: checkoutUrl,
       },
     };
   }

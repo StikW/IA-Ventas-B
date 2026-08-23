@@ -48,6 +48,8 @@ export interface SalesContext {
   lastOptions?: OfferedOption[];
   /** SKUs agregados en el turno anterior, para «solo los que te dije». */
   lastAddedSkus?: string[];
+  /** Link de checkout ya enviado; el carrito de WhatsApp se vacía al generarlo. */
+  lastCheckoutUrl?: string;
   lastOrderId?: string;
   /** Pedido WooCommerce MASSI creado vía massi-bot-api */
   massiWooOrderId?: number;

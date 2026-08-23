@@ -47,6 +47,8 @@ describe('parseOptionReference', () => {
     expect(parseOptionReference('quiero dos del numero 7', 8)).toEqual({ index: 6, quantity: 2 });
     expect(parseOptionReference('quiero 2 del 7', 8)).toEqual({ index: 6, quantity: 2 });
     expect(parseOptionReference('tres de la opción 4', 8)).toEqual({ index: 3, quantity: 3 });
+    expect(parseOptionReference('quiero dos unidades del 3', 8)).toEqual({ index: 2, quantity: 2 });
+    expect(parseOptionReference('2 unidades de la 5', 8)).toEqual({ index: 4, quantity: 2 });
   });
 });
 

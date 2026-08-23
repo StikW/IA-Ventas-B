@@ -369,6 +369,7 @@ export class SalesAgentService {
     let mutableContext = { ...salesContext };
 
     if (isCartFinalizeIntent(text) && mutableContext.cartItems?.length) {
+      const cartSnapshot = [...(mutableContext.cartItems ?? [])];
       const finalizeReply = await this.finalizeCart(input, mutableContext, tenantConfig?.business);
       const now = new Date().toISOString();
 
@@ -376,7 +377,8 @@ export class SalesAgentService {
         const checkoutPrompt = this.conversationFlow.buildCheckoutLinkReply(
           mutableContext,
           finalizeReply.checkoutUrl,
-          input.customerPhone
+          input.customerPhone,
+          cartSnapshot
         );
         const bbcResponse = await this.persistAndReply({
           tenantId: input.tenantId,
@@ -527,23 +529,29 @@ export class SalesAgentService {
       return { replied: true, reply: optionReply.replyText, bbcResponse };
     }
 
-    if (
+    const wantsCheckoutLinkAgain =
       mutableContext.flowStep === 'checkout_redirect' &&
-      mutableContext.cartItems?.length &&
-      /formulario|link|enlace|checkout|completar\s+(la\s+)?compra|reenvi/i.test(text)
-    ) {
-      const link = await this.tools.buildCheckoutFormLink(
-        input.tenantId,
-        input.customerPhone,
-        mutableContext.cartItems,
-        tenantConfig?.business
-      );
+      (isCartFinalizeIntent(text) ||
+        /formulario|link|enlace|checkout|completar\s+(la\s+)?compra|reenvi/i.test(text));
+
+    if (wantsCheckoutLinkAgain && (mutableContext.lastCheckoutUrl || mutableContext.cartItems?.length)) {
+      let checkoutUrl = mutableContext.lastCheckoutUrl;
+      if (!checkoutUrl && mutableContext.cartItems?.length) {
+        const link = await this.tools.buildCheckoutFormLink(
+          input.tenantId,
+          input.customerPhone,
+          mutableContext.cartItems,
+          tenantConfig?.business
+        );
+        checkoutUrl = link.ok ? link.url : undefined;
+      }
       const now = new Date().toISOString();
-      if (link.ok && link.url) {
+      if (checkoutUrl) {
         const checkoutPrompt = this.conversationFlow.buildCheckoutLinkReply(
           mutableContext,
-          link.url,
-          input.customerPhone
+          checkoutUrl,
+          input.customerPhone,
+          mutableContext.cartItems
         );
         const bbcResponse = await this.persistAndReply({
           tenantId: input.tenantId,
@@ -834,18 +842,24 @@ export class SalesAgentService {
     const enteredCheckoutLink =
       mutableContext.flowStep === 'checkout_redirect' && salesContext.flowStep !== 'checkout_redirect';
 
-    if (enteredCheckoutLink && mutableContext.cartItems?.length) {
-      const link = await this.tools.buildCheckoutFormLink(
-        input.tenantId,
-        input.customerPhone,
-        mutableContext.cartItems,
-        tenantConfig?.business
-      );
-      if (link.ok && link.url) {
+    if (enteredCheckoutLink && (mutableContext.lastCheckoutUrl || mutableContext.cartItems?.length)) {
+      let checkoutUrl = mutableContext.lastCheckoutUrl;
+      const cartSnapshot = [...(mutableContext.cartItems ?? [])];
+      if (!checkoutUrl && cartSnapshot.length) {
+        const link = await this.tools.buildCheckoutFormLink(
+          input.tenantId,
+          input.customerPhone,
+          cartSnapshot,
+          tenantConfig?.business
+        );
+        checkoutUrl = link.ok ? link.url : undefined;
+      }
+      if (checkoutUrl) {
         const checkoutPrompt = this.conversationFlow.buildCheckoutLinkReply(
           mutableContext,
-          link.url,
-          input.customerPhone
+          checkoutUrl,
+          input.customerPhone,
+          cartSnapshot
         );
         const bbcResponse = await this.persistAndReply({
           tenantId: input.tenantId,
@@ -1196,6 +1210,7 @@ export class SalesAgentService {
       cartItems: merged,
       customerName,
       lastAddedSkus: newItems.map((item) => item.sku),
+      lastCheckoutUrl: undefined,
     });
 
     const summary = CartService.formatSummary(merged);
@@ -1263,7 +1278,10 @@ export class SalesAgentService {
       Object.assign(salesContext, {
         phase: 'browsing' as const,
         flowStep: 'checkout_redirect' as const,
-        cartItems: items,
+        cartItems: [],
+        lastOptions: undefined,
+        lastAddedSkus: undefined,
+        lastCheckoutUrl: link.url,
         customerName,
       });
 
