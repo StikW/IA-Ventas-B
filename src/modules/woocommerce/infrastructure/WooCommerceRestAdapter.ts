@@ -268,6 +268,16 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     };
   }
 
+  /**
+   * WooCommerce devuelve `price` como cadena, pero los plugins que recalculan precios
+   * (en MASSI, `woo-massi`) lo serializan como número. Todo el agente lo trata como texto.
+   */
+  private toPriceString(raw: unknown): string {
+    if (typeof raw === 'string') return raw;
+    if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+    return '';
+  }
+
   private mapVariation(p: Record<string, unknown>, _parentId: number): WooCommerceProduct {
     const attributes = Array.isArray(p.attributes) ? (p.attributes as Array<Record<string, unknown>>) : [];
     const label = attributes
@@ -279,7 +289,7 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
       id: p.id as number,
       name: label || String(p.name ?? `Variación ${p.id}`),
       sku: (p.sku as string) ?? '',
-      price: p.price as string,
+      price: this.toPriceString(p.price),
       stockQuantity: p.stock_quantity as number | null,
       stockStatus: p.stock_status as string,
       description: '',
@@ -293,22 +303,32 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     const taxonomy = (raw: unknown): Array<Record<string, unknown>> =>
       Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
 
+    const metaRaw = Array.isArray(p.meta_data) ? (p.meta_data as Array<Record<string, unknown>>) : [];
+
     return {
       id: p.id as number,
       name: p.name as string,
       sku: (p.sku as string) ?? '',
-      price: p.price as string,
+      price: this.toPriceString(p.price),
       stockQuantity: p.stock_quantity as number | null,
       stockStatus: p.stock_status as string,
       description: (p.short_description as string) ?? '',
       status: p.status as string,
       type: p.type ? String(p.type) : undefined,
+      permalink: typeof p.permalink === 'string' ? p.permalink : undefined,
+      metaData: metaRaw.map((entry) => ({
+        key: String(entry.key ?? ''),
+        value: entry.value,
+      })),
       categories: taxonomy(p.categories).map((c) => ({
         id: Number(c.id ?? 0),
         name: String(c.name ?? ''),
         slug: String(c.slug ?? ''),
       })),
       tags: taxonomy(p.tags).map((t) => String(t.name ?? '')),
+      images: taxonomy(p.images)
+        .map((image) => String(image.src ?? ''))
+        .filter((src) => src.startsWith('http')),
     };
   }
 }

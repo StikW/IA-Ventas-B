@@ -13,6 +13,10 @@ export interface OrderItem {
   name: string;
   quantity: number;
   unitPrice: number;
+  /** Unidades que cubre cada paquete (x10 / x5 / x2 / x1) en productos `woo-massi`. */
+  packUnits?: number;
+  /** Total de unidades pedidas que originó esta línea de paquete. */
+  packDesiredUnits?: number;
 }
 
 export interface OrderProps {

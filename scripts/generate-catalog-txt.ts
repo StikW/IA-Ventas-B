@@ -6,18 +6,34 @@
  * que espera `catalogRag.utils.ts`: campos `Producto:` / `SKU:` / `Variaciones:` separados
  * por `---`, con los SKU y las variaciones en el mismo orden.
  *
+ * Los productos a granel (balines, canutillos) son *simples* con un solo SKU: las
+ * presentaciones x1/x2/x5/x10 viven en meta de `woo-massi` y se emiten como `Paquetes:`.
+ *
  * Uso:
+ *   npx tsx scripts/generate-catalog-txt.ts --out catalogo.txt
  *   npx tsx scripts/generate-catalog-txt.ts \
  *     --store https://mitienda.com --key ck_xxx --secret cs_xxx --out catalogo.txt
  *
- * También lee WC_STORE_URL, WC_CONSUMER_KEY y WC_CONSUMER_SECRET del entorno.
+ * Sin `--store/--key/--secret` usa WC_STORE_URL, WC_CONSUMER_KEY y WC_CONSUMER_SECRET, y como
+ * último recurso las credenciales que el negocio guardó en el panel (`--tenant <id>`).
  */
 
 import { writeFile } from 'node:fs/promises';
 
+import {
+  parsePackTiersFromMeta,
+  type PackTier,
+} from '../src/modules/sales-agent/domain/packPricing.utils';
+import { readFlag, resolveWcCredentials, wcGet, type WcCredentials } from './wc-credentials';
+
 interface WcTerm {
   id: number;
   name: string;
+}
+
+interface WcMeta {
+  key: string;
+  value: unknown;
 }
 
 interface WcProduct {
@@ -32,6 +48,7 @@ interface WcProduct {
   categories: WcTerm[];
   tags: WcTerm[];
   attributes: Array<{ name: string; options: string[] }>;
+  meta_data: WcMeta[];
 }
 
 interface WcVariation {
@@ -47,50 +64,7 @@ interface Issue {
   detail: string;
 }
 
-function parseArgs(): { storeUrl: string; key: string; secret: string; out: string } {
-  const args = process.argv.slice(2);
-  const read = (flag: string): string | undefined => {
-    const index = args.indexOf(flag);
-    return index >= 0 ? args[index + 1] : undefined;
-  };
-
-  const storeUrl = (read('--store') ?? process.env.WC_STORE_URL ?? '').replace(/\/$/, '');
-  const key = read('--key') ?? process.env.WC_CONSUMER_KEY ?? '';
-  const secret = read('--secret') ?? process.env.WC_CONSUMER_SECRET ?? '';
-  const out = read('--out') ?? 'catalogo.txt';
-
-  if (!storeUrl || !key || !secret) {
-    console.error(
-      'Faltan credenciales. Usa --store <url> --key <ck_...> --secret <cs_...> ' +
-        'o define WC_STORE_URL, WC_CONSUMER_KEY y WC_CONSUMER_SECRET.'
-    );
-    process.exit(1);
-  }
-
-  return { storeUrl, key, secret, out };
-}
-
-async function wcGet<T>(
-  base: { storeUrl: string; key: string; secret: string },
-  path: string
-): Promise<T> {
-  const separator = path.includes('?') ? '&' : '?';
-  const url =
-    `${base.storeUrl}/wp-json/wc/v3${path}${separator}` +
-    `consumer_key=${encodeURIComponent(base.key)}&consumer_secret=${encodeURIComponent(base.secret)}`;
-
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`WooCommerce ${response.status} en ${path}: ${await response.text()}`);
-  }
-  return (await response.json()) as T;
-}
-
-async function fetchAllProducts(base: {
-  storeUrl: string;
-  key: string;
-  secret: string;
-}): Promise<WcProduct[]> {
+async function fetchAllProducts(base: WcCredentials): Promise<WcProduct[]> {
   const all: WcProduct[] = [];
   for (let page = 1; ; page++) {
     const batch = await wcGet<WcProduct[]>(
@@ -145,12 +119,37 @@ function buildSeoKeywords(product: WcProduct): string {
   return [...words].join(' ');
 }
 
+/**
+ * Presentaciones a granel del plugin `woo-massi`: el producto es simple (un SKU) y los
+ * paquetes x1/x2/x5/x10 viven en meta, no como variaciones. El `.txt` solo declara las
+ * presentaciones; los precios de cada paquete los lee el agente de WooCommerce en vivo.
+ */
+function extractPackPresentation(product: WcProduct): { line: string; tiers: PackTier[] } | null {
+  const tiers = parsePackTiersFromMeta(product.meta_data);
+  if (!tiers) return null;
+
+  const metaValue = (key: string): string | null => {
+    const raw = product.meta_data.find((meta) => meta.key === key)?.value;
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+  };
+
+  const plural = metaValue('_wm_promo_unit_plural') ?? `${metaValue('_wm_promo_unit_label') ?? 'unidad'}es`;
+  const units = [...tiers].sort((a, b) => a.units - b.units).map((tier) => tier.units);
+
+  return { line: `Paquetes: ${units.join(', ')} ${plural}`, tiers };
+}
+
 function variationLabel(variation: WcVariation): string {
   const label = variation.attributes.map((attribute) => attribute.option).join(' ').trim();
   return label || variation.sku || String(variation.id);
 }
 
-function buildBlock(product: WcProduct, variations: WcVariation[], issues: Issue[]): string | null {
+interface Block {
+  text: string;
+  skus: string[];
+}
+
+function buildBlock(product: WcProduct, variations: WcVariation[], issues: Issue[]): Block | null {
   const name = cleanText(product.name).replace(/^[:\s-]+/, '');
   if (!name) {
     issues.push({ kind: 'Producto sin nombre', detail: `id=${product.id}` });
@@ -205,13 +204,24 @@ function buildBlock(product: WcProduct, variations: WcVariation[], issues: Issue
     lines.push(`Variaciones: ${sellable.map((item) => variationLabel(item as WcVariation)).join('|')}`);
   }
 
+  const packs = extractPackPresentation(product);
+  if (packs) {
+    lines.push(packs.line);
+    if (variations.length) {
+      issues.push({
+        kind: 'Producto variable con paquetes woo-massi',
+        detail: `id=${product.id} "${name}" (el agente no combina paquetes en productos variables)`,
+      });
+    }
+  }
+
   const description = cleanText(product.short_description);
   if (description) lines.push(`Descripción corta: ${description.slice(0, 400)}`);
 
   lines.push(`Palabra Clave SEO: ${buildSeoKeywords(product)}`);
   lines.push('ESTADO: Listo');
 
-  return lines.join('\n');
+  return { text: lines.join('\n'), skus: sellable.map((item) => item.sku) };
 }
 
 function reportDataIssues(products: WcProduct[], issues: Issue[]): void {
@@ -262,10 +272,14 @@ function reportDataIssues(products: WcProduct[], issues: Issue[]): void {
 }
 
 async function main(): Promise<void> {
-  const { out, ...base } = parseArgs();
+  const out = readFlag('--out') ?? 'catalogo.txt';
+  const base = await resolveWcCredentials();
+  console.error(`Tienda: ${base.storeUrl} (credenciales: ${base.source})`);
+
   const products = await fetchAllProducts(base);
   const issues: Issue[] = [];
   const blocks: string[] = [];
+  let skuCount = 0;
 
   for (const [index, product] of products.entries()) {
     const variations =
@@ -274,7 +288,10 @@ async function main(): Promise<void> {
         : [];
 
     const block = buildBlock(product, variations, issues);
-    if (block) blocks.push(block);
+    if (block) {
+      blocks.push(block.text);
+      skuCount += block.skus.length;
+    }
     process.stderr.write(`\rBloques generados: ${blocks.length}/${index + 1}`);
   }
   process.stderr.write('\n');
@@ -283,16 +300,17 @@ async function main(): Promise<void> {
     '# Catálogo de productos',
     `# Generado desde WooCommerce el ${new Date().toISOString().slice(0, 10)}`,
     '# El stock y el precio se consultan en WooCommerce en tiempo real.',
+    '# "Paquetes" indica que el producto se vende a granel: el agente combina los paquetes',
+    '# más baratos que sumen la cantidad pedida y cotiza con los precios vivos de WooCommerce.',
   ].join('\n');
 
   await writeFile(out, `${header}\n\n---\n${blocks.join('\n\n---\n')}\n`, 'utf8');
 
-  const skuCount = blocks.reduce(
-    (total, block) => total + (block.match(/^SKU: ([\s\S]*?)(?=\n[A-ZÁÉÍÓÚ])/m)?.[1]?.split('\n').length ?? 0),
-    0
-  );
+  const packCount = blocks.filter((block) => /^Paquetes: /m.test(block)).length;
 
-  console.error(`\n${out}: ${blocks.length} productos, ${skuCount} SKU vendibles.`);
+  console.error(
+    `\n${out}: ${blocks.length} productos, ${skuCount} SKU vendibles, ${packCount} a granel.`
+  );
   reportDataIssues(products, issues);
 }
 

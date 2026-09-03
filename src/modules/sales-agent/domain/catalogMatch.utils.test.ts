@@ -5,9 +5,11 @@ import {
   catalogQueryTokens,
   collectFamilyTerms,
   findFamilyEntries,
+  findThemeMatches,
   isDecisiveMatch,
   rankCatalogEntries,
 } from './catalogMatch.utils';
+import { themeQueryTokens } from './productSelection.utils';
 
 /** Muestra representativa del catálogo real de MASSI Joyería. */
 function product(
@@ -125,5 +127,42 @@ describe('catalogMatch.utils', () => {
     ];
     const matches = rankCatalogEntries(withOutOfStock, catalogQueryTokens('dije trebol diamantado grande'));
     expect(matches[0]?.entry.product.id).toBe(21);
+  });
+});
+
+describe('findThemeMatches', () => {
+  const ANIMALS = [
+    product(30, 'Dije Búho Plano de 8 mm en Oro Nacional Amarillo', ['Animal', 'Dijes']),
+    product(31, 'Herraje Caballo 10 mm en Oro Nacional Amarillo', ['Animal', 'Herraje']),
+    product(32, 'Dije Mariposa Diamantada Bordada', ['Animal', 'Dijes']),
+    product(33, 'Herraje Estrella Plana de 11 mm', ['Estrella', 'Herraje']),
+  ].map(buildCatalogEntry);
+
+  it('lista por categoría el motivo que no aparece en ningún nombre', () => {
+    const matches = findThemeMatches(ANIMALS, themeQueryTokens('tienen joyas de animales?'));
+    expect(matches.map((match) => match.entry.product.id).sort()).toEqual([30, 31, 32]);
+  });
+
+  it('prefiere el nombre sobre la categoría al ordenar', () => {
+    const matches = findThemeMatches(CATALOG, themeQueryTokens('joyas de la virgen'));
+    expect(matches.map((match) => match.entry.product.id)).toEqual([1, 2]);
+  });
+
+  it('exige el motivo completo cuando hay productos que lo cubren', () => {
+    const matches = findThemeMatches(CATALOG, themeQueryTokens('algo de la virgen del carmen'));
+    expect(matches.map((match) => match.entry.product.id)).toEqual([1]);
+  });
+
+  it('busca también en las etiquetas del producto', () => {
+    const tagged = [
+      buildCatalogEntry(
+        product(40, 'Dije Silueta Doble de 7 mm', ['Dijes'], { tags: ['Huella de perro', 'Mascotas'] })
+      ),
+    ];
+    expect(findThemeMatches(tagged, themeQueryTokens('tienen algo de mascotas'))).toHaveLength(1);
+  });
+
+  it('no inventa resultados para un motivo que la tienda no maneja', () => {
+    expect(findThemeMatches(CATALOG, themeQueryTokens('tienen joyas de dinosaurios?'))).toHaveLength(0);
   });
 });

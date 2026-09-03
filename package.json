@@ -16,6 +16,7 @@
     "setup": "npm run db:init && npm run seed",
     "secrets:generate": "tsx scripts/generate-secrets.ts",
     "catalog:txt": "tsx scripts/generate-catalog-txt.ts",
+    "catalog:inspect": "tsx scripts/inspect-wc-catalog.ts",
     "dev:all": "concurrently -n db,api -c blue,green \"npm run dynamodb:start\" \"npm run dev\"",
     "test": "vitest run",
     "test:watch": "vitest"

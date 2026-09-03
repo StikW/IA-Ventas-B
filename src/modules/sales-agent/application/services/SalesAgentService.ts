@@ -15,9 +15,9 @@ import { CreateOrderUseCase } from '../../../commerce/application/use-cases/Orde
 import { OrderItem } from '../../../commerce/domain/entities/Order.types';
 import { IBusinessRepository } from '../../../tenant/domain/repositories/IBusinessRepository';
 import { IConfigRepository } from '../../../tenant/domain/repositories/IConfigRepository';
-import { ChatMessage, IChatSessionRepository, OfferedOption, PendingCartItem, SalesContext } from '../../domain/IChatSessionRepository';
+import { ChatMessage, FocusedProduct, IChatSessionRepository, OfferedOption, PendingCartItem, PendingPackQuote, SalesContext } from '../../domain/IChatSessionRepository';
 import { OpenAIChatAdapter } from '../../infrastructure/ai/OpenAIChatAdapter';
-import { SalesAgentToolsHandler } from './SalesAgentToolsHandler';
+import { SalesAgentToolsHandler, ProductResolution, ProductResolutionBatch } from './SalesAgentToolsHandler';
 import {
   ConversationFlowResult,
   ConversationFlowService,
@@ -34,8 +34,33 @@ import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent, WA_BTN, WA_BTN_LABEL } from '../../domain/whatsappFlow.constants';
 import { isCartClearIntent, isCartCorrectionIntent, isCartIncrementIntent, isCartKeepOnlyIntent, isCartRemoveIntent, isCartReviewIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
-import { extractAllVariantHints, hasConcreteProductSpec, isCatalogBrowseIntent, isDirectVariantAddIntent, isProductFamilyBrowseIntent, isThemeBrowseIntent, normalizeUserTypos } from '../../domain/productSelection.utils';
-import { findOfferedOption } from '../../domain/optionReference.utils';
+import { extractAllVariantHints, extractExplicitSkus, hasConcreteProductSpec, isCatalogBrowseIntent, isDirectVariantAddIntent, isProductFamilyBrowseIntent, isThemeBrowseCandidate, mentionsDifferentPackProduct, normalizeUserTypos, shouldAbandonPendingPackFlow } from '../../domain/productSelection.utils';
+import {
+  composePacks,
+  extractDesiredUnits,
+  formatPackQuantityPrompt,
+  formatPackQuoteMessage,
+  isPackPriceQuestion,
+  isPackQuoteAddIntent,
+  isPackQuoteConfirmIntent,
+  isPackQuoteRejectIntent,
+  packQuoteToOrderItems,
+  stripPriceQuestionWords,
+  type PackQuote,
+} from '../../domain/packPricing.utils';
+import {
+  formatProductPageLink,
+  formatProductPageMissing,
+  formatProductPageNeedChoice,
+  isProductPageInfoIntent,
+  stripProductPageWords,
+} from '../../domain/productPage.utils';
+import {
+  extractListedProductNumber,
+  findListedProductNumberAmbiguity,
+  findOfferedOption,
+} from '../../domain/optionReference.utils';
+import { buildListedNumberChoiceMessage } from '../../domain/productDisplay.utils';
 import { EMOJI, warmAddedOpener } from '../../domain/tone.utils';
 import { WhatsAppCatalogOrderProduct } from '../../../builderbot/domain/whatsappCatalogOrder.utils';
 
@@ -329,6 +354,27 @@ export class SalesAgentService {
       };
     }
 
+    const productPageEarly = await this.handleProductPageTurn(input, salesContext, text);
+    if (productPageEarly) {
+      const now = new Date().toISOString();
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: productPageEarly.replyText,
+        salesContext: productPageEarly.salesContext,
+        outbound: productPageEarly.outbound,
+        uiRoute: productPageEarly.uiRoute,
+        now,
+        ragHits: 0,
+        listedOptions: productPageEarly.salesContext.lastOptions ?? salesContext.lastOptions,
+      });
+      return { replied: true, reply: productPageEarly.replyText, bbcResponse };
+    }
+
     const flowResult = await this.conversationFlow.tryHandle({
       tenantId: input.tenantId,
       customerPhone: input.customerPhone,
@@ -367,6 +413,26 @@ export class SalesAgentService {
     });
 
     let mutableContext = { ...salesContext };
+
+    const pendingPack = await this.handlePendingPackTurn(input, mutableContext, text);
+    if (pendingPack) {
+      const now = new Date().toISOString();
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: pendingPack.replyText,
+        salesContext: { ...mutableContext, ...pendingPack.salesContext },
+        outbound: pendingPack.outbound,
+        uiRoute: pendingPack.uiRoute,
+        now,
+        ragHits: 0,
+      });
+      return { replied: true, reply: pendingPack.replyText, bbcResponse };
+    }
 
     if (isCartFinalizeIntent(text) && mutableContext.cartItems?.length) {
       const cartSnapshot = [...(mutableContext.cartItems ?? [])];
@@ -499,6 +565,32 @@ export class SalesAgentService {
     // variaciones del producto padre.
     // "el 5", "qué opciones hay del 5", "opciones del anillo elefante": se refieren
     // al último listado, aunque el mensaje también nombre una familia.
+    // "4 unidades del #3": prioriza el Balín #3 del último listado, no otro #3 del catálogo.
+    if (mutableContext.lastOptions?.length) {
+      const ambiguousIndices = findListedProductNumberAmbiguity(text, mutableContext.lastOptions);
+      const listedNumber = extractListedProductNumber(text);
+      if (ambiguousIndices && listedNumber) {
+        const subset = ambiguousIndices.map((index) => mutableContext.lastOptions![index]!);
+        const choiceMessage = buildListedNumberChoiceMessage(listedNumber, subset);
+        const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, choiceMessage);
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: choiceMessage,
+          salesContext: { ...mutableContext, ...cartPrompt.salesContext, lastOptions: subset },
+          outbound: cartPrompt.outbound,
+          now: new Date().toISOString(),
+          ragHits: 0,
+          listedOptions: subset,
+        });
+        return { replied: true, reply: choiceMessage, bbcResponse };
+      }
+    }
+
     const optionReference = mutableContext.lastOptions?.length
       ? findOfferedOption(text, mutableContext.lastOptions)
       : null;
@@ -571,6 +663,36 @@ export class SalesAgentService {
       }
     }
 
+    // «¿en cuánto me salen 7 balines #6?»: cotiza la combinación de paquetes sin tocar el carrito.
+    if (
+      isPackPriceQuestion(text) &&
+      salesContext.phase !== 'awaiting_payment' &&
+      mutableContext.flowStep !== 'checkout_redirect'
+    ) {
+      const productRef = stripPriceQuestionWords(text) || text;
+      const selection = await this.tools.resolveSelectionsFromText(input.tenantId, productRef, 1, {
+        cartItems: mutableContext.cartItems,
+      });
+      const packReply = this.applyPackSelection(input, mutableContext, selection, { addExtraItems: false });
+      if (packReply) {
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: packReply.replyText,
+          salesContext: { ...mutableContext, ...packReply.salesContext },
+          outbound: packReply.outbound,
+          uiRoute: packReply.uiRoute,
+          now: new Date().toISOString(),
+          ragHits: 0,
+        });
+        return { replied: true, reply: packReply.replyText, bbcResponse };
+      }
+    }
+
     if (isProductFamilyBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
       const hasDirectSelection = isDirectVariantAddIntent(text);
 
@@ -578,6 +700,25 @@ export class SalesAgentService {
         const selection = await this.tools.resolveSelectionsFromText(input.tenantId, text, 1, {
           cartItems: mutableContext.cartItems,
         });
+        const packReply = this.applyPackSelection(input, mutableContext, selection);
+        if (packReply) {
+          const now = new Date().toISOString();
+          const bbcResponse = await this.persistAndReply({
+            tenantId: input.tenantId,
+            deviceId: input.deviceId,
+            customerPhone: input.customerPhone,
+            messageId: input.messageId,
+            history,
+            userText: text,
+            reply: packReply.replyText,
+            salesContext: { ...mutableContext, ...packReply.salesContext },
+            outbound: packReply.outbound,
+            uiRoute: packReply.uiRoute,
+            now,
+            ragHits: 0,
+          });
+          return { replied: true, reply: packReply.replyText, bbcResponse };
+        }
         if (selection.items?.length) {
           this.addItemsToCart(input, mutableContext, selection.items);
           const cartPrompt = this.conversationFlow.buildCartActionPrompt(
@@ -676,7 +817,7 @@ export class SalesAgentService {
       return { replied: true, reply: helpPrompt.replyText, bbcResponse };
     }
 
-    if (isThemeBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
+    if (isThemeBrowseCandidate(text) && salesContext.phase !== 'awaiting_payment') {
       const theme = await this.tools.resolveThemeBrowse(input.tenantId, text);
       if (theme.ok) {
         const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, theme.message);
@@ -701,23 +842,27 @@ export class SalesAgentService {
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
 
-      const miss =
-        theme.message ||
-        `No encontré piezas con esa forma en la tienda. Prueba con un nombre más concreto o el *ID*.`;
-      const bbcResponse = await this.persistAndReply({
-        tenantId: input.tenantId,
-        deviceId: input.deviceId,
-        customerPhone: input.customerPhone,
-        messageId: input.messageId,
-        history,
-        userText: text,
-        reply: miss,
-        salesContext: mutableContext,
-        outbound: { kind: 'text', body: miss },
-        now: new Date().toISOString(),
-        ragHits: 0,
-      });
-      return { replied: true, reply: miss, bbcResponse };
+      // Sin coincidencias: si el cliente solo preguntaba por el surtido, el enlace al
+      // catálogo le sirve más que un "no encontré", así que se deja seguir el flujo.
+      if (!isCatalogBrowseIntent(text)) {
+        const miss =
+          theme.message ||
+          `No encontré piezas con esa forma en la tienda. Prueba con un nombre más concreto o el *ID*.`;
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: miss,
+          salesContext: mutableContext,
+          outbound: { kind: 'text', body: miss },
+          now: new Date().toISOString(),
+          ragHits: 0,
+        });
+        return { replied: true, reply: miss, bbcResponse };
+      }
     }
 
     if (isCatalogBrowseIntent(text) && salesContext.phase !== 'awaiting_payment') {
@@ -749,6 +894,25 @@ export class SalesAgentService {
       const selection = await this.tools.resolveSelectionsFromText(input.tenantId, text, 1, {
         cartItems: mutableContext.cartItems,
       });
+      const packReply = this.applyPackSelection(input, mutableContext, selection);
+      if (packReply) {
+        const now = new Date().toISOString();
+        const bbcResponse = await this.persistAndReply({
+          tenantId: input.tenantId,
+          deviceId: input.deviceId,
+          customerPhone: input.customerPhone,
+          messageId: input.messageId,
+          history,
+          userText: text,
+          reply: packReply.replyText,
+          salesContext: { ...mutableContext, ...packReply.salesContext },
+          outbound: packReply.outbound,
+          uiRoute: packReply.uiRoute,
+          now,
+          ragHits: 0,
+        });
+        return { replied: true, reply: packReply.replyText, bbcResponse };
+      }
       if (selection.items?.length) {
         this.addItemsToCart(input, mutableContext, selection.items);
         mutableContext.lastOptions = undefined;
@@ -1092,8 +1256,13 @@ export class SalesAgentService {
         const quantity = Number(args.cantidad ?? 1);
         if (!sku) return 'Indica el SKU exacto del producto.';
 
-        const built = await this.tools.buildOrderItemBySku(input.tenantId, sku, quantity);
-        if (!built.ok || !built.item) return built.message;
+        const built = await this.tools.buildOrderItemBySku(input.tenantId, sku, quantity, {
+          userText: input.text,
+        });
+        if (!built.ok || (!built.item && !built.packQuote && !built.needsQuantity)) return built.message;
+        const packMsg = this.capturePackResolution(salesContext, built);
+        if (packMsg) return packMsg;
+        if (!built.item) return built.message;
 
         const blocked = this.guardVariationFlood(input.text, [built.item], addedThisTurn);
         if (blocked) return blocked;
@@ -1109,7 +1278,13 @@ export class SalesAgentService {
         for (const row of requested) {
           // Nombre y precio salen de WooCommerce: si los pusiera el modelo, podría
           // cobrarle al cliente un precio que no existe.
-          const built = await this.tools.buildOrderItemBySku(input.tenantId, row.sku, row.quantity);
+          const built = await this.tools.buildOrderItemBySku(input.tenantId, row.sku, row.quantity, {
+            userText: input.text,
+          });
+          if (built.packQuote || built.needsQuantity) {
+            const packMsg = this.capturePackResolution(salesContext, built);
+            if (packMsg) return packMsg;
+          }
           if (built.ok && built.item) newItems.push(built.item);
           else errors.push(built.message);
         }
@@ -1172,13 +1347,24 @@ export class SalesAgentService {
       }
 
       const prompt = this.conversationFlow.buildCartActionPrompt(salesContext, listed.message);
+      this.rememberFocusedProduct(salesContext, option);
       return {
         ...prompt,
-        salesContext: { ...prompt.salesContext, lastOptions: listed.options ?? [] },
+        salesContext: { ...prompt.salesContext, lastOptions: listed.options ?? [], focusedProduct: salesContext.focusedProduct },
       };
     }
 
-    const built = await this.tools.buildOrderItemBySku(input.tenantId, option.sku, quantity);
+    const built = await this.tools.buildOrderItemBySku(input.tenantId, option.sku, quantity, {
+      userText: input.text,
+    });
+    const packMsg = this.capturePackResolution(salesContext, built);
+    if (packMsg) {
+      return {
+        replyText: packMsg,
+        outbound: { kind: 'text', body: packMsg },
+        salesContext,
+      };
+    }
     if (!built.ok || !built.item) {
       return this.conversationFlow.buildCartActionPrompt(salesContext, built.message);
     }
@@ -1211,7 +1397,11 @@ export class SalesAgentService {
       customerName,
       lastAddedSkus: newItems.map((item) => item.sku),
       lastCheckoutUrl: undefined,
+      pendingPackQuote: undefined,
+      pendingPackProduct: undefined,
+      pendingProductPage: undefined,
     });
+    this.rememberFocusedProduct(salesContext, newItems[newItems.length - 1]);
 
     const summary = CartService.formatSummary(merged);
     return [
@@ -1225,6 +1415,259 @@ export class SalesAgentService {
 
   private mergeCartItems(existing: PendingCartItem[] | undefined, newItems: OrderItem[]): PendingCartItem[] {
     return CartService.merge(existing, newItems);
+  }
+
+  private capturePackResolution(salesContext: SalesContext, resolution: ProductResolution): string | null {
+    if (resolution.packQuote) {
+      this.storePackQuote(salesContext, resolution.packQuote);
+      this.rememberFocusedProduct(salesContext, resolution.packQuote);
+      return resolution.message;
+    }
+    if (resolution.needsQuantity && resolution.packProduct) {
+      salesContext.pendingPackProduct = resolution.packProduct;
+      salesContext.pendingPackQuote = undefined;
+      this.rememberFocusedProduct(salesContext, resolution.packProduct);
+      return resolution.message;
+    }
+    return null;
+  }
+
+  private storePackQuote(salesContext: SalesContext, quote: PackQuote): void {
+    salesContext.pendingPackQuote = {
+      productId: quote.productId,
+      sku: quote.sku,
+      productName: quote.productName,
+      unitLabel: quote.unitLabel,
+      unitPlural: quote.unitPlural,
+      desiredUnits: quote.desiredUnits,
+      tiers: quote.tiers,
+    };
+    salesContext.pendingPackProduct = undefined;
+    this.rememberFocusedProduct(salesContext, quote);
+  }
+
+  private applyPackSelection(
+    input: { customerPhone: string },
+    salesContext: SalesContext,
+    selection: ProductResolutionBatch,
+    options: { addExtraItems?: boolean } = {}
+  ): ConversationFlowResult | null {
+    const { addExtraItems = true } = options;
+    if (selection.items?.length && !selection.packQuotes?.length && !selection.needsQuantity) {
+      return null;
+    }
+
+    if (selection.needsQuantity && selection.packProduct) {
+      salesContext.pendingPackProduct = selection.packProduct;
+      salesContext.pendingPackQuote = undefined;
+      this.rememberFocusedProduct(salesContext, selection.packProduct);
+      return {
+        replyText: selection.message,
+        outbound: { kind: 'text', body: selection.message },
+        salesContext,
+      };
+    }
+
+    if (selection.packQuotes?.length) {
+      if (addExtraItems && selection.items?.length) {
+        this.addItemsToCart(input, salesContext, selection.items);
+      }
+      const quote = selection.packQuotes[0]!;
+      this.storePackQuote(salesContext, quote);
+      const extra = selection.packQuotes.slice(1).map((row) => formatPackQuoteMessage(row));
+      const body = [selection.message || formatPackQuoteMessage(quote), ...extra].filter(Boolean).join('\n\n');
+      return {
+        replyText: body,
+        outbound: { kind: 'text', body },
+        salesContext,
+      };
+    }
+
+    return null;
+  }
+
+  private rememberFocusedProduct(
+    salesContext: SalesContext,
+    product: { productId?: number; name?: string; sku?: string; productName?: string } | undefined
+  ): void {
+    if (!product?.productId) return;
+    const name = (product.name || product.productName || '').trim();
+    if (!name) return;
+    salesContext.focusedProduct = {
+      productId: product.productId,
+      name,
+      sku: product.sku?.trim() || undefined,
+    };
+  }
+
+  private resolveProductForPage(salesContext: SalesContext, text: string): FocusedProduct | null {
+    // "info B" o "info HRPALM001": sin quitar las palabras de la petición, el resolutor
+    // intenta casar "info" contra los nombres del listado y no encuentra nada.
+    const reference = stripProductPageWords(text) || text;
+    const listed = salesContext.lastOptions;
+
+    if (listed?.length) {
+      const chosen = findOfferedOption(reference, listed);
+      if (chosen) {
+        const option = listed[chosen.index]!;
+        return { productId: option.productId, name: option.name, sku: option.sku };
+      }
+    }
+
+    // Un *ID* que no salió en el último listado igual identifica al producto en la tienda.
+    const [sku] = extractExplicitSkus(reference);
+    if (sku) return { productId: 0, name: '', sku };
+
+    if (salesContext.focusedProduct) return salesContext.focusedProduct;
+    if (salesContext.pendingPackQuote) {
+      return {
+        productId: salesContext.pendingPackQuote.productId,
+        name: salesContext.pendingPackQuote.productName,
+        sku: salesContext.pendingPackQuote.sku,
+      };
+    }
+    if (salesContext.pendingPackProduct) {
+      return {
+        productId: salesContext.pendingPackProduct.productId,
+        name: salesContext.pendingPackProduct.name,
+        sku: salesContext.pendingPackProduct.sku,
+      };
+    }
+    if (listed?.length === 1) {
+      const only = listed[0]!;
+      return { productId: only.productId, name: only.name, sku: only.sku };
+    }
+    return null;
+  }
+
+  private async sendProductPageLink(
+    input: SalesAgentMessageInput,
+    salesContext: SalesContext,
+    product: FocusedProduct
+  ): Promise<ConversationFlowResult> {
+    const page = await this.tools.resolveProductPageDetails(input.tenantId, product);
+    if (!page) {
+      const body = formatProductPageMissing();
+      return { replyText: body, outbound: { kind: 'text', body }, salesContext };
+    }
+
+    const name = page.name || product.name;
+    this.rememberFocusedProduct(salesContext, { ...product, name });
+
+    const body = formatProductPageLink(name, page);
+    return {
+      replyText: body,
+      outbound: page.imageUrl
+        ? { kind: 'image', body, imageUrl: page.imageUrl }
+        : { kind: 'text', body },
+      salesContext,
+    };
+  }
+
+  private async handleProductPageTurn(
+    input: SalesAgentMessageInput,
+    salesContext: SalesContext,
+    text: string
+  ): Promise<ConversationFlowResult | null> {
+    if (salesContext.flowStep === 'checkout_redirect') return null;
+    if (!isProductPageInfoIntent(text)) return null;
+
+    const product = this.resolveProductForPage(salesContext, text);
+    if (!product) {
+      const body = formatProductPageNeedChoice();
+      return { replyText: body, outbound: { kind: 'text', body }, salesContext };
+    }
+
+    // Preguntar «¿te mando el enlace?» solo añade un turno: el cliente ya pidió la ficha.
+    return this.sendProductPageLink(input, salesContext, product);
+  }
+
+  private async handlePendingPackTurn(
+    input: SalesAgentMessageInput,
+    salesContext: SalesContext,
+    text: string
+  ): Promise<ConversationFlowResult | null> {
+    const pendingQuote = salesContext.pendingPackQuote;
+    const pendingProduct = salesContext.pendingPackProduct;
+    if (!pendingQuote && !pendingProduct) return null;
+
+    if (isPackQuoteRejectIntent(text)) {
+      salesContext.pendingPackQuote = undefined;
+      salesContext.pendingPackProduct = undefined;
+      const body = 'Listo, no lo agregué. Dime el *ID* o la cantidad si quieres otro producto.';
+      return { replyText: body, outbound: { kind: 'text', body }, salesContext };
+    }
+
+    if (
+      !extractDesiredUnits(text) &&
+      (isMenuGreeting(text) ||
+        shouldAbandonPendingPackFlow(text) ||
+        isProductPageInfoIntent(text))
+    ) {
+      salesContext.pendingPackQuote = undefined;
+      salesContext.pendingPackProduct = undefined;
+      return null;
+    }
+
+    const pendingRef = pendingQuote ?? pendingProduct;
+    const pendingName = pendingQuote?.productName ?? pendingProduct?.name ?? '';
+    if (
+      pendingRef &&
+      pendingName &&
+      mentionsDifferentPackProduct(text, { sku: pendingRef.sku, name: pendingName })
+    ) {
+      salesContext.pendingPackQuote = undefined;
+      salesContext.pendingPackProduct = undefined;
+      return null;
+    }
+
+    const newUnits = extractDesiredUnits(text);
+    // "sí, agrégame los 7" repite la cantidad ya cotizada: es confirmación, no una cotización nueva.
+    const repeatsQuotedQuantity = pendingQuote != null && newUnits === pendingQuote.desiredUnits;
+    const pendingSku = (pendingQuote?.sku ?? pendingProduct?.sku ?? '').toUpperCase();
+    // "agrega BLD3AM003" con otra cotización pendiente pide otro producto, no confirma esta.
+    const mentionsOtherSku = extractExplicitSkus(text).some((sku) => sku.toUpperCase() !== pendingSku);
+    const addsQuoted = !mentionsOtherSku && isPackQuoteAddIntent(text);
+    // Con producto pendiente, cualquier cantidad dispara la cotización (p. ej. «quisiera 18 balines»).
+    if (newUnits && !repeatsQuotedQuantity && !mentionsOtherSku && (pendingProduct || pendingQuote)) {
+      const sku = pendingQuote?.sku ?? pendingProduct!.sku;
+      const built = await this.tools.buildOrderItemBySku(input.tenantId, sku, newUnits, { userText: text });
+      const packMsg = this.capturePackResolution(salesContext, built);
+      if (packMsg) {
+        return { replyText: packMsg, outbound: { kind: 'text', body: packMsg }, salesContext };
+      }
+    }
+
+    if (pendingQuote && (isPackQuoteConfirmIntent(text) || addsQuoted || isCartFinalizeIntent(text))) {
+      const quote = this.hydratePackQuote(pendingQuote);
+      if (!quote) {
+        const body = 'No pude armar esa combinación. Prueba con otra cantidad.';
+        return { replyText: body, outbound: { kind: 'text', body }, salesContext };
+      }
+      const items = packQuoteToOrderItems(quote);
+      this.addItemsToCart(input, salesContext, items);
+      if (isCartFinalizeIntent(text) && (salesContext.cartItems?.length ?? 0) > 0) {
+        return null;
+      }
+      const intro = this.buildAddedIntroLine(items);
+      return this.conversationFlow.buildCartActionPrompt(salesContext, intro);
+    }
+
+    if (pendingProduct && !newUnits && !isProductSelectionIntent(text) && !hasConcreteProductSpec(text)) {
+      const body = formatPackQuantityPrompt(pendingProduct.name, {
+        unitLabel: pendingProduct.unitLabel,
+        unitPlural: pendingProduct.unitPlural,
+      });
+      return { replyText: body, outbound: { kind: 'text', body }, salesContext };
+    }
+
+    return null;
+  }
+
+  private hydratePackQuote(pending: PendingPackQuote): PackQuote | null {
+    const composition = composePacks(pending.desiredUnits, pending.tiers);
+    if (!composition) return null;
+    return { ...pending, composition };
   }
 
   private async finalizeCart(
@@ -1415,10 +1858,13 @@ export class SalesAgentService {
       '2) El cliente puede enviar el *ID del producto* (SKU) o describirlo en lenguaje natural (ej. "balín diamantado #6", "cadena de oro 50 cm").',
       '3) Para interpretar descripciones: buscar_en_documentos (RAG del catálogo) → extrae SKU → agregar_producto_por_sku. El backend también intenta RAG→SKU antes del LLM.',
       '4) PROHIBIDO sugerir productos al azar. Catálogo general → enlace; tipo concreto (cadena, anillo…) → el sistema lista variantes del producto padre en WC con *ID* visible.',
-      '4b) Si el cliente nombra un producto que tiene varias tallas/medidas SIN elegir una, NUNCA agregues nada: lista sus opciones numeradas con su *ID* y espera su elección. Agregar todas las variaciones de un producto es un error grave.',
+      '4b) Si el cliente nombra un producto que tiene varias tallas/medidas SIN elegir una, NUNCA agregues nada: lista sus opciones con su *ID* y espera su elección. Agregar todas las variaciones de un producto es un error grave.',
+      '4e) Etiqueta las opciones de una lista con LETRAS (A, B, C…), nunca con números: los productos ya se llaman por número (*Balín #6*, tallas) y el cliente se confunde.',
       '4c) Nunca menciones precios que no vengan de WooCommerce en este turno. Si no tienes el precio, no escribas "a consultar": consulta con las herramientas o pide el *ID*.',
       '4d) Si el cliente PREGUNTA disponibilidad ("tienen…", "hay…", "venden…") NUNCA agregues al carrito: lista opciones con *ID* y espera a que elija o diga "quiero".',
       '5) Stock y precios: SIEMPRE WooCommerce por SKU/ID (verificar_stock, agregar_producto_por_sku). NUNCA inventes productos ni precios desde RAG.',
+      '5b) Productos a granel (balines y similares): NO agregues N unidades al precio unitario. El backend cotiza paquetes x10/x5/x2/x1 y espera confirmación del cliente. Si pregunta cuánto le sale una cantidad, muestra la cotización del backend y pídele que confirme antes de agregarla.',
+      '5c) Fotos/ficha web: el backend manda la foto y el enlace de WooCommerce cuando el cliente pide *info*. NO inventes URLs, descripciones ni fotos: si te piden detalle de un producto, dile que escriba *info* y su letra o su *ID*.',
       '6) IDENTIFICADOR PRINCIPAL: ID = SKU interno. Al cliente siempre dile *ID*, nunca "SKU".',
       '7) Tras agregar al carrito, muestra el resumen e invítalo a enviar otro *ID* o a pulsar *Finalizar pedido* (botón o texto).',
       '8) Cuando confirme que terminó → finalizar_compra: valida stock y envía enlace al formulario WooCommerce.',
@@ -1451,9 +1897,18 @@ export class SalesAgentService {
      */
     listedOptions?: OfferedOption[];
   }): Promise<BbcWebhookAgentResponse> {
+    const listed = params.listedOptions?.length ? params.listedOptions : undefined;
+    const sameProductList =
+      !!listed && listed.every((row) => row.productId === listed[0]!.productId);
+    // Un listado nuevo con varios productos deja de apuntar a uno concreto: «mándame la
+     // foto» después de listar ocho opciones no puede resolverse sola.
     const salesContext: SalesContext = {
       ...params.salesContext,
-      lastOptions: params.listedOptions?.length ? params.listedOptions : undefined,
+      lastOptions: listed,
+      focusedProduct:
+        listed && listed.length > 1 && !sameProductList
+          ? undefined
+          : params.salesContext.focusedProduct,
     };
 
     const updatedMessages: ChatMessage[] = [
@@ -1548,6 +2003,18 @@ export class SalesAgentService {
     const interactive = this.builderBot.supportsInteractiveMessages();
 
     for (const message of messages) {
+      // La foto no depende de los mensajes interactivos: el adaptador ya degrada a texto
+      // cuando el transporte no acepta media, y el pie lleva el enlace de la ficha.
+      if (message.kind === 'image') {
+        await this.builderBot.sendImageMessage({
+          deviceId,
+          phone,
+          imageUrl: message.imageUrl,
+          caption: message.body,
+        });
+        continue;
+      }
+
       if (!interactive) {
         const text = this.renderOutboundAsText(message, route);
         if (text) await this.builderBot.sendTextMessage({ deviceId, phone, message: text });

@@ -5,6 +5,7 @@ import { WA_BTN } from './whatsappFlow.constants';
 
 type OutboundWhatsAppMessage =
   | { kind: 'text'; body: string }
+  | { kind: 'image'; body: string; imageUrl: string }
   | { kind: 'buttons'; body: string; footer?: string; buttons: BuilderBotButtonOption[] }
   | { kind: 'cta_url'; body: string; ctaBody?: string; displayText: string; url: string; footer?: string };
 

@@ -19,6 +19,7 @@ import {
   SendTextMessageInput,
   SendButtonsMessageInput,
   SendCtaUrlMessageInput,
+  SendImageMessageInput,
   SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
 import {
@@ -740,6 +741,24 @@ export class BuilderBotCloudV2Adapter implements IBuilderBotCloudService {
       deviceId: input.deviceId,
       phone: input.phone,
       message: renderButtonsAsText(input),
+    });
+  }
+
+  /**
+   * La API v2 ignora en silencio los campos que no reconoce, así que el texto se manda
+   * siempre: si `media` no llega al dispositivo, el cliente recibe igual el enlace y
+   * WhatsApp muestra la vista previa de la ficha.
+   */
+  /**
+   * BBC Cloud no expone envío de media por API: el único `add_image` vive en los flows del
+   * panel y su URL es fija, así que no sirve para la foto que pide cada cliente. Se manda el
+   * texto —que incluye el enlace del producto— y WhatsApp arma la vista previa.
+   */
+  async sendImageMessage(input: SendImageMessageInput): Promise<void> {
+    await this.sendTextMessage({
+      deviceId: input.deviceId,
+      phone: input.phone,
+      message: input.caption.trim(),
     });
   }
 

@@ -10,9 +10,13 @@ import {
   isDirectVariantAddIntent,
   isProductFamilyBrowseIntent,
   isProductOptionsBrowseIntent,
+  isThemeBrowseCandidate,
   isThemeBrowseIntent,
+  mentionsDifferentPackProduct,
   registerCatalogFamilyTerms,
+  shouldAbandonPendingPackFlow,
   themeListLabel,
+  themeQueryTokens,
   variantHintsMatch,
 } from './productSelection.utils';
 
@@ -96,6 +100,8 @@ describe('variantHintsMatch', () => {
 describe('extractQuantityFromText', () => {
   it('lee la cantidad explícita', () => {
     expect(extractQuantityFromText('quiero 3 unidades')).toBe(3);
+    expect(extractQuantityFromText('quiero 18 und de balín')).toBe(18);
+    expect(extractQuantityFromText('quiero 18 balines')).toBe(18);
   });
 
   it('no toma "Promo x5" como cantidad', () => {
@@ -171,6 +177,33 @@ describe('isThemeBrowseIntent', () => {
   it('resume la forma para el título del listado', () => {
     expect(themeListLabel('tienen joyas en forma de animales?')).toBe('animales');
     expect(themeListLabel('joyas en forma de corazón')).toBe('corazon');
+    expect(themeListLabel('tienen joyas de animales?', ['animales'])).toBe('animales');
+  });
+});
+
+describe('isThemeBrowseCandidate', () => {
+  it('acepta motivos descritos sin "en forma de"', () => {
+    expect(isThemeBrowseCandidate('tienen joyas de animales?')).toBe(true);
+    expect(isThemeBrowseCandidate('joyas de la virgen')).toBe(true);
+    expect(isThemeBrowseCandidate('tienen algo religioso')).toBe(true);
+    expect(isThemeBrowseCandidate('tienen estrellas')).toBe(true);
+  });
+
+  it('mantiene el enlace del catálogo cuando no hay motivo que buscar', () => {
+    expect(isThemeBrowseCandidate('qué productos tienen?')).toBe(false);
+    expect(isThemeBrowseCandidate('tienen catálogo?')).toBe(false);
+    expect(isThemeBrowseCandidate('hola')).toBe(false);
+  });
+
+  it('cede ante el tipo de producto y ante el ID explícito', () => {
+    expect(isThemeBrowseCandidate('tienen dijes de virgen')).toBe(false);
+    expect(isThemeBrowseCandidate('quiero el DJVMIL001')).toBe(false);
+  });
+
+  it('deja fuera el relleno de la pregunta al extraer el motivo', () => {
+    expect(themeQueryTokens('tienen joyas de animales?')).toEqual(['animales']);
+    expect(themeQueryTokens('tienen algo con caballos')).toEqual(['caballos']);
+    expect(themeQueryTokens('qué productos tienen?')).toEqual([]);
   });
 });
 
@@ -194,5 +227,31 @@ describe('isAvailabilityQuestion', () => {
     expect(isDirectVariantAddIntent('quiero balín #4')).toBe(true);
     expect(hasConcreteProductSpec('quiero balín #4')).toBe(true);
     expect(isDirectVariantAddIntent('balín #4')).toBe(true);
+  });
+});
+
+describe('shouldAbandonPendingPackFlow', () => {
+  it('detecta cuando el cliente cambia de tema', () => {
+    expect(shouldAbandonPendingPackFlow('tienen balines?')).toBe(true);
+    expect(shouldAbandonPendingPackFlow('que balines tienen?')).toBe(true);
+    expect(shouldAbandonPendingPackFlow('tienen joyas en forma de virgen?')).toBe(true);
+  });
+
+  it('no confunde la cantidad con un listado', () => {
+    expect(shouldAbandonPendingPackFlow('quisiera 18 balines')).toBe(true);
+    // SalesAgentService ignora el abandon si extractDesiredUnits devuelve cantidad.
+  });
+});
+
+describe('mentionsDifferentPackProduct', () => {
+  const balin7 = { sku: 'BLD7AM007', name: 'Balín #7 Diamantado Oro Nacional Amarillo' };
+
+  it('detecta otro balín por variante', () => {
+    expect(mentionsDifferentPackProduct('balin #3', balin7)).toBe(true);
+    expect(mentionsDifferentPackProduct('balin #7', balin7)).toBe(false);
+  });
+
+  it('detecta otro producto por SKU', () => {
+    expect(mentionsDifferentPackProduct('agrega BLD3AM003', balin7)).toBe(true);
   });
 });

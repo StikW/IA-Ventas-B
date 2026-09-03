@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { findOfferedOption, parseOptionReference } from './optionReference.utils';
+import {
+  extractListedProductNumber,
+  findListedProductNumberAmbiguity,
+  findOfferedOption,
+  matchOfferedOptionByListedProductNumber,
+  parseOptionReference,
+} from './optionReference.utils';
 import { OfferedOption } from './IChatSessionRepository';
 
 describe('parseOptionReference', () => {
@@ -23,6 +29,23 @@ describe('parseOptionReference', () => {
     expect(parseOptionReference('2', 8)).toEqual({ index: 1, quantity: 1 });
     expect(parseOptionReference('el 3', 8)).toEqual({ index: 2, quantity: 1 });
     expect(parseOptionReference('opción 4', 8)).toEqual({ index: 3, quantity: 1 });
+  });
+
+  it('resuelve la letra con la que se etiquetan los listados', () => {
+    expect(parseOptionReference('B', 8)).toEqual({ index: 1, quantity: 1 });
+    expect(parseOptionReference('la c', 8)).toEqual({ index: 2, quantity: 1 });
+    expect(parseOptionReference('opción D', 8)).toEqual({ index: 3, quantity: 1 });
+    expect(parseOptionReference('de la h', 8)).toEqual({ index: 7, quantity: 1 });
+    expect(parseOptionReference('Z', 8)).toBeNull();
+  });
+
+  // Un "6" tras listar *Balín #6* casi nunca es la sexta línea: es el producto.
+  it('descarta el dígito suelto cuando los nombres del listado llevan número', () => {
+    const balines = [{ name: 'Balín #3 Diamantado' }, { name: 'Balín #6 Diamantado' }];
+    expect(parseOptionReference('6', 2, balines)).toBeNull();
+    expect(parseOptionReference('el 2', 2, balines)).toBeNull();
+    expect(parseOptionReference('B', 2, balines)).toEqual({ index: 1, quantity: 1 });
+    expect(parseOptionReference('el primero', 2, balines)).toEqual({ index: 0, quantity: 1 });
   });
 
   it('no inventa posiciones fuera del listado', () => {
@@ -74,5 +97,52 @@ describe('findOfferedOption', () => {
 
   it('no adivina cuando el nombre no está en el listado', () => {
     expect(findOfferedOption('que opciones hay del anillo de oro rosa?', listed)).toBeNull();
+  });
+
+  it('reconoce el ID que el cliente reenvía, con o sin la negrita de WhatsApp', () => {
+    expect(findOfferedOption('ANSM-01', listed)).toEqual({ index: 0, quantity: 1 });
+    expect(findOfferedOption('quiero el *ANSM-01*', listed)).toEqual({ index: 0, quantity: 1 });
+  });
+});
+
+const balinesListed: OfferedOption[] = [
+  { productId: 1, name: 'Balín #3 Diamantado Oro Nacional Amarillo', sku: 'BLD3AM003' },
+  { productId: 2, name: 'Balín #4 Diamantado Oro Nacional Amarillo', sku: 'BLD4AM004' },
+  { productId: 3, name: 'Balín #5 Liso Oro Nacional Amarillo', sku: 'BLL5AM005' },
+  { productId: 4, name: 'Balín #5 Diamantado Oro Nacional Amarillo', sku: 'BLD5AM005' },
+  { productId: 5, name: 'Balín #6 Diamantado Oro Nacional Amarillo', sku: 'BLD6AM006' },
+];
+
+describe('matchOfferedOptionByListedProductNumber', () => {
+  it('resuelve #N contra el último listado con cantidad', () => {
+    expect(extractListedProductNumber('quisiera 4 unidades del #3')).toBe('3');
+    expect(matchOfferedOptionByListedProductNumber('quisiera 4 unidades del #3', balinesListed)).toEqual({
+      index: 0,
+      quantity: 4,
+    });
+    expect(findOfferedOption('quisiera 4 unidades del #3', balinesListed)).toEqual({
+      index: 0,
+      quantity: 4,
+    });
+  });
+
+  it('acepta "del 3" sin numeral cuando hay unidades', () => {
+    expect(matchOfferedOptionByListedProductNumber('4 unidades del 3', balinesListed)).toEqual({
+      index: 0,
+      quantity: 4,
+    });
+  });
+
+  it('no adivina cuando hay varios #5 en el listado', () => {
+    expect(matchOfferedOptionByListedProductNumber('quiero 2 del #5', balinesListed)).toBeNull();
+    expect(findListedProductNumberAmbiguity('quiero 2 del #5', balinesListed)).toEqual([2, 3]);
+  });
+
+  it('no confunde #3 del listado con la posición 3 del listado', () => {
+    expect(parseOptionReference('quisiera 4 unidades del #3', balinesListed.length, balinesListed)).toBeNull();
+    expect(findOfferedOption('quisiera 4 unidades del #3', balinesListed)).toEqual({
+      index: 0,
+      quantity: 4,
+    });
   });
 });

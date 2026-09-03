@@ -23,6 +23,12 @@ import { CartService } from './CartService';
 export type OutboundWhatsAppMessage =
   | { kind: 'text'; body: string }
   | {
+      kind: 'image';
+      /** Pie de foto. Se envía como texto si el canal no acepta media. */
+      body: string;
+      imageUrl: string;
+    }
+  | {
       kind: 'buttons';
       body: string;
       footer?: string;

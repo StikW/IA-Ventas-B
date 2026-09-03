@@ -7,7 +7,9 @@ export class CartService {
   static merge(existing: PendingCartItem[] | undefined, newItems: OrderItem[]): PendingCartItem[] {
     const cart: PendingCartItem[] = [...(existing ?? [])];
     for (const item of newItems) {
-      const idx = cart.findIndex((row) => row.sku === item.sku);
+      const idx = cart.findIndex(
+        (row) => row.sku === item.sku && (row.packUnits ?? 0) === (item.packUnits ?? 0)
+      );
       if (idx >= 0) {
         cart[idx] = { ...cart[idx], quantity: cart[idx].quantity + item.quantity };
       } else {

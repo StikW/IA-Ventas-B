@@ -169,6 +169,24 @@ Sin SKU el agente no puede resolver stock ni armar el link de checkout con `item
 
 > **Solo se venden productos publicados en WC.** Si el cliente pide algo que no está en la tienda (ej. anillos no publicados), el agente avisa y no lo inventa.
 
+### 9.2 Productos a granel (balines / `woo-massi`)
+
+Algunos productos simples (SKU tipo `BAL-10DA`) no se venden como `cantidad × precio unitario`. El plugin **`woo-massi`** guarda 4 paquetes (x10, x5, x2, x1) con precio propio y, en la ficha, arma cualquier cantidad N con la combinación más barata.
+
+El agente WhatsApp replica ese cálculo: cotiza, espera confirmación y el carrito de WhatsApp guarda **una línea por paquete** (precio del paquete, no N × unitario).
+
+**Link de checkout:** el backend envía paquetes explícitos en `items`, no solo unidades totales:
+
+```
+items=BLL5AM005~10:1,BLL5AM005~5:1,DJVMIL004:1
+```
+
+Formato: `SKU~unidadesDelPaquete:cantidadDePaquetes` (coma entre ítems). Productos sin paquetes: `SKU:qty`.
+
+En WordPress, **MASSI Bot API ≥ 1.3.15** (`class-massi-bot-pack-pricing.php`) agrupa unidades por SKU y llama al mismo endpoint que la ficha del producto: **`wm_add_promotion_to_cart`** (woo-massi). No recompone con meta propia `massi_bot_*` — woo-massi la rechaza («Paquete X 0»).
+
+Ejemplo 18 balines `BAL-10DA`: x10 ($1.720.000) + x5 ($870.000) + x2 ($355.000) + x1 ($180.000) = **$3.125.000**, no 18 × $180.000.
+
 ### 9.1 Higiene del catálogo (importante con cientos de productos)
 
 El agente identifica productos por el **nombre**, la **categoría** y las **etiquetas**. Con
@@ -273,28 +291,45 @@ Reemplaza DonChat para OTP/notificaciones; emails WooCommerce **siguen activos**
 
 ## 12. Plugin WP: pre-carga de carrito desde link
 
-**Implementado** en `massi-bot-api` → `class-massi-bot-checkout-link.php`.
+**Implementado** en `massi-bot-api` → `class-massi-bot-checkout-link.php` + `class-massi-bot-pack-pricing.php`.
 
 Al abrir:
 
 ```
-https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-B:2
+https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-B~10:2
 ```
 
-El plugin (`class-massi-bot-checkout-link.php`):
+### Formato `items`
+
+| Tipo | Formato | Ejemplo |
+|------|---------|---------|
+| Producto simple / variación | `SKU:cantidad` | `BLD3AM003:1` |
+| Paquete woo-massi | `SKU~unidadesPorPaquete:cantidadDePaquetes` | `BLL5AM005~10:1,BLL5AM005~5:1` (= 15 balines) |
+| Varios ítems | separados por **coma** | `SKU1:1,SKU2~5:2` |
+
+> WhatsApp a veces convierte `~` → `-` y `,` → `.`. Desde **1.3.14** el parser acepta ambos.
+
+### Comportamiento del plugin
 
 1. Vacía el carrito WC y agrega productos/variaciones por **SKU**
-2. Guarda el teléfono en sesión → pre-rellena `billing_phone` en checkout (formulario woo-massi)
-3. No duplica carga si se recarga la misma URL (firma en sesión)
-4. Evita redirect a carrito vacío; soporta `public_store` para ngrok (`class-massi-bot-ngrok-url.php`)
+2. **Balines / granel:** delega en woo-massi (`wm_add_promotion_to_cart` vía admin-ajax interno, ≥ **1.3.15**). No usa meta `massi_bot_*` en el carrito
+3. Guarda el teléfono en sesión → pre-rellena `billing_phone` en checkout (formulario woo-massi)
+4. Marca sesión Nediventas (`_massi_channel_origin`, banner verde en checkout)
+5. No duplica carga si se recarga la misma URL (firma en sesión)
+6. Evita redirect a carrito vacío; soporta `public_store` para ngrok (`class-massi-bot-ngrok-url.php`)
+7. Si no puede cargar productos, muestra aviso claro (no «sesión caducada» repetido)
 
 **Requisito:** SKUs en variaciones; ruta `/finalizar-compra/` (MASSI) o configurar `checkoutFormUrl`.
+
+**No afecta:** OTP Mi cuenta, notificaciones de estado, turnos/tickets (`massi-tickets`) — archivos distintos (`class-massi-bot-ia-ventas.php`, `class-massi-bot-notifications.php`).
 
 ---
 
 ## 13. Instalar plugins en producción (zip)
 
 IA Ventas **no** instala plugins en WordPress; se suben manualmente (WP Admin o File Manager).
+
+> **No subir `dist/massi-bot-api-ia-ventas.zip` sobre producción.** Ese zip sale de Local WP (`1.0.x`) y **no es** el plugin activo. Producción es **MASSI Bot API 1.3.3** (mapa de módulos, `messages/receipts`, admin). Subirlo crea un plugin duplicado o pisa 1.3.3 y se pierde lo demás. Los paquetes de balines se parchean **sobre una copia de 1.3.3**.
 
 | Artefacto | Contenido |
 |-----------|-----------|

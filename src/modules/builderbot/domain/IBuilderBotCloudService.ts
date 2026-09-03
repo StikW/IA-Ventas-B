@@ -36,6 +36,15 @@ export interface BuilderBotListSection {
   rows: BuilderBotListRow[];
 }
 
+export interface SendImageMessageInput {
+  deviceId: string;
+  phone: string;
+  /** URL pública de la imagen. WhatsApp la descarga, así que no puede requerir login. */
+  imageUrl: string;
+  /** Texto que acompaña a la imagen. Se envía igual aunque la imagen no llegue. */
+  caption: string;
+}
+
 export interface SendButtonsMessageInput {
   deviceId: string;
   phone: string;
@@ -102,6 +111,8 @@ export interface IBuilderBotCloudService {
   /** `false` cuando el transporte solo acepta texto y los botones se degradan a opciones escritas. */
   supportsInteractiveMessages(): boolean;
   sendButtonsMessage(input: SendButtonsMessageInput): Promise<void>;
+  /** Foto de producto con su texto. Si el transporte no acepta media, envía solo el texto. */
+  sendImageMessage(input: SendImageMessageInput): Promise<void>;
   sendCtaUrlMessage(input: SendCtaUrlMessageInput): Promise<void>;
   sendListMessage(input: SendListMessageInput): Promise<void>;
   deleteDevice(deviceId: string): Promise<void>;

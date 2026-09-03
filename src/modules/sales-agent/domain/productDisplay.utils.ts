@@ -6,10 +6,15 @@ import { EMOJI, warmOptionsOpener } from './tone.utils';
 /** Etiqueta visible para el cliente (internamente sigue siendo SKU). */
 export const PRODUCT_ID_LABEL = 'ID';
 
-export function formatDisplayPrice(price: string): string {
-  const digits = price.replace(/[^\d]/g, '');
+/**
+ * Acepta `unknown` a propósito: la API de WooCommerce promete cadena, pero los plugins de
+ * precios devuelven números. Un listado entero no puede caerse por el tipo de un campo.
+ */
+export function formatDisplayPrice(price: unknown): string {
+  const raw = typeof price === 'number' ? String(price) : typeof price === 'string' ? price : '';
+  const digits = raw.replace(/[^\d]/g, '');
   const num = Number.parseInt(digits, 10);
-  if (!Number.isFinite(num)) return price.trim();
+  if (!Number.isFinite(num)) return raw.trim();
   return num.toLocaleString('es-CO');
 }
 
@@ -24,11 +29,18 @@ export function variationDisplayLabel(variation: MassiBotVariation): string {
 }
 
 /**
- * Los listados van numerados porque el cliente responde con la posición («el primero»)
- * mucho más a menudo que con el ID.
+ * Los listados van etiquetados porque el cliente responde con la posición mucho más a
+ * menudo que con el ID. Se usan letras y no números: media tienda se llama por su número
+ * (*Balín #6*, anillos por talla), y «el 6» sería ambiguo para el cliente y para el agente.
  */
+export function optionLabel(position: number): string {
+  const index = position - 1;
+  if (index < 0 || index >= 26) return String(position);
+  return String.fromCharCode(65 + index);
+}
+
 function bullet(position?: number): string {
-  return position ? `${position}.` : '·';
+  return position ? `${optionLabel(position)})` : '·';
 }
 
 export function formatVariationLineForUser(variation: MassiBotVariation, position?: number): string {
@@ -67,7 +79,9 @@ export function formatFamilyProductLineForUser(
 
   return sku
     ? `${bullet(position)} ${name} — $${price}${stockNote} — ${PRODUCT_ID_LABEL}: *${sku}*`
-    : `${bullet(position)} ${name} — desde $${price}${stockNote} — _varias opciones (dime ${position ?? 'el número'} para verlas)_`;
+    : `${bullet(position)} ${name} — desde $${price}${stockNote} — _varias opciones (dime ${
+        position ? optionLabel(position) : 'su letra'
+      } para verlas)_`;
 }
 
 /** Opción de un listado, para resolver después «el primero» sin volver a buscar. */
@@ -92,6 +106,12 @@ export function toOfferedOptionFromVariation(
   };
 }
 
+/**
+ * Muchos clientes no saben que pueden pedir la ficha; si no se les ofrece, eligen a ciegas
+ * por el nombre. Se invita en cada listado, no solo cuando preguntan.
+ */
+export const PRODUCT_INFO_INVITE = `¿Quieres ver *fotos* y detalles de alguno? Dime *info* y su letra (ej. *info A*) ${EMOJI.search}`;
+
 export function buildFamilyProductListMessage(
   familyTerm: string,
   products: WooCommerceProduct[],
@@ -108,10 +128,30 @@ export function buildFamilyProductListMessage(
 
   const closing =
     totalCount > lines.length
-      ? `Dime el *número* o el *${PRODUCT_ID_LABEL}* del que te guste. Si sale _varias opciones_, el número abre las tallas y colores ${EMOJI.search}`
-      : `Dime el *número* o el *${PRODUCT_ID_LABEL}* del que te guste y lo preparo ${EMOJI.sparkle}`;
+      ? `Dime la *letra* o el *${PRODUCT_ID_LABEL}* del que te guste. Si sale _varias opciones_, la letra abre las tallas y colores`
+      : `Dime la *letra* o el *${PRODUCT_ID_LABEL}* del que te guste y lo preparo ${EMOJI.sparkle}`;
 
-  return [intro, '', ...lines, '', closing].join('\n');
+  return [intro, '', ...lines, '', closing, PRODUCT_INFO_INVITE].join('\n');
+}
+
+/** Varias líneas del último listado comparten el mismo #N; el cliente elige letra o ID. */
+export function buildListedNumberChoiceMessage(
+  productNumber: string,
+  options: OfferedOption[]
+): string {
+  const lines = options.map((option, index) => {
+    const sku = option.sku?.trim() || '—';
+    return `${bullet(index + 1)} ${option.name.trim()} — ${PRODUCT_ID_LABEL}: *${sku}*`;
+  });
+
+  return [
+    `Hay varias opciones de *#${productNumber}* en el listado ${EMOJI.gem} ¿Cuál quieres?`,
+    '',
+    ...lines,
+    '',
+    `Dime la *letra* o el *${PRODUCT_ID_LABEL}* del que te guste ${EMOJI.smile}`,
+    PRODUCT_INFO_INVITE,
+  ].join('\n');
 }
 
 /** Varias coincidencias con puntaje parecido: el agente pregunta en vez de adivinar. */
@@ -125,7 +165,8 @@ export function buildAmbiguousProductMessage(products: WooCommerceProduct[]): st
     '',
     ...lines,
     '',
-    `Responde con el número o el *${PRODUCT_ID_LABEL}* y seguimos ${EMOJI.smile}`,
+    `Responde con la letra o el *${PRODUCT_ID_LABEL}* y seguimos ${EMOJI.smile}`,
+    PRODUCT_INFO_INVITE,
   ].join('\n');
 }
 
@@ -143,6 +184,7 @@ export function buildProductFamilyVariantsMessage(
     '',
     ...lines,
     '',
-    `Dime el número o el *${PRODUCT_ID_LABEL}* de la que quieras y la agrego a tu pedido ${EMOJI.cart}`,
+    `Dime la letra o el *${PRODUCT_ID_LABEL}* de la que quieras y la agrego a tu pedido ${EMOJI.cart}`,
+    PRODUCT_INFO_INVITE,
   ].join('\n');
 }

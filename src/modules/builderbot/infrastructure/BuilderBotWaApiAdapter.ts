@@ -10,6 +10,7 @@ import {
   SendTextMessageInput,
   SendButtonsMessageInput,
   SendCtaUrlMessageInput,
+  SendImageMessageInput,
   SendListMessageInput,
 } from '../domain/IBuilderBotCloudService';
 import { renderCtaUrlAsText } from '../domain/interactiveFallback.utils';
@@ -149,6 +150,28 @@ export class BuilderBotWaApiAdapter implements IBuilderBotCloudService {
         buttons,
       }),
     });
+  }
+
+  async sendImageMessage(input: SendImageMessageInput): Promise<void> {
+    const caption = input.caption.trim();
+
+    try {
+      await this.request('/messages', {
+        method: 'POST',
+        body: JSON.stringify({
+          device: input.deviceId,
+          phone: input.phone,
+          message: caption,
+          media: input.imageUrl,
+        }),
+      });
+    } catch {
+      await this.sendTextMessage({
+        deviceId: input.deviceId,
+        phone: input.phone,
+        message: caption,
+      });
+    }
   }
 
   async sendCtaUrlMessage(input: SendCtaUrlMessageInput): Promise<void> {

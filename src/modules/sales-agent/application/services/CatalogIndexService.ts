@@ -1,4 +1,5 @@
 import { inject, injectable } from 'tsyringe';
+import { logger } from '../../../../shared/infrastructure/logger/logger';
 import {
   IWooCommerceService,
   WooCommerceConfigData,
@@ -11,11 +12,13 @@ import {
   catalogQueryTokens,
   collectFamilyTerms,
   findFamilyEntries,
+  findThemeMatches,
   rankCatalogEntries,
 } from '../../domain/catalogMatch.utils';
 import {
   normalizeProductText,
   registerCatalogFamilyTerms,
+  themeQueryTokens,
   tokensRelated,
 } from '../../domain/productSelection.utils';
 
@@ -67,8 +70,12 @@ export class CatalogIndexService {
         const index: CachedIndex = { entries, familyTerms, fetchedAt: Date.now() };
         this.cache.set(tenantId, index);
         return index;
-      } catch {
+      } catch (err) {
         // Si la tienda falla, el agente sigue con los caminos por SKU y RAG.
+        logger.error(
+          { tenantId, err: err instanceof Error ? { message: err.message, stack: err.stack } : err },
+          'No se pudo cargar el índice del catálogo'
+        );
         return cached ?? null;
       } finally {
         this.inFlight.delete(tenantId);
@@ -99,6 +106,23 @@ export class CatalogIndexService {
     if (!tokens.length) return [];
 
     return rankCatalogEntries(entries, tokens, variantHint, limit);
+  }
+
+  /**
+   * Productos de un motivo ("animales", "virgen", "religioso"), buscando en categorías y
+   * etiquetas además del nombre. Devuelve también los tokens usados, para titular el listado.
+   */
+  async findTheme(
+    tenantId: string,
+    config: WooCommerceConfigData,
+    userText: string,
+    limit = 10
+  ): Promise<{ matches: CatalogMatch[]; tokens: string[] }> {
+    const tokens = themeQueryTokens(userText);
+    if (!tokens.length) return { matches: [], tokens };
+
+    const entries = await this.getEntries(tenantId, config);
+    return { matches: findThemeMatches(entries, tokens, limit), tokens };
   }
 
   /** Productos de un tipo ("dijes", "aretes" → topos), resolviendo sinónimos. */

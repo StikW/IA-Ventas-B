@@ -7,6 +7,7 @@ import { IWooCommerceConfigRepository, IWooCommerceService, WooCommerceConfigDat
 import { OfferedOption, SalesContext } from '../../domain/IChatSessionRepository';
 import { PendingCartItem } from '../../domain/IChatSessionRepository';
 import { DomainError } from '../../../../shared/domain/errors/DomainError';
+import { logger } from '../../../../shared/infrastructure/logger/logger';
 import {
   extractExplicitSkus,
   extractProductFamilyTerm,
@@ -29,6 +30,19 @@ import {
   VARIANT_STRIP_PATTERN,
 } from '../../domain/productSelection.utils';
 import { extractCatalogRefsFromChunks, RagCatalogMatch, resolveSkuFromRagChunks } from '../../domain/catalogRag.utils';
+import {
+  composePacks,
+  extractDesiredUnits,
+  formatPackQuantityPrompt,
+  formatPackQuoteMessage,
+  inferPackUnitLabels,
+  parsePackTiersFromHtml,
+  parsePackTiersFromMeta,
+  parsePackUnitLabelsFromHtml,
+  type PackQuote,
+  type PackTier,
+  type PackUnitLabels,
+} from '../../domain/packPricing.utils';
 import { buildCheckoutFormUrl } from '../../domain/checkoutLink.utils';
 import {
   buildProductQueryFromTarget,
@@ -55,6 +69,7 @@ import {
   buildProductFamilyVariantsMessage,
   formatSimpleProductLineForUser,
   formatVariationLineForUser,
+  optionLabel,
   toOfferedOptionFromProduct,
   toOfferedOptionFromVariation,
   PRODUCT_LIST_MAX_LINES,
@@ -79,6 +94,12 @@ export interface ProductResolution {
   needsChoice?: boolean;
   /** Opciones listadas, para resolver después «el primero». */
   options?: OfferedOption[];
+  /** Producto a granel (paquetes woo-massi): falta la cantidad N. */
+  needsQuantity?: boolean;
+  /** Combinación de paquetes lista para mostrar; aún no entra al carrito. */
+  packQuote?: PackQuote;
+  /** Identidad del producto a granel cuando aún falta la cantidad. */
+  packProduct?: { productId: number; sku: string; name: string; unitLabel: string; unitPlural: string };
 }
 
 export interface ProductResolutionBatch {
@@ -87,6 +108,9 @@ export interface ProductResolutionBatch {
   items?: OrderItem[];
   needsChoice?: boolean;
   options?: OfferedOption[];
+  needsQuantity?: boolean;
+  packQuotes?: PackQuote[];
+  packProduct?: { productId: number; sku: string; name: string; unitLabel: string; unitPlural: string };
 }
 
 /** Listado de productos u opciones mostrado al cliente. */
@@ -94,6 +118,15 @@ export interface ProductBrowseResult {
   ok: boolean;
   message: string;
   options?: OfferedOption[];
+}
+
+export interface ProductPageDetails {
+  /** Nombre publicado en la tienda: manda sobre el que el agente tuviera en sesión. */
+  name: string;
+  url: string;
+  imageUrl?: string;
+  price?: string;
+  description?: string;
 }
 
 export interface StockCheckResult {
@@ -108,6 +141,11 @@ export interface StockCheckResult {
 
 @injectable()
 export class SalesAgentToolsHandler {
+  private readonly packTierCache = new Map<
+    string,
+    { tiers: PackTier[]; labels: PackUnitLabels; fetchedAt: number }
+  >();
+
   constructor(
     @inject(RagSearchService) private readonly ragSearch: RagSearchService,
     @inject('IWooCommerceConfigRepository') private readonly wcConfigRepo: IWooCommerceConfigRepository,
@@ -362,13 +400,27 @@ export class SalesAgentToolsHandler {
 
     try {
       const variantHint = extractVariantHint(userText);
-      let matches = await this.catalogIndex.search(
+
+      // Las categorías y etiquetas de WooCommerce son donde el negocio declara el motivo
+      // ("Animal", "Religioso"), así que mandan sobre el ranking general por tokens.
+      const theme = await this.catalogIndex.findTheme(
         tenantId,
         config,
         userText,
-        variantHint,
         PRODUCT_LIST_MAX_LINES
       );
+
+      let matches = theme.matches;
+
+      if (!matches.length) {
+        matches = await this.catalogIndex.search(
+          tenantId,
+          config,
+          userText,
+          variantHint,
+          PRODUCT_LIST_MAX_LINES
+        );
+      }
 
       if (!matches.length) {
         matches = await this.searchThemeProductsFromRag(tenantId, config, userText);
@@ -389,7 +441,11 @@ export class SalesAgentToolsHandler {
       const shown = matches.map((match) => match.entry.product).slice(0, PRODUCT_LIST_MAX_LINES);
       return {
         ok: true,
-        message: buildFamilyProductListMessage(themeListLabel(userText), shown, matches.length),
+        message: buildFamilyProductListMessage(
+          themeListLabel(userText, theme.tokens),
+          shown,
+          matches.length
+        ),
         options: shown.map(toOfferedOptionFromProduct),
       };
     } catch (err) {
@@ -903,10 +959,53 @@ export class SalesAgentToolsHandler {
     return { ok: true, url: result.url, message: result.url };
   }
 
+  /**
+   * Ficha del producto para mostrarle al cliente: enlace a la tienda, foto principal y
+   * precio vivo. Las variaciones no tienen página propia en WooCommerce, así que se
+   * resuelve por el producto padre.
+   */
+  async resolveProductPageDetails(
+    tenantId: string,
+    product: { productId: number; sku?: string }
+  ): Promise<ProductPageDetails | null> {
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) return null;
+
+    const toDetails = (found: WooCommerceProduct | null): ProductPageDetails | null => {
+      const url = found?.permalink?.trim();
+      if (!found || !url) return null;
+      return {
+        name: found.name?.trim() || '',
+        url,
+        imageUrl: found.images?.[0],
+        price: found.price,
+        description: found.description,
+      };
+    };
+
+    if (product.productId > 0) {
+      try {
+        const details = toDetails(await this.wcService.getProductById(config, product.productId));
+        if (details) return details;
+      } catch {
+        /* fallback SKU */
+      }
+    }
+
+    const sku = product.sku?.trim();
+    if (!sku) return null;
+    try {
+      return toDetails(await this.wcService.getProductBySku(config, sku));
+    } catch {
+      return null;
+    }
+  }
+
   async buildOrderItemBySku(
     tenantId: string,
     sku: string,
-    quantity = 1
+    quantity = 1,
+    options?: { userText?: string }
   ): Promise<ProductResolution> {
     const config = await this.wcConfigRepo.findByTenantId(tenantId);
     if (!config?.connected) {
@@ -923,6 +1022,9 @@ export class SalesAgentToolsHandler {
     if (!resolved) {
       return { ok: false, message: `Producto con SKU "${sku}" no encontrado.` };
     }
+
+    const pack = await this.tryBuildPackResolution(config, tenantId, resolved, quantity, options?.userText);
+    if (pack) return pack;
 
     return this.toOrderItemResult(resolved, quantity);
   }
@@ -1249,7 +1351,7 @@ export class SalesAgentToolsHandler {
   }
 
   private buildKeepOnlyHelp(items: PendingCartItem[]): string {
-    const lines = items.map((item, index) => `${index + 1}. ${item.name} — *${item.sku}*`);
+    const lines = items.map((item, index) => `${optionLabel(index + 1)}) ${item.name} — *${item.sku}*`);
     return [
       'Quiero asegurarme de no borrar algo por error 🙌 Este es tu carrito ahora:',
       '',
@@ -1268,6 +1370,15 @@ export class SalesAgentToolsHandler {
     context?: { cartItems?: PendingCartItem[] }
   ): Promise<ProductResolution> {
     const batch = await this.resolveSelectionsFromText(tenantId, userText, quantity, context);
+    if (batch.packQuotes?.length || batch.needsQuantity) {
+      return {
+        ok: true,
+        message: batch.message,
+        needsQuantity: batch.needsQuantity,
+        packQuote: batch.packQuotes?.[0],
+        packProduct: batch.packProduct,
+      };
+    }
     if (!batch.ok || !batch.items?.length) {
       return {
         ok: false,
@@ -1302,6 +1413,7 @@ export class SalesAgentToolsHandler {
       const multiProducts = parseMultiProductSelection(trimmed);
       if (multiProducts && multiProducts.length >= 2) {
         const items: OrderItem[] = [];
+        const packQuotes: PackQuote[] = [];
         const errors: string[] = [];
 
         for (const segment of multiProducts) {
@@ -1309,18 +1421,30 @@ export class SalesAgentToolsHandler {
           const result = await this.resolveSelectionFromTextInner(tenantId, segment, segmentQuantity, {
             cartItems: [...(context?.cartItems ?? []), ...items],
           });
+          if (result.packQuote) {
+            packQuotes.push(result.packQuote);
+            continue;
+          }
+          if (result.needsQuantity) {
+            return {
+              ok: true,
+              message: result.message,
+              needsQuantity: true,
+              packProduct: result.packProduct,
+            };
+          }
           if (!result.ok || !result.item) {
             errors.push(result.message);
             continue;
           }
 
           // El mismo ID en dos segmentos ("dos de X y una de X") suma unidades.
-          const existing = items.find((row) => row.sku === result.item!.sku);
+          const existing = items.find((row) => row.sku === result.item!.sku && !row.packUnits);
           if (existing) existing.quantity += result.item.quantity;
           else items.push(result.item);
         }
 
-        if (!items.length) {
+        if (!items.length && !packQuotes.length) {
           return {
             ok: false,
             message:
@@ -1329,11 +1453,14 @@ export class SalesAgentToolsHandler {
           };
         }
 
-        const note =
-          errors.length ?
-            ` ${errors.join(' ')}`
-          : '';
-        return { ok: true, message: note.trim(), items };
+        const note = errors.length ? errors.join(' ') : '';
+        const quoteText = packQuotes.map((quote) => formatPackQuoteMessage(quote)).join('\n\n');
+        return {
+          ok: true,
+          message: [note, quoteText].filter(Boolean).join('\n\n'),
+          items: items.length ? items : undefined,
+          packQuotes: packQuotes.length ? packQuotes : undefined,
+        };
       }
 
       const multi = parseMultiVariantSelection(trimmed);
@@ -1370,6 +1497,9 @@ export class SalesAgentToolsHandler {
         items: single.item ? [single.item] : undefined,
         needsChoice: single.needsChoice,
         options: single.options,
+        needsQuantity: single.needsQuantity,
+        packQuotes: single.packQuote ? [single.packQuote] : undefined,
+        packProduct: single.packProduct,
       };
     } catch (err) {
       return { ok: false, message: this.formatStoreError(err) };
@@ -1394,7 +1524,7 @@ export class SalesAgentToolsHandler {
     // El ID puede venir dentro de la frase: "quiero dos unidades de CAD-ORO-45".
     const explicitSku = looksLikeSku(trimmed) ? trimmed : extractExplicitSkus(trimmed)[0];
     if (explicitSku) {
-      const bySku = await this.buildOrderItemBySku(tenantId, explicitSku, qty);
+      const bySku = await this.buildOrderItemBySku(tenantId, explicitSku, qty, { userText: trimmed });
       if (bySku.ok) return bySku;
     }
 
@@ -1403,7 +1533,7 @@ export class SalesAgentToolsHandler {
 
     const ragMatch = await this.resolveSkuFromRag(tenantId, trimmed, variantHint);
     if (ragMatch) {
-      const fromRag = await this.buildOrderItemBySku(tenantId, ragMatch.sku, qty);
+      const fromRag = await this.buildOrderItemBySku(tenantId, ragMatch.sku, qty, { userText: trimmed });
       if (fromRag.ok) return fromRag;
     }
 
@@ -1426,11 +1556,11 @@ export class SalesAgentToolsHandler {
 
     if (useSiblingPath) {
       if (variantHint && cartItemMatchesVariantHint(anchor, variantHint)) {
-        return await this.buildOrderItemBySku(tenantId, anchor.sku, qty);
+        return await this.buildOrderItemBySku(tenantId, anchor.sku, qty, { userText: trimmed });
       }
 
       if (!variantHint && isSameProductReference(trimmed)) {
-        return await this.buildOrderItemBySku(tenantId, anchor.sku, qty);
+        return await this.buildOrderItemBySku(tenantId, anchor.sku, qty, { userText: trimmed });
       }
 
       if (variantHint) {
@@ -1472,7 +1602,7 @@ export class SalesAgentToolsHandler {
 
       if (useSiblingPath && anchor) {
         if (!variantHint || cartItemMatchesVariantHint(anchor, variantHint)) {
-          return await this.buildOrderItemBySku(tenantId, anchor.sku, qty);
+          return await this.buildOrderItemBySku(tenantId, anchor.sku, qty, { userText: trimmed });
         }
       }
 
@@ -1701,6 +1831,13 @@ export class SalesAgentToolsHandler {
       }
       return 'No pude consultar las opciones de ese producto. Intenta de nuevo en un momento.';
     }
+
+    // Un fallo de la tienda es esperable; cualquier otro es un bug del agente y sin traza
+    // se confunde con "no hay resultados" (el cliente recibe el catálogo genérico).
+    logger.error(
+      { err: err instanceof Error ? { message: err.message, stack: err.stack } : err },
+      'Error inesperado resolviendo la consulta del catálogo'
+    );
     return 'Ocurrió un error al consultar la tienda. Intenta de nuevo.';
   }
 
@@ -2099,5 +2236,132 @@ export class SalesAgentToolsHandler {
       p.stockQuantity != null ? `${p.stockStatus} (${p.stockQuantity} uds.)` : p.stockStatus;
     const typeHint = p.type === 'variable' ? ' | Tipo: variable (cada variación tiene SKU propio)' : '';
     return `- ${p.name} | SKU: ${p.sku || 'SIN SKU — asignar en WooCommerce'} | productId=${p.id} | Precio: ${p.price} | Stock: ${stock}${typeHint}`;
+  }
+
+  private async tryBuildPackResolution(
+    config: WooCommerceConfigData,
+    tenantId: string,
+    resolved: {
+      productId: number;
+      variationId?: number;
+      sku: string;
+      name: string;
+      price: string;
+      stockStatus: string;
+      stockQuantity: number | null;
+    },
+    quantity: number,
+    userText?: string
+  ): Promise<ProductResolution | null> {
+    if (resolved.variationId) return null;
+
+    const pack = await this.loadPackTiers(config, tenantId, resolved.productId, resolved.name);
+    if (!pack) return null;
+
+    const fromText = userText ? extractDesiredUnits(userText) : null;
+    const desired = fromText ?? (quantity > 1 ? Math.floor(quantity) : null);
+    if (!desired) {
+      return {
+        ok: true,
+        needsQuantity: true,
+        message: formatPackQuantityPrompt(resolved.name, pack.labels),
+        packProduct: {
+          productId: resolved.productId,
+          sku: resolved.sku,
+          name: resolved.name,
+          unitLabel: pack.labels.unitLabel,
+          unitPlural: pack.labels.unitPlural,
+        },
+      };
+    }
+
+    // La cotización es por unidades pedidas (N balines), no por stock de WC: el stock puede
+    // reflejar otra cosa o quedar desactualizado; validamos al confirmar, no al cotizar.
+    const composition = composePacks(desired, pack.tiers);
+    if (!composition) {
+      return {
+        ok: false,
+        message: `No pude armar exactamente ${desired} ${pack.labels.unitPlural} con los paquetes de 1, 2, 5 y 10.`,
+      };
+    }
+
+    const quote: PackQuote = {
+      productId: resolved.productId,
+      sku: resolved.sku,
+      productName: resolved.name,
+      unitLabel: pack.labels.unitLabel,
+      unitPlural: pack.labels.unitPlural,
+      desiredUnits: desired,
+      tiers: pack.tiers,
+      composition,
+    };
+
+    let message = formatPackQuoteMessage(quote);
+    if (
+      resolved.stockQuantity != null &&
+      resolved.stockQuantity > 0 &&
+      desired > resolved.stockQuantity
+    ) {
+      message += `\n\nℹ️ Stock en tienda ahora: *${resolved.stockQuantity}* ${pack.labels.unitPlural}. La cotización es para *${desired}*; al confirmar revisamos disponibilidad.`;
+    }
+
+    return {
+      ok: true,
+      message,
+      packQuote: quote,
+    };
+  }
+
+  private async loadPackTiers(
+    config: WooCommerceConfigData,
+    tenantId: string,
+    productId: number,
+    productName: string
+  ): Promise<{ tiers: PackTier[]; labels: PackUnitLabels } | null> {
+    const cacheKey = `${tenantId}:${productId}`;
+    const cached = this.packTierCache.get(cacheKey);
+    if (cached && Date.now() - cached.fetchedAt < 10 * 60 * 1000) {
+      return { tiers: cached.tiers, labels: cached.labels };
+    }
+
+    let product: WooCommerceProduct | null = null;
+    try {
+      product = await this.wcService.getProductById(config, productId);
+    } catch {
+      product = null;
+    }
+
+    const fromMeta = parsePackTiersFromMeta(product?.metaData);
+    let tiers = fromMeta;
+    let labels = inferPackUnitLabels(product?.name || productName);
+
+    if (!tiers && product?.permalink) {
+      const html = await this.fetchProductHtml(product.permalink);
+      if (html) {
+        tiers = parsePackTiersFromHtml(html);
+        labels = parsePackUnitLabelsFromHtml(html) ?? labels;
+      }
+    }
+
+    if (!tiers) return null;
+
+    this.packTierCache.set(cacheKey, { tiers, labels, fetchedAt: Date.now() });
+    return { tiers, labels };
+  }
+
+  private async fetchProductHtml(permalink: string): Promise<string | null> {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const response = await fetch(permalink, {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'Mozilla/5.0 IA-Ventas-PackTiers' },
+      });
+      clearTimeout(timer);
+      if (!response.ok) return null;
+      return await response.text();
+    } catch {
+      return null;
+    }
   }
 }

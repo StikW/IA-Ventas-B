@@ -65,6 +65,7 @@ flowchart LR
 | Saludo + perfil negocio + pedir ID | `buildWelcomeMessage` → botón catálogo WC | ✅ Implementado |
 | Consulta catálogo (*qué productos tienen*) | Enlace `{storeUrl}/tienda/` + botón (no lista en chat) | ✅ Implementado |
 | ID/SKU directo o descripción natural | RAG (`.txt`) → SKU → stock WC → carrito | ✅ Implementado |
+| **Paquetes a granel (balines)** | `woo-massi` arma x10/x5/x2/x1; el agente cotiza y el checkout cobra esos paquetes | ✅ Implementado |
 | Identificación por **SKU** (simple o variación) | Atajos deterministas + herramientas; multi-producto en un mensaje | ✅ Implementado |
 | Carrito en sesión (`flowStep: buying` / `discovery`) | `SalesAgentService` / DynamoDB | ✅ Implementado |
 | Modificar carrito (quitar/corregir/**vaciar**/ajustar qty) | Atajos deterministas; vaciar con frases naturales | ✅ Implementado |
@@ -92,7 +93,7 @@ Cuando el cliente **ya sabe qué comprar**, el negocio necesita capturar según 
 **Tras “finalizar con la compra” (modo link):**
 
 1. Valida stock del carrito WhatsApp.
-2. Genera URL: `{checkoutFormUrl || checkoutPagePath || storeUrl/checkout/}?phone=…&source=whatsapp&public_store=…&items=SKU:qty,…`
+2. Genera URL: `{checkoutFormUrl || checkoutPagePath || storeUrl/checkout/}?phone=…&source=whatsapp&public_store=…&items=SKU:qty,…` — paquetes woo-massi: `SKU~unidadesPorPaquete:cantidadDePaquetes` (ej. `BLL5AM005~10:1,BLL5AM005~5:1` = 15 unidades).
 3. Envía mensaje con el enlace; vacía `cartItems` de la sesión (el pedido vive en la URL) y guarda `lastCheckoutUrl` por si pide reenviar; sesión → `flowStep: checkout_redirect`.
 4. Cliente completa en WC: recoger, domicilio, transferencia, efectivo.
 5. Staff valida pago en WC → ticket prioritario → email (WhatsApp proactivo: roadmap).
@@ -105,7 +106,7 @@ Cuando el cliente **ya sabe qué comprar**, el negocio necesita capturar según 
 | `checkoutPagePath` | Auto-detectada al probar WC (ej. `/finalizar-compra/`) |
 | `checkoutMode` | `link` (default) \| `whatsapp` (botones legacy en chat) |
 
-**Plugin WP:** ✅ lee `phone`, `source`, `items`, `public_store` para pre-cargar carrito (`class-massi-bot-checkout-link.php`).
+**Plugin WP:** ✅ lee `phone`, `source`, `items`, `public_store` para pre-cargar carrito (`class-massi-bot-checkout-link.php`). En balines/a granel delega en **woo-massi** (`wm_add_promotion_to_cart`); no usa meta `massi_bot_*` en el carrito (provoca «Paquete X 0»). Requiere **MASSI Bot API ≥ 1.3.15** en producción.
 
 **Setup WC:** [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) · **BuilderBot (modo link):** misma guía §11 — sin cambios obligatorios en BBC.
 

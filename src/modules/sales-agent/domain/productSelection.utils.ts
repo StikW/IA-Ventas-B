@@ -100,7 +100,7 @@ export function isDirectVariantAddIntent(text: string): boolean {
 }
 
 export const QUANTITY_PATTERN =
-  /\b(\d+)\s*(?:ud?s?\.?|unidades?|pares?|piezas?|pzs?)\b|(?:cantidad|qty|x)\s*(\d+)\b/i;
+  /\b(\d+)\s*(?:unds?\.?|uds?\.?|unidades?|pares?|piezas?|pzs?|balines?|canutillos?)\b|(?:cantidad|qty|x)\s*(\d+)\b/i;
 
 export const SKU_LIKE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{2,}$/;
 
@@ -116,9 +116,17 @@ export function normalizeProductText(text: string): string {
     .trim();
 }
 
+/**
+ * Marcas de formato de WhatsApp (`*negrita*`, `_cursiva_`, `~tachado~`, `` `código` ``).
+ * El cliente copia los *ID* que el agente resalta en negrita y los reenvía con asteriscos.
+ */
+export function stripWhatsAppFormatting(text: string): string {
+  return text.replace(/[*_~`]+/g, '');
+}
+
 /** Corrige typos frecuentes en WhatsApp antes de interpretar intents. */
 export function normalizeUserTypos(text: string): string {
-  return text
+  return stripWhatsAppFormatting(text)
     .replace(/\bagreag(?:ar|r)\b/gi, 'agregar')
     .replace(/\banil[llo]+\b/gi, 'anillo')
     .replace(/\bcadenas\b/gi, 'cadena');
@@ -313,11 +321,11 @@ export function hasThemeOrShapeQuery(text: string): boolean {
 }
 
 /** Etiqueta corta para el listado: "joyas en forma de animales" → "animales". */
-export function themeListLabel(text: string): string {
+export function themeListLabel(text: string, fallbackTokens: string[] = []): string {
   const t = normalizeProductText(normalizeUserTypos(text));
   const shape = t.match(/\b(?:forma|figura|figuras|motivo)\s+de\s+(.+?)(?:\s*\?|$)/);
   const label = shape?.[1]?.replace(/\b(hay|tienen|tienes|disponibles?)\b/g, '').trim();
-  return label || 'eso que buscas';
+  return label || fallbackTokens.join(' ') || 'eso que buscas';
 }
 
 /**
@@ -328,6 +336,80 @@ export function isThemeBrowseIntent(text: string): boolean {
   if (extractExplicitSkus(text).length) return false;
   if (isProductFamilyBrowseIntent(text)) return false;
   return hasThemeOrShapeQuery(text);
+}
+
+/** Menciones al surtido en general, que por sí solas no describen ningún motivo. */
+const GENERIC_CATALOG_WORDS = /\b(joya|joyas|joyeria|producto|productos|articulo|articulos|pieza|piezas|modelo|modelos|diseno|disenos|cosa|cosas|algo)\b/;
+
+/**
+ * El cliente describe un motivo ("tienen joyas de animales", "algo religioso") sin nombrar
+ * un tipo de producto ni un ID. No se decide aquí si existe: el catálogo del negocio es
+ * quien manda, así que el agente intenta el listado y, si no hay nada, sigue su curso.
+ */
+export function isThemeBrowseCandidate(text: string): boolean {
+  if (extractExplicitSkus(text).length) return false;
+  if (isProductFamilyBrowseIntent(text)) return false;
+  if (hasThemeOrShapeQuery(text)) return true;
+
+  const t = normalizeProductText(normalizeUserTypos(text));
+  const asksForCatalog =
+    isAvailabilityQuestion(text) || isCatalogBrowseIntent(text) || GENERIC_CATALOG_WORDS.test(t);
+
+  return asksForCatalog && themeQueryTokens(text).length > 0;
+}
+
+/**
+ * Palabras que describen el motivo, sin el tipo de producto ni el relleno de la pregunta.
+ * "tienen joyas de animales" → ["animales"].
+ */
+export function themeQueryTokens(text: string): string[] {
+  return tokenizeProductQuery(normalizeUserTypos(text)).filter(
+    (token) =>
+      token.length >= 4 &&
+      !/^\d+$/.test(token) &&
+      !GENERIC_CATALOG_WORDS.test(token) &&
+      !THEME_QUERY_NOISE.test(token) &&
+      ![...catalogFamilyTerms].some((family) => tokensRelated(token, family))
+  );
+}
+
+const THEME_QUERY_NOISE =
+  /^(tienen|tienes|tiene|hay|venden|manejan|muestra|mostrar|muestrame|listar|alguna|alguno|algunas|algunos|forma|formas|figura|figuras|motivo|busco|buscas|buscan|disponible|disponibles|quiero|quisiera|gustaria|interesa|interesan|para|con|sobre|tema|estilo|tipo|clase|acerca|informacion|precio|precios|catalogo)$/;
+
+/**
+ * El cliente cambió de tema (listado, catálogo, otro motivo…) mientras había un balín
+ * pendiente de cantidad o una cotización abierta. Hay que descartar ese estado.
+ */
+export function shouldAbandonPendingPackFlow(text: string): boolean {
+  return (
+    isProductFamilyBrowseIntent(text) ||
+    isThemeBrowseCandidate(text) ||
+    isCatalogBrowseIntent(text)
+  );
+}
+
+/** Señala otro producto distinto al que está pendiente de cotización. */
+export function mentionsDifferentPackProduct(
+  text: string,
+  pending: { sku: string; name: string }
+): boolean {
+  const pendingSku = pending.sku.trim().toUpperCase();
+  const otherSku = extractExplicitSkus(text).find((sku) => sku.toUpperCase() !== pendingSku);
+  if (otherSku) return true;
+
+  const hint = extractVariantHint(text);
+  if (!hint) return false;
+
+  const normalizedHint = normalizeProductText(hint.replace(/^#/, ''));
+  const normalizedName = normalizeProductText(pending.name);
+  if (normalizedName.includes(normalizedHint)) return false;
+
+  // Balín #3 vs Balín #7: el hint numérico no aparece en el nombre del pendiente.
+  if (/^\d+$/.test(normalizedHint) && /\b#?\d+\b/.test(normalizedName)) {
+    return !normalizedName.includes(normalizedHint);
+  }
+
+  return normalizedHint.length >= 2;
 }
 
 export function extractVariantHint(text: string): string | undefined {

@@ -213,6 +213,52 @@ export function isDecisiveMatch(matches: CatalogMatch[]): boolean {
 }
 
 /**
+ * Productos de un motivo ("animales", "religioso", "virgen del carmen").
+ *
+ * El motivo casi nunca es la primera palabra del nombre, así que `findFamilyEntries` no
+ * sirve: en WooCommerce vive en las categorías y etiquetas ("Animal", "Religioso"). Se
+ * excluye la descripción a propósito, porque los textos comerciales nombran de pasada
+ * varios motivos y devolverían medio catálogo.
+ */
+export function findThemeMatches(
+  entries: CatalogEntry[],
+  tokens: string[],
+  limit = 10
+): CatalogMatch[] {
+  if (!tokens.length) return [];
+
+  const scored: CatalogMatch[] = [];
+  for (const entry of entries) {
+    let score = 0;
+    let matchedTokens = 0;
+
+    for (const token of tokens) {
+      let tokenScore = 0;
+      if (includesToken(entry.nameTokens, token)) tokenScore = 3;
+      else if (includesToken(entry.categoryTokens, token)) tokenScore = 2;
+      else if (includesToken(entry.tagTokens, token)) tokenScore = 1;
+
+      if (tokenScore > 0) matchedTokens++;
+      score += tokenScore;
+    }
+
+    if (!matchedTokens) continue;
+    if (entry.product.stockStatus !== 'instock') score -= 1;
+    if (score <= 0) continue;
+    scored.push({ entry, score, matchedTokens });
+  }
+
+  // "virgen del carmen" debe listar solo las del Carmen; si ninguna cubre el motivo
+  // completo, se aceptan coincidencias parciales antes que responder que no hay nada.
+  const complete = scored.filter((match) => match.matchedTokens === tokens.length);
+  const pool = complete.length ? complete : scored;
+
+  return pool
+    .sort((a, b) => b.score - a.score || a.entry.product.name.localeCompare(b.entry.product.name))
+    .slice(0, limit);
+}
+
+/**
  * Tipos de producto del catálogo, para que el agente reconozca consultas como "tienen
  * herrajes". Solo la primera palabra del nombre y con un mínimo de productos: usar las
  * categorías metería materiales y motivos ("amarillo", "religioso") como si fueran tipos.

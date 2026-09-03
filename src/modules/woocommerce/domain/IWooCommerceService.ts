@@ -22,6 +22,11 @@ export interface WooCommerceProductCategory {
   slug: string;
 }
 
+export interface WooCommerceProductMeta {
+  key: string;
+  value: unknown;
+}
+
 export interface WooCommerceProduct {
   id: number;
   name: string;
@@ -32,8 +37,12 @@ export interface WooCommerceProduct {
   description: string;
   status: string;
   type?: string;
+  permalink?: string;
+  metaData?: WooCommerceProductMeta[];
   categories?: WooCommerceProductCategory[];
   tags?: string[];
+  /** URLs públicas de la galería, en el orden de WooCommerce (la primera es la principal). */
+  images?: string[];
 }
 
 export interface WooCommerceOrderPayload {

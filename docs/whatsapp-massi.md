@@ -264,8 +264,8 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 | `quiero una cadena`, `tienen anillos`, `aretes` | **Determinista** → `resolveProductFamilyBrowse`: producto padre WC + variantes; al cliente se muestra *ID* (internamente SKU) |
 | `tienen balines #4`, `hay anillos talla 6?` | **Consulta de disponibilidad** (`isAvailabilityQuestion`): lista opciones con *ID*. **No** agrega al carrito hasta que diga *quiero / dame / agrega* o envíe un ID |
 | `quiero una cadena` (descripción sin SKU resoluble, fallback) | `buildProductLookupHelpReply`: pide el **ID** + `route: catalog` |
-| Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito |
-| Cliente **pide** producto (*quiero cadena 50 cm*, *dame el balín #6*) | **RAG** (`resolveSkuFromRag` + parser `.txt`) → SKU → stock WC → carrito; fallback búsqueda WC por nombre |
+| Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito. Si el producto tiene paquetes `woo-massi` (balines), **no agrega**: pide cantidad o cotiza x10/x5/x2/x1 y espera confirmación. |
+| Cliente **pide** producto (*quiero cadena 50 cm*, *dame 18 balines #10*) | **RAG** → SKU → WC. En productos a granel: combinación de paquetes + total, **sin** entrar al carrito hasta que confirme (*sí*, *agrégalo*). |
 | `busco zapatos`, consulta abierta al LLM | LLM → `buscar_en_documentos` (RAG) + `agregar_producto_por_sku` / `buscar_productos_tienda` |
 
 **Regla:** el agente **nunca inventa** productos ni precios. **RAG** identifica SKU; **WooCommerce** confirma stock y precio.
@@ -628,6 +628,7 @@ Modo **wa-api** (`console.builderbot.app`): no necesita nada de esto, envía bot
 | Catálogo WC (enlace) | `ConversationFlowService.buildCatalogBrowseReply` |
 | RAG → SKU | `sales-agent/domain/catalogRag.utils.ts`, `SalesAgentToolsHandler.resolveSkuFromRag` |
 | URL catálogo | `sales-agent/domain/catalogUrl.utils.ts` |
+| Paquetes a granel (x10/x5/x2/x1) | `sales-agent/domain/packPricing.utils.ts` |
 | Multi-producto / variantes | `sales-agent/domain/productSelection.utils.ts` |
 | Link checkout WC | `sales-agent/domain/checkoutLink.utils.ts` |
 | IDs de botones | `sales-agent/domain/whatsappFlow.constants.ts` |
@@ -703,9 +704,10 @@ https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_sto
 El plugin:
 
 1. Vacía el carrito WC y agrega productos/variaciones por **SKU**
-2. Guarda el teléfono en sesión → pre-rellena `billing_phone` en checkout
-3. Evita redirect a `/carrito/` con carrito vacío (filter `woocommerce_checkout_redirect_empty_cart`)
-4. `public_store` reescribe assets cuando la tienda se accede vía ngrok
+2. En productos a granel (balines x10/x5/x2/x1) cobra **el valor de los paquetes**, no N × precio unitario (`class-massi-bot-pack-pricing.php`)
+3. Guarda el teléfono en sesión → pre-rellena `billing_phone` en checkout
+4. Evita redirect a `/carrito/` con carrito vacío (filter `woocommerce_checkout_redirect_empty_cart`)
+5. `public_store` reescribe assets cuando la tienda se accede vía ngrok
 
 **Requisito:** SKUs en todas las variaciones publicadas; ruta checkout configurable (`checkoutFormUrl` o auto-detect `/finalizar-compra/`). Solo productos en WC se listan/venden por WhatsApp.
 

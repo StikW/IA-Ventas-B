@@ -31,12 +31,25 @@ export interface BuildCheckoutLinkResult {
   message?: string;
 }
 
-/** Codifica ítems como `SKU:cantidad,SKU:cantidad` */
+/** Codifica ítems para el link de checkout MASSI. */
 export function encodeCheckoutItems(items: PendingCartItem[]): string {
-  return items
-    .filter((item) => item.sku?.trim())
-    .map((item) => `${encodeURIComponent(item.sku.trim())}:${item.quantity}`)
-    .join(',');
+  const parts: string[] = [];
+
+  for (const item of items) {
+    const sku = item.sku?.trim();
+    if (!sku) continue;
+
+    // Paquetes woo-massi: SKU~unidadesPorPaquete:cantidadDePaquetes (no unidades totales).
+    // Ej.: 3× paquete x10 + 2× paquete x2 → BLD6AM006~10:3,BLD6AM006~2:2
+    if (item.packUnits && item.packUnits > 0) {
+      parts.push(`${encodeURIComponent(sku)}~${item.packUnits}:${item.quantity}`);
+      continue;
+    }
+
+    parts.push(`${encodeURIComponent(sku)}:${item.quantity}`);
+  }
+
+  return parts.join(',');
 }
 
 /**
