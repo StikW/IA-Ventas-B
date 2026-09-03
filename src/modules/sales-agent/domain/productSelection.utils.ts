@@ -191,16 +191,18 @@ export const PRODUCT_FAMILY_PATTERN =
   /\b(cadena|cadenas|anillo|anillos|arete|aretes|topo|topos|topito|topitos|candonga|candongas|zarcillo|zarcillos|collar|collares|gargantilla|gargantillas|pulsera|pulseras|esclava|esclavas|manilla|manillas|bal[ií]n|balines|dije|dijes|colgante|colgantes|medalla|medallas|herraje|herrajes|broche|broches|canutillo|canutillos|tambor|tambores|placa|placas|argolla|argollas|sortija|sortijas|aro|aros)\b/i;
 
 /**
- * Códigos de producto inequívocos ("CAD-ORO-45"): con dígito y separador o mayúsculas.
+ * Códigos de producto inequívocos ("CAD-ORO-45", "DCOMAT002").
  * `looksLikeSku` por sí solo acepta cualquier palabra ("unidades", "quiero").
+ * El cliente a menudo reescribe el ID en minúsculas ("dcomat002").
  */
 export function looksLikeExplicitSku(token: string): boolean {
   if (!looksLikeSku(token) || !/\d/.test(token)) return false;
-  return /[-_.]/.test(token) || /[A-Z]{2,}/.test(token);
+  if (/[-_.]/.test(token)) return true;
+  return /[A-Za-z]{2,}/.test(token) && token.length >= 6;
 }
 
 export function extractExplicitSkus(text: string): string[] {
-  return [...text.matchAll(/\b[A-Za-z0-9][A-Za-z0-9._-]{2,}\b/g)]
+  return [...stripWhatsAppFormatting(text).matchAll(/\b[A-Za-z0-9][A-Za-z0-9._-]{2,}\b/g)]
     .map((match) => match[0])
     .filter(looksLikeExplicitSku);
 }

@@ -181,9 +181,9 @@ El agente WhatsApp replica ese cálculo: cotiza, espera confirmación y el carri
 items=BLL5AM005~10:1,BLL5AM005~5:1,DJVMIL004:1
 ```
 
-Formato: `SKU~unidadesDelPaquete:cantidadDePaquetes` (coma entre ítems). Productos sin paquetes: `SKU:qty`.
+Formato: `SKUxunidadesDelPaquete:cantidadDePaquetes` (coma entre ítems). Productos sin paquetes: `SKU:qty`. WhatsApp convierte `~` en `--`; el plugin ≥ 1.3.16 acepta `x`, `~` y `--`.
 
-En WordPress, **MASSI Bot API ≥ 1.3.15** (`class-massi-bot-pack-pricing.php`) agrupa unidades por SKU y llama al mismo endpoint que la ficha del producto: **`wm_add_promotion_to_cart`** (woo-massi). No recompone con meta propia `massi_bot_*` — woo-massi la rechaza («Paquete X 0»).
+En WordPress, **MASSI Bot API ≥ 1.3.16** (`class-massi-bot-pack-pricing.php`) agrupa unidades por SKU y llama al handler de **`wm_add_promotion_to_cart`** en el mismo request (el loopback `admin-ajax` suele fallar en Hostinger). No recompone con meta propia `massi_bot_*` — woo-massi la rechaza («Paquete X 0»).
 
 Ejemplo 18 balines `BAL-10DA`: x10 ($1.720.000) + x5 ($870.000) + x2 ($355.000) + x1 ($180.000) = **$3.125.000**, no 18 × $180.000.
 
@@ -269,7 +269,7 @@ Con el flujo de negocio actual (**modo `link`**, default) y los cambios reciente
 
 1. `git pull` + `npm run build` + `pm2 restart` en EC2 (incluye ruta `POST /channel/messages`)
 2. Panel → WhatsApp → **Re-sincronizar BuilderBot** (relay + flows UI + regla `finalize`; idempotente)
-3. Subir plugins WP: `dist/massi-bot-api-ia-ventas.zip` + `dist/massi-tickets-ia-ventas-update.zip` (`node dist/build-plugin-zips.mjs`)
+3. Subir plugin WP checkout: `dist/massi-bot-api-1.3.16-full.zip` (`node dist/build-massi-bot-api-1.3.10.mjs`) + `dist/massi-tickets-ia-ventas-update.zip` si aplica
 4. **MASSI → API** (WP): modo **4 IA Ventas**, URL + API Key
 5. Verificar relay → `{APP_PUBLIC_URL}/api/v1/webhooks/builderbot/{tenantId}`
 6. Probar: hola → carrito → checkout link **y** OTP Mi cuenta
@@ -304,10 +304,10 @@ https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_sto
 | Tipo | Formato | Ejemplo |
 |------|---------|---------|
 | Producto simple / variación | `SKU:cantidad` | `BLD3AM003:1` |
-| Paquete woo-massi | `SKU~unidadesPorPaquete:cantidadDePaquetes` | `BLL5AM005~10:1,BLL5AM005~5:1` (= 15 balines) |
+| Paquete woo-massi | `SKUxunidadesPorPaquete:cantidadDePaquetes` | `BLL5AM005x10:1,BLL5AM005x5:1` (= 15 balines) |
 | Varios ítems | separados por **coma** | `SKU1:1,SKU2~5:2` |
 
-> WhatsApp a veces convierte `~` → `-` y `,` → `.`. Desde **1.3.14** el parser acepta ambos.
+> WhatsApp convierte `~` en tachado (`--`) y a veces `,` → `.`. Desde **1.3.16** el parser acepta `x`, `~` y `--`.
 
 ### Comportamiento del plugin
 
@@ -327,25 +327,45 @@ https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_sto
 
 ## 13. Instalar plugins en producción (zip)
 
-IA Ventas **no** instala plugins en WordPress; se suben manualmente (WP Admin o File Manager).
+IA Ventas **no** instala plugins en WordPress automáticamente. En producción **sin FTP/File Manager** la vía es:
 
-> **No subir `dist/massi-bot-api-ia-ventas.zip` sobre producción.** Ese zip sale de Local WP (`1.0.x`) y **no es** el plugin activo. Producción es **MASSI Bot API 1.3.3** (mapa de módulos, `messages/receipts`, admin). Subirlo crea un plugin duplicado o pisa 1.3.3 y se pierde lo demás. Los paquetes de balines se parchean **sobre una copia de 1.3.3**.
+**WP Admin → Plugins → Añadir nuevo → Subir plugin** (zip **completo** del plugin).
 
-| Artefacto | Contenido |
-|-----------|-----------|
-| `dist/massi-bot-api-ia-ventas.zip` | Plugin **MASSI Bot API** (+ cliente IA Ventas, notificaciones) |
-| `dist/massi-tickets-ia-ventas-update.zip` | Actualización **MASSI Tickets** (gateway `ia_ventas`, OTP) |
-| Script empaquetado | `node dist/build-plugin-zips.mjs` (**bestzip**, rutas `/` — compatible Linux/SiteGround) |
-| Instrucciones | `dist/INSTALAR-PLUGIN-WORDPRESS.txt` |
+### MASSI Bot API (checkout WhatsApp + API REST)
 
-**Importante:** no uses `Compress-Archive` de PowerShell (crea `\` en rutas → WordPress en Linux instala mal). Si la subida falla, borra carpetas rotas en `wp-content/plugins/` por File Manager y vuelve a subir.
+| Artefacto | Uso |
+|-----------|-----|
+| **`dist/massi-bot-api-1.3.17-full.zip`** | Plugin completo listo para subir (versión actual checkout paquetes) |
+| **`dist/_zip_staging/massi-bot-api/`** | Fuente editada antes de empaquetar |
+| **`node dist/build-massi-bot-api-1.3.10.mjs`** | Regenera el zip (valida versión en `massi-bot-api.php`) |
+| **`docs/patches/`** | Parches PHP históricos (1.3.4); **no** subir solos — WP exige carpeta `massi-bot-api/` con `massi-bot-api.php` |
 
 Pasos:
 
-1. WordPress Admin → **Plugins → Añadir → Subir plugin** → `massi-bot-api-ia-ventas.zip` → Activar
-2. Actualizar **massi-tickets** con el segundo zip (o FTP sobre archivos clave)
-3. Usuario bot + Application Password (§4) → panel IA Ventas → **Probar conexión**
-4. **MASSI → API** → modo **4**, URL + API Key (§11.6)
+1. Generar (opcional): `node dist/build-massi-bot-api-1.3.10.mjs` → `dist/massi-bot-api-1.3.17-full.zip`
+2. **Plugins → Añadir → Subir plugin** → elegir el zip → **Instalar** → **Reemplazar plugin actual** si pregunta
+3. Confirmar en **Plugins** que la versión sea **1.3.17** (o superior)
+4. Probar en incógnito: `…/finalizar-compra/?source=whatsapp&items=BLL5AM005x10:1,BLL5AM005x5:1` (también vale el `--` que deja WhatsApp)
+
+> **No subir `dist/massi-bot-api-ia-ventas.zip`** sobre producción: sale de Local WP (`1.0.x`) y **no es** el plugin activo (prod usa **1.3.x** con mapa de módulos, receipts, admin). Subirlo crea duplicado o pisa funcionalidad.
+
+> **No subir zips «patch-only»** (solo 2 PHP sueltos): WordPress responde *«No se encontraron plugins»*.
+
+### Otros plugins MASSI
+
+| Artefacto | Contenido |
+|-----------|-----------|
+| `dist/massi-bot-api-ia-ventas.zip` | Legacy Local 1.0.x — **no usar en prod** |
+| `dist/massi-tickets-ia-ventas-update.zip` | Actualización **MASSI Tickets** (gateway `ia_ventas`, OTP) |
+| Script empaquetado | `node dist/build-plugin-zips.mjs` (**bestzip**, rutas `/`) |
+
+**Importante:** no uses `Compress-Archive` de PowerShell (crea `\` en rutas → WordPress en Linux instala mal). Si la subida falla, borra carpetas rotas en `wp-content/plugins/` y vuelve a subir.
+
+Pasos tickets / API (sin cambios):
+
+1. Actualizar **massi-tickets** con su zip si aplica
+2. Usuario bot + Application Password (§4) → panel IA Ventas → **Probar conexión**
+3. **MASSI → API** → modo **4**, URL + API Key (§11.6)
 
 ### Fix Authorization en hosting
 

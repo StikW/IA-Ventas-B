@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodeCheckoutItems } from './checkoutLink.utils';
+import { encodeCheckoutItems, parseCheckoutItems } from './checkoutLink.utils';
 import { PendingCartItem } from './IChatSessionRepository';
 
 describe('encodeCheckoutItems', () => {
@@ -38,7 +38,7 @@ describe('encodeCheckoutItems', () => {
         packUnits: 1,
       },
     ];
-    expect(encodeCheckoutItems(items)).toBe('BAL-10DA~10:1,BAL-10DA~5:1,BAL-10DA~2:1,BAL-10DA~1:1');
+    expect(encodeCheckoutItems(items)).toBe('BAL-10DAx10:1,BAL-10DAx5:1,BAL-10DAx2:1,BAL-10DAx1:1');
   });
 
   it('refleja el carrito real del agente (3×10 + 2×2 + producto simple)', () => {
@@ -69,7 +69,7 @@ describe('encodeCheckoutItems', () => {
         unitPrice: 274_700,
       },
     ];
-    expect(encodeCheckoutItems(items)).toBe('BLD6AM006~10:3,BLD6AM006~2:2,DJVMIL004:1');
+    expect(encodeCheckoutItems(items)).toBe('BLD6AM006x10:3,BLD6AM006x2:2,DJVMIL004:1');
   });
 
   it('deja los productos simples como SKU:qty', () => {
@@ -78,5 +78,40 @@ describe('encodeCheckoutItems', () => {
         { productId: 1, sku: 'CAD-ORO-45', name: 'Cadena 45', quantity: 2, unitPrice: 100 },
       ])
     ).toBe('CAD-ORO-45:2');
+  });
+});
+
+describe('parseCheckoutItems', () => {
+  it('entiende el formato nuevo SKUxN:qty', () => {
+    expect(parseCheckoutItems('BLLSAM005x10:1,BLLSAM005x5:1')).toEqual([
+      { sku: 'BLLSAM005', qty: 1, packUnits: 10 },
+      { sku: 'BLLSAM005', qty: 1, packUnits: 5 },
+    ]);
+  });
+
+  it('entiende el -- que deja WhatsApp al tachar ~', () => {
+    expect(parseCheckoutItems('BLLSAM005--10:1,BLLSAM005--5:1')).toEqual([
+      { sku: 'BLLSAM005', qty: 1, packUnits: 10 },
+      { sku: 'BLLSAM005', qty: 1, packUnits: 5 },
+    ]);
+  });
+
+  it('sigue aceptando el formato histórico con ~', () => {
+    expect(parseCheckoutItems('BLD6AM006~10:3,BLD6AM006~2:2,DJVMIL004:1')).toEqual([
+      { sku: 'BLD6AM006', qty: 3, packUnits: 10 },
+      { sku: 'BLD6AM006', qty: 2, packUnits: 2 },
+      { sku: 'DJVMIL004', qty: 1 },
+    ]);
+  });
+
+  it('no trata un SKU con guiones como paquete', () => {
+    expect(parseCheckoutItems('CAD-ORO-45:2')).toEqual([{ sku: 'CAD-ORO-45', qty: 2 }]);
+  });
+
+  it('reconstruye comas si WhatsApp las cambió por puntos', () => {
+    expect(parseCheckoutItems('BLLSAM005x10:1.BLLSAM005x5:1')).toEqual([
+      { sku: 'BLLSAM005', qty: 1, packUnits: 10 },
+      { sku: 'BLLSAM005', qty: 1, packUnits: 5 },
+    ]);
   });
 });

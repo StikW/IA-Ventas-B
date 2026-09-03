@@ -9,6 +9,7 @@ import {
   extractQuantityFromText,
   isProductOptionsBrowseIntent,
   normalizeProductText,
+  stripWhatsAppFormatting,
   tokenizeProductQuery,
   tokensRelated,
 } from './productSelection.utils';
@@ -98,10 +99,24 @@ function parseQuantity(normalized: string, originalText: string): number {
 
 /**
  * Los listados se etiquetan con letras (`A)`, `B)`…) porque los nombres de producto ya
- * llevan números (*Balín #6*, tallas). Se aceptan sueltas o precedidas de "la"/"opción".
+ * llevan números (*Balín #6*, tallas). Se aceptan sueltas, "la A", "opción B" o dentro
+ * de una frase de pedido: "quiero dos unidades del a", "agrega la b".
  */
-const LETTER_PATTERN =
-  /^(?:(?:de\s+)?(?:la|el)\s+)?(?:opcion|letra)?\s*([a-z])\)?[.!]?$|\b(?:opcion|letra)\s+([a-z])\b/;
+const LETTER_WHOLE_MESSAGE =
+  /^(?:(?:de\s+)?(?:la|el)\s+)?(?:opcion|letra)?\s*([a-z])\)?[.!]?$/;
+const LETTER_IN_SENTENCE =
+  /\b(?:opcion|letra)\s+([a-z])\b|\b(?:del|de\s+la|de\s+el)\s+([a-z])\)?\b|\b(?:la|el)\s+([a-z])\b/;
+
+function letterFromMatch(match: RegExpMatchArray | null): string | undefined {
+  return match?.slice(1).find((group) => group);
+}
+
+function parseLetterPosition(normalized: string, optionCount: number): number | null {
+  const letter = letterFromMatch(normalized.match(LETTER_WHOLE_MESSAGE)) ?? letterFromMatch(normalized.match(LETTER_IN_SENTENCE));
+  if (!letter) return null;
+  const position = letter.charCodeAt(0) - 96;
+  return position >= 1 && position <= optionCount ? position : null;
+}
 
 /**
  * Un listado donde los propios productos se llaman por número ("Balín #6", "talla 8")
@@ -123,17 +138,13 @@ export function parseOptionReference(
 ): OptionReference | null {
   if (optionCount <= 0) return null;
 
-  const t = normalizeProductText(text);
+  const t = normalizeProductText(stripWhatsAppFormatting(text));
   if (!t) return null;
 
   const quantity = parseQuantity(t, text);
 
-  const letterMatch = t.match(LETTER_PATTERN);
-  const letter = letterMatch?.[1] ?? letterMatch?.[2];
-  if (letter) {
-    const position = letter.charCodeAt(0) - 96;
-    if (position >= 1 && position <= optionCount) return { index: position - 1, quantity };
-  }
+  const letterPosition = parseLetterPosition(t, optionCount);
+  if (letterPosition) return { index: letterPosition - 1, quantity };
 
   for (const [word, position] of Object.entries(ORDINAL_WORDS)) {
     if (!new RegExp(`\\b${word}\\b`).test(t)) continue;
@@ -194,7 +205,7 @@ export function matchOfferedOptionByName(text: string, options: OfferedOption[])
  * del listado: en balines «del #3» casi siempre apunta al Balín #3 del último listado.
  */
 export function extractListedProductNumber(text: string): string | null {
-  const t = normalizeProductText(text);
+  const t = normalizeProductText(stripWhatsAppFormatting(text));
   if (!t) return null;
 
   const hash = t.match(/#\s*(\d{1,2})\b/);
@@ -244,9 +255,13 @@ export function findListedProductNumberAmbiguity(
 
 /**
  * Número o nombre sobre el último listado. Prioriza el ID, luego el #N del listado,
- * luego la posición ("del 5") y por último el nombre.
+ * luego la posición ("del 5" / "del a") y por último el nombre.
  */
-export function findOfferedOption(text: string, options: OfferedOption[]): OptionReference | null {
+export function findOfferedOption(
+  text: string,
+  options: OfferedOption[],
+  opts?: { allowNameMatch?: boolean }
+): OptionReference | null {
   if (!options.length) return null;
 
   const bySku = matchOfferedOptionBySku(text, options);
@@ -258,23 +273,31 @@ export function findOfferedOption(text: string, options: OfferedOption[]): Optio
   const byPosition = parseOptionReference(text, options.length, options);
   if (byPosition) return byPosition;
 
-  if (isProductOptionsBrowseIntent(text) || tokenizeProductQuery(text).length >= 2) {
+  const allowName = opts?.allowNameMatch !== false;
+  if (allowName && (isProductOptionsBrowseIntent(text) || tokenizeProductQuery(text).length >= 2)) {
     return matchOfferedOptionByName(text, options);
   }
 
   return null;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** El cliente reenvía el *ID* que vio en la lista, a veces con la negrita de WhatsApp. */
 export function matchOfferedOptionBySku(text: string, options: OfferedOption[]): OptionReference | null {
-  const tokens = new Set(tokenizeProductQuery(text));
-  if (!tokens.size) return null;
+  const normalized = normalizeProductText(stripWhatsAppFormatting(text));
+  const tokens = new Set(tokenizeProductQuery(normalized));
 
   const index = options.findIndex((option) => {
     const sku = option.sku?.trim();
-    return Boolean(sku) && tokens.has(normalizeProductText(sku!));
+    if (!sku) return false;
+    const skuNorm = normalizeProductText(sku);
+    if (tokens.has(skuNorm)) return true;
+    return new RegExp(`(^|[^a-z0-9])${escapeRegExp(skuNorm)}([^a-z0-9]|$)`).test(normalized);
   });
 
   if (index < 0) return null;
-  return { index, quantity: parseQuantity(normalizeProductText(text), text) };
+  return { index, quantity: parseQuantity(normalized, text) };
 }

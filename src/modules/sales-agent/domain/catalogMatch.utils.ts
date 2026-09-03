@@ -290,7 +290,10 @@ export function findFamilyEntries(
   const candidates = [normalized, ...(FAMILY_SYNONYMS[normalized] ?? [])];
 
   for (const candidate of candidates) {
-    const matched = entries.filter((entry) => includesToken(entry.familyTokens, candidate));
+    const matched = entries.filter(
+      (entry) =>
+        includesToken(entry.familyTokens, candidate) || includesToken(entry.nameTokens, candidate)
+    );
     if (matched.length) return { matched, resolvedTerm: candidate };
   }
 

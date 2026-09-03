@@ -34,7 +34,7 @@ import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent, WA_BTN, WA_BTN_LABEL } from '../../domain/whatsappFlow.constants';
 import { isCartClearIntent, isCartCorrectionIntent, isCartIncrementIntent, isCartKeepOnlyIntent, isCartRemoveIntent, isCartReviewIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
-import { extractAllVariantHints, extractExplicitSkus, hasConcreteProductSpec, isCatalogBrowseIntent, isDirectVariantAddIntent, isProductFamilyBrowseIntent, isThemeBrowseCandidate, mentionsDifferentPackProduct, normalizeUserTypos, shouldAbandonPendingPackFlow } from '../../domain/productSelection.utils';
+import { extractAllVariantHints, extractExplicitSkus, extractProductFamilyTerm, hasConcreteProductSpec, isCatalogBrowseIntent, isDirectVariantAddIntent, isProductFamilyBrowseIntent, isProductOptionsBrowseIntent, isThemeBrowseCandidate, mentionsDifferentPackProduct, normalizeUserTypos, shouldAbandonPendingPackFlow } from '../../domain/productSelection.utils';
 import {
   composePacks,
   extractDesiredUnits,
@@ -351,6 +351,10 @@ export class SalesAgentService {
         flowStep: 'discovery',
         cartItems: salesContext.cartItems,
         customerName: salesContext.customerName,
+        lastOptions: salesContext.lastOptions,
+        focusedProduct: salesContext.focusedProduct,
+        lastAddedSkus: salesContext.lastAddedSkus,
+        lastCheckoutUrl: salesContext.lastCheckoutUrl,
       };
     }
 
@@ -370,9 +374,21 @@ export class SalesAgentService {
         uiRoute: productPageEarly.uiRoute,
         now,
         ragHits: 0,
-        listedOptions: productPageEarly.salesContext.lastOptions ?? salesContext.lastOptions,
       });
       return { replied: true, reply: productPageEarly.replyText, bbcResponse };
+    }
+
+    let mutableContext: SalesContext = { ...salesContext };
+
+    // Letra / ID / posición del último listado, antes que el menú o una cotización de
+    // granel: "quiero dos unidades del a" no es "agregar algo más" ni confirma un paquete.
+    if (
+      mutableContext.lastOptions?.length &&
+      mutableContext.phase !== 'awaiting_payment' &&
+      mutableContext.flowStep !== 'payment_select'
+    ) {
+      const listedReply = await this.resolveLastOptionsTurn(input, mutableContext, text, history);
+      if (listedReply) return listedReply;
     }
 
     const flowResult = await this.conversationFlow.tryHandle({
@@ -381,7 +397,7 @@ export class SalesAgentService {
       text,
       businessName,
       businessProfile: tenantConfig?.business,
-      salesContext,
+      salesContext: mutableContext,
       historyLength: history.length,
     });
 
@@ -411,8 +427,6 @@ export class SalesAgentService {
       flowStep: salesContext.flowStep,
       cartItemCount: salesContext.cartItems?.length ?? 0,
     });
-
-    let mutableContext = { ...salesContext };
 
     const pendingPack = await this.handlePendingPackTurn(input, mutableContext, text);
     if (pendingPack) {
@@ -540,7 +554,6 @@ export class SalesAgentService {
         mutableContext.cartItems = mod.items;
         mutableContext.flowStep = mod.items.length ? 'buying' : 'discovery';
         mutableContext.lastAddedSkus = mod.items.map((item) => item.sku);
-        mutableContext.lastOptions = undefined;
         const now = new Date().toISOString();
         const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, mod.message);
         const bbcResponse = await this.persistAndReply({
@@ -558,67 +571,6 @@ export class SalesAgentService {
         });
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
-    }
-
-    // "el primero", "la segunda": la respuesta se refiere al listado anterior. Sin esto la
-    // frase llega al LLM, que no sabe qué se mostró y acaba volcando al carrito todas las
-    // variaciones del producto padre.
-    // "el 5", "qué opciones hay del 5", "opciones del anillo elefante": se refieren
-    // al último listado, aunque el mensaje también nombre una familia.
-    // "4 unidades del #3": prioriza el Balín #3 del último listado, no otro #3 del catálogo.
-    if (mutableContext.lastOptions?.length) {
-      const ambiguousIndices = findListedProductNumberAmbiguity(text, mutableContext.lastOptions);
-      const listedNumber = extractListedProductNumber(text);
-      if (ambiguousIndices && listedNumber) {
-        const subset = ambiguousIndices.map((index) => mutableContext.lastOptions![index]!);
-        const choiceMessage = buildListedNumberChoiceMessage(listedNumber, subset);
-        const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, choiceMessage);
-        const bbcResponse = await this.persistAndReply({
-          tenantId: input.tenantId,
-          deviceId: input.deviceId,
-          customerPhone: input.customerPhone,
-          messageId: input.messageId,
-          history,
-          userText: text,
-          reply: choiceMessage,
-          salesContext: { ...mutableContext, ...cartPrompt.salesContext, lastOptions: subset },
-          outbound: cartPrompt.outbound,
-          now: new Date().toISOString(),
-          ragHits: 0,
-          listedOptions: subset,
-        });
-        return { replied: true, reply: choiceMessage, bbcResponse };
-      }
-    }
-
-    const optionReference = mutableContext.lastOptions?.length
-      ? findOfferedOption(text, mutableContext.lastOptions)
-      : null;
-
-    if (optionReference) {
-      const chosen = mutableContext.lastOptions![optionReference.index]!;
-      const optionReply = await this.resolveOfferedOption(
-        input,
-        mutableContext,
-        chosen,
-        optionReference.quantity
-      );
-      const bbcResponse = await this.persistAndReply({
-        tenantId: input.tenantId,
-        deviceId: input.deviceId,
-        customerPhone: input.customerPhone,
-        messageId: input.messageId,
-        history,
-        userText: text,
-        reply: optionReply.replyText,
-        salesContext: { ...mutableContext, ...optionReply.salesContext },
-        outbound: optionReply.outbound,
-        uiRoute: optionReply.uiRoute,
-        now: new Date().toISOString(),
-        ragHits: 0,
-        listedOptions: optionReply.salesContext.lastOptions,
-      });
-      return { replied: true, reply: optionReply.replyText, bbcResponse };
     }
 
     const wantsCheckoutLinkAgain =
@@ -796,10 +748,14 @@ export class SalesAgentService {
         return { replied: true, reply: cartPrompt.replyText, bbcResponse };
       }
 
-      const helpPrompt = await this.conversationFlow.buildProductLookupHelpReply(
-        input.tenantId,
-        mutableContext
-      );
+      const familyTerm = extractProductFamilyTerm(text) ?? 'eso';
+      const miss =
+        browse.message?.trim() ||
+        `No encontré ${familyTerm} en la tienda ahora mismo.`;
+      const hint = mutableContext.lastOptions?.length
+        ? ` Si te referías al listado anterior, dime la *letra* o el *ID*.`
+        : ' Si buscas otro tipo de pieza, dime cuál o el *ID*.';
+      const body = `${miss}${hint}`;
       const bbcResponse = await this.persistAndReply({
         tenantId: input.tenantId,
         deviceId: input.deviceId,
@@ -807,14 +763,13 @@ export class SalesAgentService {
         messageId: input.messageId,
         history,
         userText: text,
-        reply: helpPrompt.replyText,
-        salesContext: { ...mutableContext, ...helpPrompt.salesContext },
-        outbound: helpPrompt.outbound,
-        uiRoute: helpPrompt.uiRoute,
+        reply: body,
+        salesContext: mutableContext,
+        outbound: { kind: 'text', body },
         now,
         ragHits: 0,
       });
-      return { replied: true, reply: helpPrompt.replyText, bbcResponse };
+      return { replied: true, reply: body, bbcResponse };
     }
 
     if (isThemeBrowseCandidate(text) && salesContext.phase !== 'awaiting_payment') {
@@ -915,7 +870,6 @@ export class SalesAgentService {
       }
       if (selection.items?.length) {
         this.addItemsToCart(input, mutableContext, selection.items);
-        mutableContext.lastOptions = undefined;
         const cartPrompt = this.conversationFlow.buildCartActionPrompt(
           mutableContext,
           this.buildAddedIntroLine(selection.items, selection.message)
@@ -1327,6 +1281,78 @@ export class SalesAgentService {
   }
 
   /**
+   * Letra, ID o posición sobre el último listado. Va antes que menú, granel y familia
+   * para que "quiero dos unidades del a" no se pierda.
+   */
+  private async resolveLastOptionsTurn(
+    input: SalesAgentMessageInput,
+    mutableContext: SalesContext,
+    text: string,
+    history: ChatMessage[]
+  ): Promise<SalesAgentMessageResult | null> {
+    const listed = mutableContext.lastOptions;
+    if (!listed?.length) return null;
+
+    const ambiguousIndices = findListedProductNumberAmbiguity(text, listed);
+    const listedNumber = extractListedProductNumber(text);
+    if (ambiguousIndices && listedNumber) {
+      const subset = ambiguousIndices.map((index) => listed[index]!);
+      const choiceMessage = buildListedNumberChoiceMessage(listedNumber, subset);
+      const cartPrompt = this.conversationFlow.buildCartActionPrompt(mutableContext, choiceMessage);
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: text,
+        reply: choiceMessage,
+        salesContext: { ...mutableContext, ...cartPrompt.salesContext, lastOptions: subset },
+        outbound: cartPrompt.outbound,
+        now: new Date().toISOString(),
+        ragHits: 0,
+        listedOptions: subset,
+      });
+      return { replied: true, reply: choiceMessage, bbcResponse };
+    }
+
+    const allowNameMatch =
+      isProductOptionsBrowseIntent(text) ||
+      (!isProductFamilyBrowseIntent(text) && !isThemeBrowseCandidate(text) && !isCatalogBrowseIntent(text));
+    const optionReference = findOfferedOption(text, listed, { allowNameMatch });
+    if (!optionReference) return null;
+
+    mutableContext.pendingPackQuote = undefined;
+    mutableContext.pendingPackProduct = undefined;
+    const chosen = listed[optionReference.index]!;
+    const optionReply = await this.resolveOfferedOption(
+      input,
+      mutableContext,
+      chosen,
+      optionReference.quantity
+    );
+    const bbcResponse = await this.persistAndReply({
+      tenantId: input.tenantId,
+      deviceId: input.deviceId,
+      customerPhone: input.customerPhone,
+      messageId: input.messageId,
+      history,
+      userText: text,
+      reply: optionReply.replyText,
+      salesContext: { ...mutableContext, ...optionReply.salesContext },
+      outbound: optionReply.outbound,
+      uiRoute: optionReply.uiRoute,
+      now: new Date().toISOString(),
+      ragHits: 0,
+      listedOptions:
+        optionReply.salesContext.lastOptions && optionReply.salesContext.lastOptions !== listed
+          ? optionReply.salesContext.lastOptions
+          : undefined,
+    });
+    return { replied: true, reply: optionReply.replyText, bbcResponse };
+  }
+
+  /**
    * El cliente eligió por posición. Un producto variable no tiene SKU propio en
    * WooCommerce: hay que mostrar sus variaciones, nunca agregarlas todas.
    */
@@ -1375,7 +1401,7 @@ export class SalesAgentService {
     const prompt = this.conversationFlow.buildCartActionPrompt(salesContext, intro);
     return {
       ...prompt,
-      salesContext: { ...prompt.salesContext, lastOptions: undefined },
+      salesContext: { ...prompt.salesContext, lastOptions: salesContext.lastOptions },
     };
   }
 
@@ -1892,8 +1918,8 @@ export class SalesAgentService {
     now: string;
     ragHits: number;
     /**
-     * Listado numerado de ESTE mensaje. Si se omite, se borra el anterior: «el 3»
-     * solo puede referirse a lo último que vio el cliente, no a un listado viejo.
+     * Listado de ESTE mensaje. Si viene, reemplaza el anterior. Si se omite, se conserva
+     * el de la sesión: el cliente sigue pudiendo elegir por letra o ID.
      */
     listedOptions?: OfferedOption[];
   }): Promise<BbcWebhookAgentResponse> {
@@ -1904,7 +1930,7 @@ export class SalesAgentService {
      // foto» después de listar ocho opciones no puede resolverse sola.
     const salesContext: SalesContext = {
       ...params.salesContext,
-      lastOptions: listed,
+      lastOptions: listed ?? params.salesContext.lastOptions,
       focusedProduct:
         listed && listed.length > 1 && !sameProductList
           ? undefined

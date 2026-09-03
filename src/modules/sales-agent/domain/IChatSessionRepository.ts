@@ -79,7 +79,7 @@ export interface SalesContext {
   pendingPackProduct?: PendingPackProduct;
   /** Combinación de paquetes ofrecida, a la espera de «sí» / otra cantidad. */
   pendingPackQuote?: PendingPackQuote;
-  /** Último listado mostrado, para resolver «el primero» o «la última». */
+  /** Último listado mostrado, para resolver letra, ID o «el primero». Se conserva hasta que salga otro. */
   lastOptions?: OfferedOption[];
   /** SKUs agregados en el turno anterior, para «solo los que te dije». */
   lastAddedSkus?: string[];

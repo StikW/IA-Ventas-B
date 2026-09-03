@@ -1,6 +1,6 @@
 /** IDs estables para botones WhatsApp (Meta button_reply.id) */
 import { isCartClearIntent, isCartCorrectionIntent, isCartKeepOnlyIntent, isCartRemoveIntent, isCartReviewIntent, isCartSetQuantityIntent } from './cartModification.utils';
-import { extractVariantHint, hasConcreteProductSpec, isAvailabilityQuestion, isProductOptionsBrowseIntent } from './productSelection.utils';
+import { extractExplicitSkus, extractVariantHint, hasConcreteProductSpec, isAvailabilityQuestion, isProductOptionsBrowseIntent } from './productSelection.utils';
 
 export const WA_BTN = {
   MENU_BUY: 'massi:menu:buy',
@@ -58,7 +58,11 @@ export function isCartFinalizeIntent(text: string): boolean {
 export function isCartContinueShoppingIntent(text: string): boolean {
   if (resolveButtonAction(text) === WA_BTN.CART_ADD_MORE) return true;
   if (hasConcreteProductSpec(text)) return false;
+  if (extractExplicitSkus(text).length) return false;
   const t = normalizeFlowText(text);
+  // "agrega el a" / "agregar B" elige del listado; no es "quiero agregar algo más".
+  if (/\b(?:el|la|los|las|del|opcion|letra)\s+[a-z]\b/.test(t)) return false;
+  if (/^(?:agrega(?:r)?|a[nñ]ade|a[nñ]adir)\s+[a-z]$/.test(t)) return false;
   return /agregar|a[nñ]adir|algo\s+m[aá]s|otro\s+producto|m[aá]s\s+productos|s[ií],?\s+algo\s+m[aá]s|quiero\s+m[aá]s/.test(t);
 }
 

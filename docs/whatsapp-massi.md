@@ -198,7 +198,7 @@ Ubicación local: `Local Sites/{sitio}/.../wp-content/plugins/massi-bot-api/`
 Auth: header `Authorization: Basic base64(user:application_password)` + capability `massi_bot_access`.  
 En hostings que no reenvían `Authorization`, el plugin usa `class-massi-bot-auth.php` → `fix_authorization_header()`.
 
-**Instalación prod:** subir `dist/massi-bot-api-ia-ventas.zip` manualmente en WP (ver [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) §13).
+**Instalación prod:** `dist/massi-bot-api-1.3.16-full.zip` → WP Admin → Plugins → Subir plugin (ver [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) §13). **No** usar `massi-bot-api-ia-ventas.zip` (Local 1.0.x).
 
 **Sin MASSI Bot API:** el agente puede buscar en WC REST, pero variaciones y pedidos MASSI completos no están disponibles.
 
@@ -308,11 +308,13 @@ Matching contra **ítems ya en carrito** (no busca productos nuevos en tienda sa
 URL generada (`checkoutLink.utils.ts`):
 
 ```
-{checkoutFormUrl || checkoutPagePath || /checkout/}?phone=573…&source=whatsapp&public_store={storeUrl}&items=SKU:qty,SKU:qty
+{checkoutFormUrl || checkoutPagePath || /checkout/}?phone=573…&source=whatsapp&public_store={storeUrl}&items=SKU:qty,SKU~10:3,SKU~2:2
 ```
 
+- Productos simples: `SKU:cantidad`
+- Paquetes woo-massi: `SKU~unidadesPorPaquete:cantidadDePaquetes` (ej. `BLL5AM005~10:1,BLL5AM005~5:1`)
 - `checkoutPagePath` se detecta al probar conexión WC (MASSI: `/finalizar-compra/`)
-- Plugin WP pre-carga carrito y teléfono (ver § Plugin checkout link abajo)
+- Plugin WP **≥ 1.3.15** pre-carga carrito vía woo-massi (`wm_add_promotion_to_cart`); ver § Plugin checkout link abajo
 
 El cliente elige en la **web**: recoger en tienda, domicilio, transferencia o efectivo.
 
@@ -693,24 +695,30 @@ Ver tabla completa y prioridades en [`business-flow-massi.md`](./business-flow-m
 
 ## Plugin WP — pre-carga carrito desde link
 
-**Implementado** en `massi-bot-api` → `class-massi-bot-checkout-link.php` (+ `class-massi-bot-ngrok-url.php` para dev).
+**Implementado** en `massi-bot-api` **≥ 1.3.15** → `class-massi-bot-checkout-link.php` + `class-massi-bot-pack-pricing.php` (+ `class-massi-bot-ngrok-url.php` para dev).
 
 Al abrir el link generado por IA Ventas:
 
 ```
-https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-B:2
+https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-B~10:2
 ```
 
 El plugin:
 
 1. Vacía el carrito WC y agrega productos/variaciones por **SKU**
-2. En productos a granel (balines x10/x5/x2/x1) cobra **el valor de los paquetes**, no N × precio unitario (`class-massi-bot-pack-pricing.php`)
+2. **Balines / granel:** llama a woo-massi (`wm_add_promotion_to_cart`) — misma lógica que el botón de la ficha. **No** usa meta `massi_bot_*` (woo-massi responde «Paquete X 0»)
 3. Guarda el teléfono en sesión → pre-rellena `billing_phone` en checkout
-4. Evita redirect a `/carrito/` con carrito vacío (filter `woocommerce_checkout_redirect_empty_cart`)
-5. `public_store` reescribe assets cuando la tienda se accede vía ngrok
+4. Banner «Compra vía WhatsApp con Nediventas» (solo si el carrito cargó bien)
+5. Evita redirect a `/carrito/` con carrito vacío (`woocommerce_checkout_redirect_empty_cart`)
+6. Parser tolera `-` / `.` si WhatsApp deforma `~` / `,` (desde 1.3.14)
+7. `public_store` reescribe assets cuando la tienda se accede vía ngrok
+
+**Instalación prod (sin FTP):** `dist/massi-bot-api-1.3.16-full.zip` → WP Admin → Plugins → Subir plugin. Ver [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) §13.
+
+**Sin impacto en:** OTP (`class-massi-bot-ia-ventas.php`), notificaciones pedido (`class-massi-bot-notifications.php`), turnos (`massi-tickets`).
 
 **Requisito:** SKUs en todas las variaciones publicadas; ruta checkout configurable (`checkoutFormUrl` o auto-detect `/finalizar-compra/`). Solo productos en WC se listan/venden por WhatsApp.
 
 ---
 
-*Última actualización: agosto 2026 — flow **Finalizar Pedido** (`route: finalize`); toggle agente; OTP/notificaciones vía `/channel/messages`; validación comprobantes en `/validacion-de-pagos/`.*
+*Última actualización: septiembre 2026 — checkout link paquetes woo-massi (MASSI Bot API 1.3.15); flow **Finalizar Pedido**; OTP/notificaciones vía `/channel/messages`; validación comprobantes en `/validacion-de-pagos/`.*

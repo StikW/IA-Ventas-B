@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractAllVariantHints,
+  extractExplicitSkus,
   extractProductFamilyTerm,
   extractQuantityFromText,
   extractVariantHint,
@@ -12,6 +13,7 @@ import {
   isProductOptionsBrowseIntent,
   isThemeBrowseCandidate,
   isThemeBrowseIntent,
+  looksLikeExplicitSku,
   mentionsDifferentPackProduct,
   registerCatalogFamilyTerms,
   shouldAbandonPendingPackFlow,
@@ -253,5 +255,20 @@ describe('mentionsDifferentPackProduct', () => {
 
   it('detecta otro producto por SKU', () => {
     expect(mentionsDifferentPackProduct('agrega BLD3AM003', balin7)).toBe(true);
+  });
+});
+
+describe('looksLikeExplicitSku', () => {
+  it('acepta IDs MASSI en mayúsculas o minúsculas, también dentro de una frase', () => {
+    expect(looksLikeExplicitSku('DCOMAT002')).toBe(true);
+    expect(looksLikeExplicitSku('dcomat002')).toBe(true);
+    expect(extractExplicitSkus('quiero dos unidades del dcomat002')).toEqual(['dcomat002']);
+    expect(extractExplicitSkus('quiero dos unidades del *DCOMAT002*')).toEqual(['DCOMAT002']);
+  });
+
+  it('no trata palabras comunes como ID', () => {
+    expect(looksLikeExplicitSku('unidades')).toBe(false);
+    expect(looksLikeExplicitSku('quiero')).toBe(false);
+    expect(extractExplicitSkus('quiero dos unidades del a')).toEqual([]);
   });
 });

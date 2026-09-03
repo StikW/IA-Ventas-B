@@ -31,7 +31,16 @@ export interface BuildCheckoutLinkResult {
   message?: string;
 }
 
-/** Codifica ítems para el link de checkout MASSI. */
+export interface CheckoutLinkItem {
+  sku: string;
+  qty: number;
+  packUnits?: number;
+}
+
+/**
+ * Paquetes: `SKUx10:1` (WhatsApp-safe). El plugin también acepta `~` y `--`
+ * porque WhatsApp convierte `~` en tachado y el link llega como `SKU--10:1`.
+ */
 export function encodeCheckoutItems(items: PendingCartItem[]): string {
   const parts: string[] = [];
 
@@ -39,17 +48,93 @@ export function encodeCheckoutItems(items: PendingCartItem[]): string {
     const sku = item.sku?.trim();
     if (!sku) continue;
 
-    // Paquetes woo-massi: SKU~unidadesPorPaquete:cantidadDePaquetes (no unidades totales).
-    // Ej.: 3× paquete x10 + 2× paquete x2 → BLD6AM006~10:3,BLD6AM006~2:2
     if (item.packUnits && item.packUnits > 0) {
-      parts.push(`${encodeURIComponent(sku)}~${item.packUnits}:${item.quantity}`);
+      parts.push(`${sku}x${item.packUnits}:${item.quantity}`);
       continue;
     }
 
-    parts.push(`${encodeURIComponent(sku)}:${item.quantity}`);
+    parts.push(`${sku}:${item.quantity}`);
   }
 
   return parts.join(',');
+}
+
+export function parseCheckoutItems(raw: string): CheckoutLinkItem[] {
+  const normalized = normalizeCheckoutItemsRaw(raw);
+  if (!normalized) return [];
+
+  const items: CheckoutLinkItem[] = [];
+  for (const chunk of normalized.split(',')) {
+    const part = decodeCheckoutItemPart(chunk);
+    if (!part) continue;
+
+    const pack = parseCheckoutPackPart(part);
+    if (pack) {
+      items.push(pack);
+      continue;
+    }
+
+    const simple = part.match(/^(.+):(\d+)$/);
+    if (!simple) continue;
+
+    const sku = simple[1].trim();
+    const qty = clampCheckoutQty(Number.parseInt(simple[2], 10));
+    if (!sku) continue;
+
+    const existing = items.find((row) => row.sku === sku && !row.packUnits);
+    if (existing) {
+      existing.qty = clampCheckoutQty(existing.qty + qty);
+      continue;
+    }
+    items.push({ sku, qty });
+  }
+
+  return items;
+}
+
+export function normalizeCheckoutItemsRaw(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (trimmed.includes('.') && !trimmed.includes(',')) {
+    return trimmed.replace(/\./g, ',');
+  }
+  return trimmed;
+}
+
+function decodeCheckoutItemPart(part: string): string {
+  const trimmed = part.trim();
+  if (!trimmed) return '';
+  try {
+    return decodeURIComponent(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
+function parseCheckoutPackPart(part: string): CheckoutLinkItem | null {
+  const patterns = [
+    /^(.+)~(\d+):(\d+)$/,
+    /^(.+?)x(\d+):(\d+)$/i,
+    /^(.+?)--+(\d+):(\d+)$/,
+  ];
+
+  for (const pattern of patterns) {
+    const matches = part.match(pattern);
+    if (!matches) continue;
+
+    const sku = matches[1].replace(/[-~]+$/g, '').trim();
+    const packUnits = clampCheckoutQty(Number.parseInt(matches[2], 10));
+    const qty = clampCheckoutQty(Number.parseInt(matches[3], 10));
+    if (!sku) continue;
+    return { sku, qty, packUnits };
+  }
+
+  return null;
+}
+
+function clampCheckoutQty(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(200, Math.trunc(value)));
 }
 
 /**

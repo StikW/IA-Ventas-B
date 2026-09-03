@@ -69,6 +69,18 @@ describe('catalogMatch.utils', () => {
     expect(findFamilyEntries(CATALOG, 'herraje').matched).toHaveLength(2);
   });
 
+  it('encuentra "anillos" aunque la palabra no esté entre las primeras del nombre', () => {
+    const late = [
+      ...CATALOG,
+      buildCatalogEntry(
+        product(12, 'Dama Flor Circones Anillo Infinito', ['Oro Nacional'], { type: 'variable', sku: '' })
+      ),
+    ];
+    expect(findFamilyEntries(late, 'anillos').matched.map((entry) => entry.product.id)).toEqual(
+      expect.arrayContaining([9, 12])
+    );
+  });
+
   it('ignora las palabras de la pregunta al puntuar', () => {
     const matches = rankCatalogEntries(
       CATALOG,

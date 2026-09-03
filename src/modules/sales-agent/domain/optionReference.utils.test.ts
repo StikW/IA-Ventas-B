@@ -39,6 +39,13 @@ describe('parseOptionReference', () => {
     expect(parseOptionReference('Z', 8)).toBeNull();
   });
 
+  it('resuelve la letra dentro de una frase de pedido, con o sin negrita de WhatsApp', () => {
+    expect(parseOptionReference('quiero dos unidades del a', 2)).toEqual({ index: 0, quantity: 2 });
+    expect(parseOptionReference('quiero dos unidades del *a*', 2)).toEqual({ index: 0, quantity: 2 });
+    expect(parseOptionReference('agrega la b', 2)).toEqual({ index: 1, quantity: 1 });
+    expect(parseOptionReference('2 unidades de la a', 2)).toEqual({ index: 0, quantity: 2 });
+  });
+
   // Un "6" tras listar *Balín #6* casi nunca es la sexta línea: es el producto.
   it('descarta el dígito suelto cuando los nombres del listado llevan número', () => {
     const balines = [{ name: 'Balín #3 Diamantado' }, { name: 'Balín #6 Diamantado' }];
@@ -102,6 +109,27 @@ describe('findOfferedOption', () => {
   it('reconoce el ID que el cliente reenvía, con o sin la negrita de WhatsApp', () => {
     expect(findOfferedOption('ANSM-01', listed)).toEqual({ index: 0, quantity: 1 });
     expect(findOfferedOption('quiero el *ANSM-01*', listed)).toEqual({ index: 0, quantity: 1 });
+  });
+
+  it('elige por letra o ID del último listado aunque vayan en una frase', () => {
+    const variants: OfferedOption[] = [
+      { productId: 10, name: 'Dije Corona Mateada - 10 x 10 mm', sku: 'DCOMAT002' },
+      { productId: 10, name: 'Dije Corona Mateada - 12 x 12 mm', sku: 'DCOMAT001' },
+    ];
+    expect(findOfferedOption('quiero dos unidades del a', variants)).toEqual({ index: 0, quantity: 2 });
+    expect(findOfferedOption('quiero dos unidades del *a*', variants)).toEqual({ index: 0, quantity: 2 });
+    expect(findOfferedOption('quiero dos unidades del dcomat002', variants)).toEqual({
+      index: 0,
+      quantity: 2,
+    });
+    expect(findOfferedOption('quiero dos unidades del *DCOMAT002*', variants)).toEqual({
+      index: 0,
+      quantity: 2,
+    });
+  });
+
+  it('no usa el nombre del listado cuando se pide una familia distinta', () => {
+    expect(findOfferedOption('tienen anillos?', listed, { allowNameMatch: false })).toBeNull();
   });
 });
 
