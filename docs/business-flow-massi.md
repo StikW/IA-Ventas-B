@@ -2,7 +2,7 @@
 
 > **Propósito:** Documentar la lógica de negocio real (joyería + WooCommerce + WhatsApp), qué hace cada sistema y qué falta implementar en **IA Ventas**.  
 > **Complementa:** [`whatsapp-massi.md`](./whatsapp-massi.md) (integración técnica WhatsApp/BBC).  
-> **Última actualización:** 30 julio 2026 (saludo discovery, catálogo por link, RAG→SKU, prod massijoyeria.com).
+> **Última actualización:** septiembre 2026 — último listado (`lastOptions`); checkout `SKUx10:1` (MASSI Bot API 1.3.18); saludo discovery, catálogo por link, RAG→SKU, prod massijoyeria.com.
 
 ---
 
@@ -93,7 +93,7 @@ Cuando el cliente **ya sabe qué comprar**, el negocio necesita capturar según 
 **Tras “finalizar con la compra” (modo link):**
 
 1. Valida stock del carrito WhatsApp.
-2. Genera URL: `{checkoutFormUrl || checkoutPagePath || storeUrl/checkout/}?phone=…&source=whatsapp&public_store=…&items=SKU:qty,…` — paquetes woo-massi: `SKU~unidadesPorPaquete:cantidadDePaquetes` (ej. `BLL5AM005~10:1,BLL5AM005~5:1` = 15 unidades).
+2. Genera URL: `{checkoutFormUrl || checkoutPagePath || storeUrl/checkout/}?phone=…&source=whatsapp&public_store=…&items=SKU:qty,…` — paquetes woo-massi: `SKUxunidadesPorPaquete:cantidadDePaquetes` (ej. `BLL5AM005x10:1,BLL5AM005x5:1` = 15 unidades). El backend genera **`x`** (WhatsApp-safe; **no** usar `~`).
 3. Envía mensaje con el enlace; vacía `cartItems` de la sesión (el pedido vive en la URL) y guarda `lastCheckoutUrl` por si pide reenviar; sesión → `flowStep: checkout_redirect`.
 4. Cliente completa en WC: recoger, domicilio, transferencia, efectivo.
 5. Staff valida pago en WC → ticket prioritario → email (WhatsApp proactivo: roadmap).
@@ -106,7 +106,7 @@ Cuando el cliente **ya sabe qué comprar**, el negocio necesita capturar según 
 | `checkoutPagePath` | Auto-detectada al probar WC (ej. `/finalizar-compra/`) |
 | `checkoutMode` | `link` (default) \| `whatsapp` (botones legacy en chat) |
 
-**Plugin WP:** ✅ lee `phone`, `source`, `items`, `public_store` para pre-cargar carrito (`class-massi-bot-checkout-link.php`). En balines/a granel delega en **woo-massi** (`wm_add_promotion_to_cart`); no usa meta `massi_bot_*` en el carrito (provoca «Paquete X 0»). Requiere **MASSI Bot API ≥ 1.3.15** en producción.
+**Plugin WP:** ✅ lee `phone`, `source`, `items`, `public_store` para pre-cargar carrito (`class-massi-bot-checkout-link.php`). En balines/a granel intenta woo-massi nativo y, si falla, agrega cada paquete del link (`add_pack_line` + `wm_promo_*`). No usa solo meta `massi_bot_*` (provoca «Paquete X 0»). Requiere **MASSI Bot API ≥ 1.3.18** en producción. Parser: `x`, `~`, `%7E`, `--`.
 
 **Setup WC:** [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) · **BuilderBot (modo link):** misma guía §11 — sin cambios obligatorios en BBC.
 
@@ -227,6 +227,7 @@ Reglas de negocio descritas por el equipo:
 - Consulta pedidos recientes por teléfono.
 - Saludo configurable por perfil negocio.
 - Tras agregar al carrito: resumen (agente) + flow **Finalizar Pedido** con botón Reply (respaldo: escribir *Finalizar pedido*).
+- **Último listado:** letra o *ID* del listado que acaba de mostrar (`lastOptions`); no se borra si otra consulta no lista nada.
 - Saludo con carrito previo: resumen + flow **Vaciar Carrito** + botón **Ver catálogo** (`gotoFlow`); finalizar por texto.
 - Cierre de compra: botón **Continuar compra** (CTA URL) al formulario WC.
 
@@ -311,4 +312,4 @@ Reglas de negocio descritas por el equipo:
 
 ---
 
-*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress. Última revisión: agosto 2026 — flow Finalizar Pedido; toggle agente; OTP + notificaciones WhatsApp vía IA Ventas.*
+*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress. Última revisión: septiembre 2026 — memoria del último listado (`lastOptions`); checkout link `SKUx10:1` (MASSI Bot API 1.3.18); flow Finalizar Pedido; toggle agente; OTP + notificaciones WhatsApp vía IA Ventas.*

@@ -198,7 +198,7 @@ Ubicación local: `Local Sites/{sitio}/.../wp-content/plugins/massi-bot-api/`
 Auth: header `Authorization: Basic base64(user:application_password)` + capability `massi_bot_access`.  
 En hostings que no reenvían `Authorization`, el plugin usa `class-massi-bot-auth.php` → `fix_authorization_header()`.
 
-**Instalación prod:** `dist/massi-bot-api-1.3.16-full.zip` → WP Admin → Plugins → Subir plugin (ver [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) §13). **No** usar `massi-bot-api-ia-ventas.zip` (Local 1.0.x).
+**Instalación prod:** `dist/massi-bot-api-1.3.18-full.zip` → WP Admin → Plugins → Subir plugin (ver [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) §13). **No** usar `massi-bot-api-ia-ventas.zip` (Local 1.0.x).
 
 **Sin MASSI Bot API:** el agente puede buscar en WC REST, pero variaciones y pedidos MASSI completos no están disponibles.
 
@@ -261,7 +261,8 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 | Cliente | Sistema |
 |---------|---------|
 | `¿qué productos tienen?`, `catálogo`, `precios` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + `route: catalog` → botón **Ver catálogo** |
-| `quiero una cadena`, `tienen anillos`, `aretes` | **Determinista** → `resolveProductFamilyBrowse`: producto padre WC + variantes; al cliente se muestra *ID* (internamente SKU) |
+| `quiero una cadena`, `tienen anillos`, `aretes` | **Determinista** → `resolveProductFamilyBrowse`: listado WC con *ID*. Si esa familia no está en la tienda, lo dice (no el «necesito el ID» genérico) y **conserva** el listado anterior |
+| `a`, `quiero dos unidades del a`, `quiero el dcomat002` | **Último listado** (`lastOptions` + `findOfferedOption`): letra, ordinal o *ID* (minúsculas / `*negrita*` de WhatsApp). Se resuelve **antes** que familia, granel o el LLM |
 | `tienen balines #4`, `hay anillos talla 6?` | **Consulta de disponibilidad** (`isAvailabilityQuestion`): lista opciones con *ID*. **No** agrega al carrito hasta que diga *quiero / dame / agrega* o envíe un ID |
 | `quiero una cadena` (descripción sin SKU resoluble, fallback) | `buildProductLookupHelpReply`: pide el **ID** + `route: catalog` |
 | Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito. Si el producto tiene paquetes `woo-massi` (balines), **no agrega**: pide cantidad o cotiza x10/x5/x2/x1 y espera confirmación. |
@@ -275,6 +276,7 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 | Cliente | Sistema |
 |---------|---------|
 | `quiero [producto] [variante]` | Atajo determinista → resuelve variación → agrega → resumen (agente) + flow **Finalizar Pedido** (botón Reply) |
+| `quiero dos unidades del a` / `quiero el *DCOMAT002*` (tras un listado) | `findOfferedOption` sobre `lastOptions` → misma variación/SKU del listado, con cantidad |
 | `cadena 45cm y balín #3` (varios productos) | `parseMultiProductSelection` → resuelve cada segmento; éxito parcial si uno no existe en WC |
 | `dos unidades de CAD-ORO-45 y una de CAD-ORO-60` | Segmenta por **ID explícito** (`extractExplicitSkus`, separadores `,` / `y`) aunque no se nombre el producto; cantidad por segmento (`extractSpokenQuantity`, también en palabras) y los IDs repetidos suman unidades |
 | `otra de 45 cm` (con carrito activo) | Misma familia de producto → variación hermana por atributo |
@@ -286,6 +288,7 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 - Varias medidas del **mismo** producto (`45cm y 50cm`) → `parseMultiVariantSelection`.
 - Mismo SKU en carrito → incrementa cantidad.
 - Producto no encontrado en WC → mensaje explícito; no se agrega.
+- El último listado (`lastOptions`) se conserva hasta que el agente muestre otro: una pregunta sin resultados no impide elegir por letra o ID.
 
 ### 3b. Modificar carrito (determinista, cualquier catálogo)
 
@@ -308,13 +311,13 @@ Matching contra **ítems ya en carrito** (no busca productos nuevos en tienda sa
 URL generada (`checkoutLink.utils.ts`):
 
 ```
-{checkoutFormUrl || checkoutPagePath || /checkout/}?phone=573…&source=whatsapp&public_store={storeUrl}&items=SKU:qty,SKU~10:3,SKU~2:2
+{checkoutFormUrl || checkoutPagePath || /checkout/}?phone=573…&source=whatsapp&public_store={storeUrl}&items=SKU:qty,SKUx10:3,SKUx2:2
 ```
 
 - Productos simples: `SKU:cantidad`
-- Paquetes woo-massi: `SKU~unidadesPorPaquete:cantidadDePaquetes` (ej. `BLL5AM005~10:1,BLL5AM005~5:1`)
+- Paquetes woo-massi: `SKUxunidadesPorPaquete:cantidadDePaquetes` (ej. `BLL5AM005x10:1,BLL5AM005x5:1`). El backend genera **`x`** (WhatsApp-safe). **No usar `~`:** WhatsApp lo tacha.
 - `checkoutPagePath` se detecta al probar conexión WC (MASSI: `/finalizar-compra/`)
-- Plugin WP **≥ 1.3.15** pre-carga carrito vía woo-massi (`wm_add_promotion_to_cart`); ver § Plugin checkout link abajo
+- Plugin WP **≥ 1.3.18** pre-carga carrito (woo-massi nativo o fallback `add_pack_line` + `wm_promo_*`); ver § Plugin checkout link abajo
 
 El cliente elige en la **web**: recoger en tienda, domicilio, transferencia o efectivo.
 
@@ -632,6 +635,7 @@ Modo **wa-api** (`console.builderbot.app`): no necesita nada de esto, envía bot
 | URL catálogo | `sales-agent/domain/catalogUrl.utils.ts` |
 | Paquetes a granel (x10/x5/x2/x1) | `sales-agent/domain/packPricing.utils.ts` |
 | Multi-producto / variantes | `sales-agent/domain/productSelection.utils.ts` |
+| Último listado (letra / ID) | `sales-agent/domain/optionReference.utils.ts` (`findOfferedOption`) |
 | Link checkout WC | `sales-agent/domain/checkoutLink.utils.ts` |
 | IDs de botones | `sales-agent/domain/whatsappFlow.constants.ts` |
 | Adapter MASSI REST | `massi-bot/infrastructure/MassiBotRestAdapter.ts` |
@@ -664,6 +668,8 @@ Luego en panel → WhatsApp → **Re-sincronizar webhook**.
 - [ ] Escribir **Vaciar carrito** → carrito vacío + vuelve a pedir ID
 - [ ] **qué productos tienen** → enlace catálogo (no lista en chat)
 - [ ] **ID/SKU** o descripción natural → carrito + botón **Finalizar pedido** (flow)
+- [ ] Tras un listado: **quiero dos unidades del a** o el *ID* en minúsculas → agrega esa opción
+- [ ] **tienen anillos?** sin anillos en WC → avisa; la letra/ID del listado anterior sigue valiendo
 - [ ] Pulsar **Finalizar pedido** → enlace **Continuar compra** → formulario WC con `items=SKU:qty`
 - [ ] **quisiera eliminar mi carrito** → vacía carrito
 - [ ] **Dos productos** en un mensaje (`cadena y balín`) → ambos si existen en WC
@@ -695,25 +701,25 @@ Ver tabla completa y prioridades en [`business-flow-massi.md`](./business-flow-m
 
 ## Plugin WP — pre-carga carrito desde link
 
-**Implementado** en `massi-bot-api` **≥ 1.3.15** → `class-massi-bot-checkout-link.php` + `class-massi-bot-pack-pricing.php` (+ `class-massi-bot-ngrok-url.php` para dev).
+**Implementado** en `massi-bot-api` **≥ 1.3.18** → `class-massi-bot-checkout-link.php` + `class-massi-bot-pack-pricing.php` (+ `class-massi-bot-ngrok-url.php` para dev).
 
 Al abrir el link generado por IA Ventas:
 
 ```
-https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-B~10:2
+https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-Bx10:2
 ```
 
 El plugin:
 
 1. Vacía el carrito WC y agrega productos/variaciones por **SKU**
-2. **Balines / granel:** llama a woo-massi (`wm_add_promotion_to_cart`) — misma lógica que el botón de la ficha. **No** usa meta `massi_bot_*` (woo-massi responde «Paquete X 0»)
+2. **Balines / granel:** intenta woo-massi nativo; si falla (loopback Hostinger o producto «no comprable»), agrega cada paquete del link (`add_pack_line` + claves `wm_promo_*`). **No** usa solo meta `massi_bot_*` (woo-massi responde «Paquete X 0»)
 3. Guarda el teléfono en sesión → pre-rellena `billing_phone` en checkout
 4. Banner «Compra vía WhatsApp con Nediventas» (solo si el carrito cargó bien)
 5. Evita redirect a `/carrito/` con carrito vacío (`woocommerce_checkout_redirect_empty_cart`)
-6. Parser tolera `-` / `.` si WhatsApp deforma `~` / `,` (desde 1.3.14)
+6. Parser acepta `x`, `~`, `%7E` y `--`; y `,` deformada a `.` (WhatsApp tacha `~`; Hostinger a veces deja `%7E`)
 7. `public_store` reescribe assets cuando la tienda se accede vía ngrok
 
-**Instalación prod (sin FTP):** `dist/massi-bot-api-1.3.16-full.zip` → WP Admin → Plugins → Subir plugin. Ver [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) §13.
+**Instalación prod (sin FTP):** `dist/massi-bot-api-1.3.18-full.zip` → WP Admin → Plugins → Subir plugin. Ver [`woocommerce-setup-massi.md`](./woocommerce-setup-massi.md) §13.
 
 **Sin impacto en:** OTP (`class-massi-bot-ia-ventas.php`), notificaciones pedido (`class-massi-bot-notifications.php`), turnos (`massi-tickets`).
 
@@ -721,4 +727,4 @@ El plugin:
 
 ---
 
-*Última actualización: septiembre 2026 — checkout link paquetes woo-massi (MASSI Bot API 1.3.15); flow **Finalizar Pedido**; OTP/notificaciones vía `/channel/messages`; validación comprobantes en `/validacion-de-pagos/`.*
+*Última actualización: septiembre 2026 — memoria del último listado (`lastOptions`, letra/ID en la frase); checkout link `SKUx10:1` (MASSI Bot API 1.3.18); parser `x`/`~`/`%7E`/`--`; flow **Finalizar Pedido**; OTP/notificaciones vía `/channel/messages`; validación comprobantes en `/validacion-de-pagos/`.*

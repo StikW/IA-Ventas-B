@@ -167,7 +167,7 @@ ngrok http 10004 --host-header=massijoyeria.local
 
 Sin SKU el agente no puede resolver stock ni armar el link de checkout con `items=SKU:qty`.
 
-> **Solo se venden productos publicados en WC.** Si el cliente pide algo que no está en la tienda (ej. anillos no publicados), el agente avisa y no lo inventa.
+> **Solo se venden productos publicados en WC.** Si el cliente pide un tipo que no está en la tienda (ej. *tienen anillos?* sin anillos publicados), el agente **consulta**, avisa y **no** cae al «necesito el ID» genérico. El listado anterior sigue válido para elegir por letra o ID.
 
 ### 9.2 Productos a granel (balines / `woo-massi`)
 
@@ -178,12 +178,12 @@ El agente WhatsApp replica ese cálculo: cotiza, espera confirmación y el carri
 **Link de checkout:** el backend envía paquetes explícitos en `items`, no solo unidades totales:
 
 ```
-items=BLL5AM005~10:1,BLL5AM005~5:1,DJVMIL004:1
+items=BLL5AM005x10:1,BLL5AM005x5:1,DJVMIL004:1
 ```
 
-Formato: `SKUxunidadesDelPaquete:cantidadDePaquetes` (coma entre ítems). Productos sin paquetes: `SKU:qty`. WhatsApp convierte `~` en `--`; el plugin ≥ 1.3.16 acepta `x`, `~` y `--`.
+Formato: `SKUxunidadesDelPaquete:cantidadDePaquetes` (coma entre ítems). Productos sin paquetes: `SKU:qty`. **No usar `~`:** WhatsApp lo tacha (`--`) y Hostinger a veces deja `%7E`. El plugin ≥ **1.3.18** acepta `x`, `~`, `%7E` y `--`.
 
-En WordPress, **MASSI Bot API ≥ 1.3.16** (`class-massi-bot-pack-pricing.php`) agrupa unidades por SKU y llama al handler de **`wm_add_promotion_to_cart`** en el mismo request (el loopback `admin-ajax` suele fallar en Hostinger). No recompone con meta propia `massi_bot_*` — woo-massi la rechaza («Paquete X 0»).
+En WordPress, **MASSI Bot API ≥ 1.3.18** (`class-massi-bot-pack-pricing.php`) intenta woo-massi nativo y, si falla (loopback Hostinger / producto «no comprable»), agrega cada línea de paquete con claves `wm_promo_*` y precio de paquete. No usa solo meta `massi_bot_*` — eso provocaba «Paquete X 0».
 
 Ejemplo 18 balines `BAL-10DA`: x10 ($1.720.000) + x5 ($870.000) + x2 ($355.000) + x1 ($180.000) = **$3.125.000**, no 18 × $180.000.
 
@@ -269,7 +269,7 @@ Con el flujo de negocio actual (**modo `link`**, default) y los cambios reciente
 
 1. `git pull` + `npm run build` + `pm2 restart` en EC2 (incluye ruta `POST /channel/messages`)
 2. Panel → WhatsApp → **Re-sincronizar BuilderBot** (relay + flows UI + regla `finalize`; idempotente)
-3. Subir plugin WP checkout: `dist/massi-bot-api-1.3.16-full.zip` (`node dist/build-massi-bot-api-1.3.10.mjs`) + `dist/massi-tickets-ia-ventas-update.zip` si aplica
+3. Subir plugin WP checkout: `dist/massi-bot-api-1.3.18-full.zip` (`node dist/build-massi-bot-api-1.3.10.mjs`) + `dist/massi-tickets-ia-ventas-update.zip` si aplica
 4. **MASSI → API** (WP): modo **4 IA Ventas**, URL + API Key
 5. Verificar relay → `{APP_PUBLIC_URL}/api/v1/webhooks/builderbot/{tenantId}`
 6. Probar: hola → carrito → checkout link **y** OTP Mi cuenta
@@ -296,7 +296,7 @@ Reemplaza DonChat para OTP/notificaciones; emails WooCommerce **siguen activos**
 Al abrir:
 
 ```
-https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-B~10:2
+https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_store=https%3A%2F%2F{tienda}&items=SKU-A:1,SKU-Bx10:2
 ```
 
 ### Formato `items`
@@ -305,14 +305,14 @@ https://{tienda}/finalizar-compra/?phone=573103534207&source=whatsapp&public_sto
 |------|---------|---------|
 | Producto simple / variación | `SKU:cantidad` | `BLD3AM003:1` |
 | Paquete woo-massi | `SKUxunidadesPorPaquete:cantidadDePaquetes` | `BLL5AM005x10:1,BLL5AM005x5:1` (= 15 balines) |
-| Varios ítems | separados por **coma** | `SKU1:1,SKU2~5:2` |
+| Varios ítems | separados por **coma** | `SKU1:1,SKU2x5:2` |
 
-> WhatsApp convierte `~` en tachado (`--`) y a veces `,` → `.`. Desde **1.3.16** el parser acepta `x`, `~` y `--`.
+> El backend genera **`x`**. WhatsApp convierte `~` en tachado (`--`) y a veces `,` → `.`. Desde **1.3.18** el parser acepta `x`, `~`, `%7E` y `--`.
 
 ### Comportamiento del plugin
 
 1. Vacía el carrito WC y agrega productos/variaciones por **SKU**
-2. **Balines / granel:** delega en woo-massi (`wm_add_promotion_to_cart` vía admin-ajax interno, ≥ **1.3.15**). No usa meta `massi_bot_*` en el carrito
+2. **Balines / granel:** intenta woo-massi nativo; si falla, agrega cada paquete del link (`add_pack_line` + `wm_promo_*`, ≥ **1.3.18**). Woo-massi marca estos productos «no comprables» en la ficha; el plugin lo ignora en el checkout WhatsApp.
 3. Guarda el teléfono en sesión → pre-rellena `billing_phone` en checkout (formulario woo-massi)
 4. Marca sesión Nediventas (`_massi_channel_origin`, banner verde en checkout)
 5. No duplica carga si se recarga la misma URL (firma en sesión)
@@ -335,17 +335,17 @@ IA Ventas **no** instala plugins en WordPress automáticamente. En producción *
 
 | Artefacto | Uso |
 |-----------|-----|
-| **`dist/massi-bot-api-1.3.17-full.zip`** | Plugin completo listo para subir (versión actual checkout paquetes) |
+| **`dist/massi-bot-api-1.3.18-full.zip`** | Plugin completo listo para subir (versión actual checkout paquetes) |
 | **`dist/_zip_staging/massi-bot-api/`** | Fuente editada antes de empaquetar |
 | **`node dist/build-massi-bot-api-1.3.10.mjs`** | Regenera el zip (valida versión en `massi-bot-api.php`) |
 | **`docs/patches/`** | Parches PHP históricos (1.3.4); **no** subir solos — WP exige carpeta `massi-bot-api/` con `massi-bot-api.php` |
 
 Pasos:
 
-1. Generar (opcional): `node dist/build-massi-bot-api-1.3.10.mjs` → `dist/massi-bot-api-1.3.17-full.zip`
+1. Generar (opcional): `node dist/build-massi-bot-api-1.3.10.mjs` → `dist/massi-bot-api-1.3.18-full.zip`
 2. **Plugins → Añadir → Subir plugin** → elegir el zip → **Instalar** → **Reemplazar plugin actual** si pregunta
-3. Confirmar en **Plugins** que la versión sea **1.3.17** (o superior)
-4. Probar en incógnito: `…/finalizar-compra/?source=whatsapp&items=BLL5AM005x10:1,BLL5AM005x5:1` (también vale el `--` que deja WhatsApp)
+3. Confirmar en **Plugins** que la versión sea **1.3.18** (o superior)
+4. Probar en incógnito: `…/finalizar-compra/?source=whatsapp&items=BLL5AM005x10:1,BLL5AM005x5:1` (también vale `%7E` / `--` de links viejos)
 
 > **No subir `dist/massi-bot-api-ia-ventas.zip`** sobre producción: sale de Local WP (`1.0.x`) y **no es** el plugin activo (prod usa **1.3.x** con mapa de módulos, receipts, admin). Subirlo crea duplicado o pisa funcionalidad.
 
@@ -399,4 +399,4 @@ cd ~/IA-Ventas-B && git pull && cd backend && npm run build && pm2 restart all
 
 ---
 
-*Última actualización: agosto 2026 — flow Finalizar Pedido; toggle agente; OTP/notificaciones IA Ventas.*
+*Última actualización: septiembre 2026 — consulta por tipo sin catálogo genérico; checkout link `SKUx10:1` (MASSI Bot API 1.3.18); parser `~`/`%7E`/`--`; paquetes de balines en WhatsApp.*
