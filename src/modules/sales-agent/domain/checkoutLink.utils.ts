@@ -93,8 +93,9 @@ export function parseCheckoutItems(raw: string): CheckoutLinkItem[] {
 }
 
 export function normalizeCheckoutItemsRaw(raw: string): string {
-  const trimmed = raw.trim();
+  let trimmed = raw.trim();
   if (!trimmed) return '';
+  trimmed = trimmed.replace(/%7E/gi, '~');
   if (trimmed.includes('.') && !trimmed.includes(',')) {
     return trimmed.replace(/\./g, ',');
   }

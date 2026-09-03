@@ -96,6 +96,13 @@ describe('parseCheckoutItems', () => {
     ]);
   });
 
+  it('decodifica el %7E del backend viejo (BLD8AM008~10:2)', () => {
+    expect(parseCheckoutItems('BLD8AM008%7E10:2,BLD8AM008%7E2:2')).toEqual([
+      { sku: 'BLD8AM008', qty: 2, packUnits: 10 },
+      { sku: 'BLD8AM008', qty: 2, packUnits: 2 },
+    ]);
+  });
+
   it('sigue aceptando el formato histórico con ~', () => {
     expect(parseCheckoutItems('BLD6AM006~10:3,BLD6AM006~2:2,DJVMIL004:1')).toEqual([
       { sku: 'BLD6AM006', qty: 3, packUnits: 10 },
