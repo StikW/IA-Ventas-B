@@ -11,6 +11,11 @@ describe('isProductSelectionIntent', () => {
     expect(isProductSelectionIntent('quiero balín #4')).toBe(true);
     expect(isProductSelectionIntent('BAL-4LA')).toBe(true);
   });
+
+  it('no trata un agradecimiento como pedido de producto', () => {
+    expect(isProductSelectionIntent('gracias')).toBe(false);
+    expect(isProductSelectionIntent('mil gracias por la info')).toBe(false);
+  });
 });
 
 describe('isCartContinueShoppingIntent', () => {

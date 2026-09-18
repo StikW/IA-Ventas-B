@@ -32,6 +32,7 @@ import {
 import { CATALOG_CTA_LABEL } from '../../domain/catalogUrl.utils';
 import { CartService } from './CartService';
 import { resolveBbcUiRoute } from '../../domain/bbcUiRoute';
+import { buildGratitudeReply, isPureGratitude, stripGratitudeForProcessing } from '../../domain/gratitude.utils';
 import { isCartFinalizeIntent, isMenuGreeting, isProductSelectionIntent, WA_BTN, WA_BTN_LABEL } from '../../domain/whatsappFlow.constants';
 import { isCartClearIntent, isCartCorrectionIntent, isCartIncrementIntent, isCartKeepOnlyIntent, isCartRemoveIntent, isCartReviewIntent, isCartSetQuantityIntent } from '../../domain/cartModification.utils';
 import { extractAllVariantHints, extractExplicitSkus, extractProductFamilyTerm, hasConcreteProductSpec, isCatalogBrowseIntent, isDirectVariantAddIntent, isProductFamilyBrowseIntent, isProductOptionsBrowseIntent, isThemeBrowseCandidate, mentionsDifferentPackProduct, normalizeUserTypos, shouldAbandonPendingPackFlow } from '../../domain/productSelection.utils';
@@ -328,8 +329,12 @@ export class SalesAgentService {
     if (!hasOpenAI) return { replied: false, reason: 'OPENAI_NOT_CONFIGURED' };
     if (!hasBuilderBot) return { replied: false, reason: 'BUILDERBOT_NOT_CONFIGURED' };
 
-    const text = normalizeUserTypos(input.text.trim());
-    if (!text) return { replied: false, reason: 'EMPTY_MESSAGE' };
+    const originalText = normalizeUserTypos(input.text.trim());
+    if (!originalText) return { replied: false, reason: 'EMPTY_MESSAGE' };
+
+    const gratitudeStrip = stripGratitudeForProcessing(originalText);
+    const text =
+      gratitudeStrip.hadGratitude && gratitudeStrip.stripped ? gratitudeStrip.stripped : originalText;
 
     const business = await this.businessRepo.findById(input.tenantId);
     const businessName = business?.name ?? 'el negocio';
@@ -391,6 +396,26 @@ export class SalesAgentService {
       if (listedReply) return listedReply;
     }
 
+    if (isPureGratitude(originalText)) {
+      const gratitude = buildGratitudeReply(mutableContext, mutableContext.lastCheckoutUrl);
+      const now = new Date().toISOString();
+      const bbcResponse = await this.persistAndReply({
+        tenantId: input.tenantId,
+        deviceId: input.deviceId,
+        customerPhone: input.customerPhone,
+        messageId: input.messageId,
+        history,
+        userText: originalText,
+        reply: gratitude.body,
+        salesContext: mutableContext,
+        outbound: { kind: 'text', body: gratitude.body },
+        uiRoute: gratitude.uiRoute,
+        now,
+        ragHits: 0,
+      });
+      return { replied: true, reply: gratitude.body, bbcResponse };
+    }
+
     const flowResult = await this.conversationFlow.tryHandle({
       tenantId: input.tenantId,
       customerPhone: input.customerPhone,
@@ -409,7 +434,7 @@ export class SalesAgentService {
         customerPhone: input.customerPhone,
         messageId: input.messageId,
         history,
-        userText: text,
+        userText: originalText,
         reply: flowResult.replyText,
         salesContext: flowResult.salesContext,
         outbound: flowResult.outbound,

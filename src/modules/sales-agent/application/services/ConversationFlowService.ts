@@ -6,6 +6,7 @@ import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.ty
 import { BbcUiRoute } from '../../../builderbot/domain/BbcWebhookAgentResponse';
 import { SalesContext } from '../../domain/IChatSessionRepository';
 import { CATALOG_CTA_LABEL, resolveStoreCatalogUrl } from '../../domain/catalogUrl.utils';
+import { buildWelcomeIntro } from '../../domain/greeting.utils';
 import { EMOJI, warmMorePrompt } from '../../domain/tone.utils';
 import {
   CHECKOUT_CTA_LABEL,
@@ -106,7 +107,13 @@ export class ConversationFlowService {
       input.salesContext.flowStep !== 'payment_select' &&
       input.salesContext.phase !== 'awaiting_payment'
     ) {
-      return this.buildWelcomeMessage(input.tenantId, input.businessName, input.businessProfile, input.salesContext);
+      return this.buildWelcomeMessage(
+        input.tenantId,
+        input.businessName,
+        input.businessProfile,
+        input.salesContext,
+        text
+      );
     }
 
     if (input.salesContext.flowStep === 'buying' && isCartFinalizeIntent(text)) {
@@ -123,7 +130,13 @@ export class ConversationFlowService {
 
     if (input.salesContext.flowStep === 'checkout_redirect') {
       if (isMenuGreeting(text)) {
-        return this.buildWelcomeMessage(input.tenantId, input.businessName, input.businessProfile, input.salesContext);
+        return this.buildWelcomeMessage(
+          input.tenantId,
+          input.businessName,
+          input.businessProfile,
+          input.salesContext,
+          text
+        );
       }
       if (isCartFinalizeIntent(text) || /formulario|link|enlace|checkout|completar\s+(la\s+)?compra/i.test(text)) {
         return null;
@@ -187,11 +200,12 @@ export class ConversationFlowService {
     tenantId: string,
     businessName: string,
     profile?: BusinessProfileConfig,
-    previousContext?: SalesContext
+    previousContext?: SalesContext,
+    userText?: string
   ): Promise<ConversationFlowResult> {
     const profileLines = this.formatBusinessProfileBlock(profile);
     const intro = [
-      `¡Hola! 👋 Qué gusto tenerte en *${businessName}*.`,
+      buildWelcomeIntro(businessName, userText),
       profileLines.length ? '' : null,
       ...profileLines,
       '',
@@ -557,7 +571,8 @@ export class ConversationFlowService {
         input.tenantId,
         input.businessName,
         input.businessProfile,
-        input.salesContext
+        input.salesContext,
+        input.text
       );
     }
 

@@ -1,5 +1,6 @@
 /** IDs estables para botones WhatsApp (Meta button_reply.id) */
 import { isCartClearIntent, isCartCorrectionIntent, isCartKeepOnlyIntent, isCartRemoveIntent, isCartReviewIntent, isCartSetQuantityIntent } from './cartModification.utils';
+import { isPureGratitude } from './gratitude.utils';
 import { extractExplicitSkus, extractVariantHint, hasConcreteProductSpec, isAvailabilityQuestion, isProductOptionsBrowseIntent } from './productSelection.utils';
 
 export const WA_BTN = {
@@ -73,6 +74,7 @@ export function isProductSelectionIntent(text: string): boolean {
 
   if (
     isMenuGreeting(t) ||
+    isPureGratitude(text) ||
     isCartFinalizeIntent(t) ||
     isCartContinueShoppingIntent(t) ||
     isCartClearIntent(text) ||
