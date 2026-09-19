@@ -15,6 +15,8 @@ export function errorHandler(err: Error, req: Request, res: Response, _next: Nex
       VALIDATION_ERROR: 422,
       OPENAI_NOT_CONFIGURED: 503,
       OPENAI_EMPTY_RESPONSE: 502,
+      WOOCOMMERCE_NOT_CONFIGURED: 400,
+      CATALOG_EMPTY: 400,
       BUILDERBOT_ERROR: 502,
       BUILDERBOT_NOT_CONFIGURED: 503,
       WEBHOOK_UNAUTHORIZED: 401,

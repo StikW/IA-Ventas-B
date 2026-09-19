@@ -2,6 +2,9 @@ import http from 'node:http';
 import https from 'node:https';
 import { injectable } from 'tsyringe';
 import {
+  CatalogTxtSourceEntry,
+  CatalogTxtProduct,
+  CatalogTxtVariation,
   IWooCommerceService,
   WooCommerceConfigData,
   WooCommerceOrderPayload,
@@ -191,6 +194,28 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
     return all.slice(0, maxProducts);
   }
 
+  async listCatalogTxtSource(config: WooCommerceConfigData): Promise<CatalogTxtSourceEntry[]> {
+    const perPage = 100;
+    const products: CatalogTxtProduct[] = [];
+
+    for (let page = 1; ; page++) {
+      const batch = await this.request<Array<Record<string, unknown>>>(
+        config,
+        `/products?per_page=${perPage}&page=${page}&status=publish&orderby=id&order=asc`
+      );
+      products.push(...batch.map((item) => this.mapCatalogTxtProduct(item)));
+      if (batch.length < perPage) break;
+    }
+
+    const entries: CatalogTxtSourceEntry[] = [];
+    for (const product of products) {
+      const variations =
+        product.type === 'variable' ? await this.listCatalogTxtVariations(config, product.id) : [];
+      entries.push({ product, variations });
+    }
+    return entries;
+  }
+
   async searchProducts(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]> {
     const q = query.trim();
     if (!q) return [];
@@ -296,6 +321,65 @@ export class WooCommerceRestAdapter implements IWooCommerceService {
       status: (p.status as string) ?? 'publish',
       type: 'variation',
       tags: attributes.map((attribute) => `${attribute.name ?? ''}: ${attribute.option ?? ''}`),
+    };
+  }
+
+  private async listCatalogTxtVariations(
+    config: WooCommerceConfigData,
+    productId: number
+  ): Promise<CatalogTxtVariation[]> {
+    const variations = await this.request<Array<Record<string, unknown>>>(
+      config,
+      `/products/${productId}/variations?per_page=100`
+    );
+    return variations.map((item) => this.mapCatalogTxtVariation(item));
+  }
+
+  private mapCatalogTxtProduct(p: Record<string, unknown>): CatalogTxtProduct {
+    const taxonomy = (raw: unknown): Array<Record<string, unknown>> =>
+      Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+    const metaRaw = Array.isArray(p.meta_data) ? (p.meta_data as Array<Record<string, unknown>>) : [];
+    const attributes = Array.isArray(p.attributes) ? (p.attributes as Array<Record<string, unknown>>) : [];
+
+    return {
+      id: Number(p.id ?? 0),
+      name: String(p.name ?? ''),
+      sku: String(p.sku ?? ''),
+      type: String(p.type ?? 'simple'),
+      status: String(p.status ?? 'publish'),
+      price: this.toPriceString(p.price),
+      short_description: String(p.short_description ?? ''),
+      stock_status: String(p.stock_status ?? ''),
+      categories: taxonomy(p.categories).map((c) => ({
+        id: Number(c.id ?? 0),
+        name: String(c.name ?? ''),
+      })),
+      tags: taxonomy(p.tags).map((t) => ({
+        id: Number(t.id ?? 0),
+        name: String(t.name ?? ''),
+      })),
+      attributes: attributes.map((attribute) => ({
+        name: String(attribute.name ?? ''),
+        options: Array.isArray(attribute.options) ? attribute.options.map((option) => String(option)) : [],
+      })),
+      meta_data: metaRaw.map((entry) => ({
+        key: String(entry.key ?? ''),
+        value: entry.value,
+      })),
+    };
+  }
+
+  private mapCatalogTxtVariation(p: Record<string, unknown>): CatalogTxtVariation {
+    const attributes = Array.isArray(p.attributes) ? (p.attributes as Array<Record<string, unknown>>) : [];
+    return {
+      id: Number(p.id ?? 0),
+      sku: String(p.sku ?? ''),
+      price: this.toPriceString(p.price),
+      stock_status: String(p.stock_status ?? ''),
+      attributes: attributes.map((attribute) => ({
+        name: String(attribute.name ?? ''),
+        option: String(attribute.option ?? ''),
+      })),
     };
   }
 

@@ -6,6 +6,7 @@ import { UserRole } from '../../../identity/domain/entities/User.types';
 import { Document } from '../../domain/entities/Document';
 import { DocumentStatus, IStorageService, IVectorStore } from '../../domain/ports/KnowledgePorts';
 import { IDocumentRepository } from '../../domain/repositories/IDocumentRepository';
+import { CatalogTxtGeneratorService } from '../services/CatalogTxtGeneratorService';
 import { DocumentProcessorService } from '../services/DocumentProcessorService';
 import { resolveDocumentStorageKey } from '../utils/resolveDocumentStorageKey';
 
@@ -120,5 +121,85 @@ export class ReprocessDocumentUseCase {
 
     const processed = await this.processor.process(doc);
     return processed.toJSON();
+  }
+}
+
+const CATALOG_FILENAME = 'catalogo.txt';
+
+@injectable()
+export class RefreshCatalogDocumentUseCase {
+  constructor(
+    @inject(CatalogTxtGeneratorService) private readonly catalogGenerator: CatalogTxtGeneratorService,
+    @inject(DeleteDocumentUseCase) private readonly deleteDocument: DeleteDocumentUseCase,
+    @inject(UploadDocumentUseCase) private readonly uploadDocument: UploadDocumentUseCase,
+    @inject('IDocumentRepository') private readonly documentRepo: IDocumentRepository
+  ) {}
+
+  async execute(input: { actor: TenantContext }) {
+    const tenantId = resolveTenantId(input.actor);
+    const catalog = await this.catalogGenerator.generateForTenant(tenantId);
+    const existing = await this.listAllDocuments(tenantId);
+
+    for (const doc of existing) {
+      await this.deleteDocument.execute({ actor: input.actor, id: doc.id });
+    }
+
+    const buffer = Buffer.from(catalog.text, 'utf8');
+    const file = {
+      fieldname: 'file',
+      originalname: CATALOG_FILENAME,
+      encoding: '7bit',
+      mimetype: 'text/plain',
+      size: buffer.length,
+      buffer,
+      destination: '',
+      filename: CATALOG_FILENAME,
+      path: '',
+      stream: undefined,
+    } as unknown as Express.Multer.File;
+
+    const document = await this.uploadDocument.execute({ actor: input.actor, file });
+
+    return {
+      document,
+      catalog: {
+        productCount: catalog.stats.productCount,
+        skuCount: catalog.stats.skuCount,
+        packCount: catalog.stats.packCount,
+        issues: catalog.issueSummary,
+      },
+    };
+  }
+
+  private async listAllDocuments(tenantId: string) {
+    const docs: Document[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.documentRepo.findByTenant(tenantId, { limit: 50, cursor });
+      docs.push(...page.data);
+      cursor = page.hasMore ? page.cursor : undefined;
+    } while (cursor);
+    return docs;
+  }
+}
+
+@injectable()
+export class DownloadDocumentUseCase {
+  constructor(
+    @inject('IDocumentRepository') private readonly documentRepo: IDocumentRepository,
+    @inject('IStorageService') private readonly storage: IStorageService
+  ) {}
+
+  async execute(input: { actor: TenantContext; id: string }) {
+    const tenantId = resolveTenantId(input.actor);
+    const doc = await this.documentRepo.findById(tenantId, input.id);
+    if (!doc) throw new NotFoundError('Documento no encontrado');
+
+    const buffer = await this.storage.read(resolveDocumentStorageKey(doc));
+    return {
+      filename: doc.filename,
+      mimeType: doc.mimeType || 'text/plain',
+      buffer,
+    };
   }
 }

@@ -210,7 +210,7 @@ cd backend
 npm run catalog:txt -- --store https://mitienda.com --key ck_xxx --secret cs_xxx --out catalogo.txt
 ```
 
-El informe de inconsistencias sale por **stderr**; el `.txt` se sube en `/business/documents`.
+El informe de inconsistencias sale por **stderr**. En el panel: **Catálogo → Actualizar** (`POST /documents/refresh-catalog`) genera el mismo `.txt`, reemplaza el documento previo y lo vectoriza. El CLI es opcional.
 
 ---
 

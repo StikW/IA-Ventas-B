@@ -47,6 +47,8 @@ export function createDocumentRoutes(): Router {
 
   router.get('/', documentController.list.bind(documentController));
   router.post('/', upload.single('file'), documentController.upload.bind(documentController));
+  router.post('/refresh-catalog', documentController.refreshCatalog.bind(documentController));
+  router.get('/:id/download', documentController.download.bind(documentController));
   router.delete('/:id', documentController.delete.bind(documentController));
   router.post('/:id/reprocess', documentController.reprocess.bind(documentController));
 

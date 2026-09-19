@@ -4,8 +4,11 @@ import { Document } from '../../domain/entities/Document';
 import { DocumentStatus, IStorageService, IVectorStore } from '../../domain/ports/KnowledgePorts';
 import { IDocumentRepository } from '../../domain/repositories/IDocumentRepository';
 import { DocumentProcessorService } from '../services/DocumentProcessorService';
+import { CatalogTxtGeneratorService } from '../services/CatalogTxtGeneratorService';
 import {
   DeleteDocumentUseCase,
+  DownloadDocumentUseCase,
+  RefreshCatalogDocumentUseCase,
   UploadDocumentUseCase,
 } from './DocumentUseCases';
 
@@ -198,5 +201,151 @@ describe('DeleteDocumentUseCase', () => {
     await expect(useCase.execute({ actor, id: 'missing' })).rejects.toThrow('Documento no encontrado');
     expect(vectorStore.deleteByDocument).not.toHaveBeenCalled();
     expect(storage.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('RefreshCatalogDocumentUseCase', () => {
+  const catalogResult = {
+    text: '# Catálogo\n\n---\nProducto: Anillo\nSKU: ANI-1\n',
+    stats: { productCount: 1, skuCount: 1, packCount: 0 },
+    issues: [],
+    issueSummary: [],
+  };
+
+  it('genera el catálogo, borra el documento previo y guarda el nuevo', async () => {
+    const existing = makeDocument('old-doc');
+    const generator = {
+      generateForTenant: vi.fn().mockResolvedValue(catalogResult),
+    } as unknown as CatalogTxtGeneratorService;
+    const deleteDocument = {
+      execute: vi.fn().mockResolvedValue(undefined),
+    } as unknown as DeleteDocumentUseCase;
+    const uploadDocument = {
+      execute: vi.fn().mockResolvedValue(makeDocument('new-doc').toJSON()),
+    } as unknown as UploadDocumentUseCase;
+    const documentRepo: IDocumentRepository = {
+      save: vi.fn(),
+      update: vi.fn(),
+      findById: vi.fn(),
+      findByTenant: vi.fn().mockResolvedValue({ data: [existing], hasMore: false }),
+      delete: vi.fn(),
+    };
+
+    const useCase = new RefreshCatalogDocumentUseCase(
+      generator,
+      deleteDocument,
+      uploadDocument,
+      documentRepo
+    );
+    const result = await useCase.execute({ actor });
+
+    expect(generator.generateForTenant).toHaveBeenCalledWith(tenantId);
+    expect(deleteDocument.execute).toHaveBeenCalledWith({ actor, id: 'old-doc' });
+    expect(uploadDocument.execute).toHaveBeenCalledWith({
+      actor,
+      file: expect.objectContaining({ originalname: 'catalogo.txt', mimetype: 'text/plain' }),
+    });
+    expect(result.document.id).toBe('new-doc');
+    expect(result.catalog.productCount).toBe(1);
+  });
+
+  it('si no había documento, solo genera y guarda', async () => {
+    const generator = {
+      generateForTenant: vi.fn().mockResolvedValue(catalogResult),
+    } as unknown as CatalogTxtGeneratorService;
+    const deleteDocument = { execute: vi.fn() } as unknown as DeleteDocumentUseCase;
+    const uploadDocument = {
+      execute: vi.fn().mockResolvedValue(makeDocument('new-doc').toJSON()),
+    } as unknown as UploadDocumentUseCase;
+    const documentRepo: IDocumentRepository = {
+      save: vi.fn(),
+      update: vi.fn(),
+      findById: vi.fn(),
+      findByTenant: vi.fn().mockResolvedValue({ data: [], hasMore: false }),
+      delete: vi.fn(),
+    };
+
+    const useCase = new RefreshCatalogDocumentUseCase(
+      generator,
+      deleteDocument,
+      uploadDocument,
+      documentRepo
+    );
+    await useCase.execute({ actor });
+
+    expect(deleteDocument.execute).not.toHaveBeenCalled();
+    expect(uploadDocument.execute).toHaveBeenCalledOnce();
+  });
+
+  it('no borra el documento actual si falla la generación', async () => {
+    const generator = {
+      generateForTenant: vi.fn().mockRejectedValue(new Error('WooCommerce caído')),
+    } as unknown as CatalogTxtGeneratorService;
+    const deleteDocument = { execute: vi.fn() } as unknown as DeleteDocumentUseCase;
+    const uploadDocument = { execute: vi.fn() } as unknown as UploadDocumentUseCase;
+    const documentRepo: IDocumentRepository = {
+      save: vi.fn(),
+      update: vi.fn(),
+      findById: vi.fn(),
+      findByTenant: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const useCase = new RefreshCatalogDocumentUseCase(
+      generator,
+      deleteDocument,
+      uploadDocument,
+      documentRepo
+    );
+
+    await expect(useCase.execute({ actor })).rejects.toThrow('WooCommerce caído');
+    expect(documentRepo.findByTenant).not.toHaveBeenCalled();
+    expect(deleteDocument.execute).not.toHaveBeenCalled();
+    expect(uploadDocument.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('DownloadDocumentUseCase', () => {
+  it('lee el archivo del storage', async () => {
+    const documentRepo: IDocumentRepository = {
+      save: vi.fn(),
+      update: vi.fn(),
+      findById: vi.fn().mockResolvedValue(makeDocument('doc-1')),
+      findByTenant: vi.fn(),
+      delete: vi.fn(),
+    };
+    const storage: IStorageService = {
+      save: vi.fn(),
+      read: vi.fn().mockResolvedValue(Buffer.from('catalogo')),
+      delete: vi.fn(),
+      deleteTenantFiles: vi.fn(),
+    };
+
+    const useCase = new DownloadDocumentUseCase(documentRepo, storage);
+    const result = await useCase.execute({ actor, id: 'doc-1' });
+
+    expect(storage.read).toHaveBeenCalledWith(`tenants/${tenantId}/documents/doc-1/catalogo.txt`);
+    expect(result.filename).toBe('catalogo.txt');
+    expect(result.buffer.toString('utf8')).toBe('catalogo');
+  });
+
+  it('lanza NotFoundError si el documento no existe', async () => {
+    const documentRepo: IDocumentRepository = {
+      save: vi.fn(),
+      update: vi.fn(),
+      findById: vi.fn().mockResolvedValue(null),
+      findByTenant: vi.fn(),
+      delete: vi.fn(),
+    };
+    const storage: IStorageService = {
+      save: vi.fn(),
+      read: vi.fn(),
+      delete: vi.fn(),
+      deleteTenantFiles: vi.fn(),
+    };
+
+    const useCase = new DownloadDocumentUseCase(documentRepo, storage);
+    await expect(useCase.execute({ actor, id: 'missing' })).rejects.toThrow('Documento no encontrado');
+    expect(storage.read).not.toHaveBeenCalled();
   });
 });

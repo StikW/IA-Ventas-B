@@ -2,7 +2,9 @@ import { Request, Response, NextFunction } from 'express';
 import { container } from 'tsyringe';
 import {
   DeleteDocumentUseCase,
+  DownloadDocumentUseCase,
   ListDocumentsUseCase,
+  RefreshCatalogDocumentUseCase,
   ReprocessDocumentUseCase,
   UploadDocumentUseCase,
 } from '../../application/use-cases/DocumentUseCases';
@@ -52,6 +54,30 @@ export class DocumentController {
       const useCase = container.resolve(ReprocessDocumentUseCase);
       const result = await useCase.execute({ actor: req.user!, id: String(req.params.id) });
       res.json({ data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async refreshCatalog(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const useCase = container.resolve(RefreshCatalogDocumentUseCase);
+      const result = await useCase.execute({ actor: req.user! });
+      res.status(201).json({ data: result.document, catalog: result.catalog });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  async download(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const useCase = container.resolve(DownloadDocumentUseCase);
+      const result = await useCase.execute({ actor: req.user!, id: String(req.params.id) });
+      const safeName = result.filename.replace(/[\r\n"]/g, '');
+      res.setHeader('Content-Type', result.mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+      res.setHeader('Content-Length', String(result.buffer.length));
+      res.send(result.buffer);
     } catch (err) {
       next(err);
     }

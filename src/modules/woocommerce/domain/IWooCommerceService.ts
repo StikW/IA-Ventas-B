@@ -65,6 +65,35 @@ export interface WooCommerceOrderResult {
   total: string;
 }
 
+/** Forma cruda del producto WC que necesita el `.txt` de RAG (atributos, meta, tags). */
+export interface CatalogTxtProduct {
+  id: number;
+  name: string;
+  sku: string;
+  type: string;
+  status: string;
+  price: string;
+  short_description: string;
+  stock_status: string;
+  categories: Array<{ id: number; name: string }>;
+  tags: Array<{ id: number; name: string }>;
+  attributes: Array<{ name: string; options: string[] }>;
+  meta_data: Array<{ key: string; value: unknown }>;
+}
+
+export interface CatalogTxtVariation {
+  id: number;
+  sku: string;
+  price: string;
+  stock_status: string;
+  attributes: Array<{ name: string; option: string }>;
+}
+
+export interface CatalogTxtSourceEntry {
+  product: CatalogTxtProduct;
+  variations: CatalogTxtVariation[];
+}
+
 export interface IWooCommerceService {
   testConnection(config: WooCommerceConfigData): Promise<{ checkoutPagePath?: string; shopPagePath?: string }>;
   resolveCheckoutPagePath(config: WooCommerceConfigData): Promise<string | null>;
@@ -72,6 +101,11 @@ export interface IWooCommerceService {
   listProducts(config: WooCommerceConfigData, page?: number): Promise<WooCommerceProduct[]>;
   /** Catálogo completo paginado. Base del índice local de búsqueda del agente. */
   listAllProducts(config: WooCommerceConfigData, maxProducts?: number): Promise<WooCommerceProduct[]>;
+  /**
+   * Catálogo publicado con variaciones y meta (woo-massi). Fuente del `.txt` que se
+   * vectoriza en Documentos. Sin tope: pagina hasta agotar la tienda.
+   */
+  listCatalogTxtSource(config: WooCommerceConfigData): Promise<CatalogTxtSourceEntry[]>;
   searchProducts(config: WooCommerceConfigData, query: string): Promise<WooCommerceProduct[]>;
   getProductBySku(config: WooCommerceConfigData, sku: string): Promise<WooCommerceProduct | null>;
   getProductById(config: WooCommerceConfigData, productId: number): Promise<WooCommerceProduct | null>;

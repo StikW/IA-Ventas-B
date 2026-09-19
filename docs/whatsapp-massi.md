@@ -3,6 +3,7 @@
 > Guía operativa: agente LLM en texto libre + **flows UI de BBC para los botones**. La API v2 solo envía texto, así que los botones se configuran a mano en el panel y el webhook los dispara con `{ route }`.  
 > **Catálogo:** cualquier producto WooCommerce (simple o variable) identificado por **SKU**.  
 > **Contexto de negocio** (QR en tienda, clientes remotos, formularios WC, tickets, OTP): [`business-flow-massi.md`](./business-flow-massi.md).  
+> **Mejoras conversación** (saludo hora, agradecimientos, agente + turnos): [`../../docs/propuesta-mejoras-conversacion-whatsapp.md`](../../docs/propuesta-mejoras-conversacion-whatsapp.md).  
 > **BuilderBot (guía reutilizable, no específica de este repo):** [`../../docs/builderbot-guia.md`](../../docs/builderbot-guia.md).
 
 ---
@@ -242,7 +243,7 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 
 | Cliente | Sistema |
 |---------|---------|
-| `hola`, `menú`, `buenos días` | Texto: bienvenida + **perfil negocio** (descripción, 📍 dirección, 🕐 horario desde `/business/settings`) |
+| `hola`, `menú`, `buenos días` | Texto: **saludo según hora Colombia** (`greeting.utils`, zona `America/Bogota`) + **perfil negocio** (descripción, 📍 dirección, 🕐 horario). Si el cliente ya dijo *buenas tardes*, no se contradice |
 | (continúa) | Pide **ID del producto** (SKU amigable) o descripción en lenguaje natural |
 | (continúa) | `route: catalog` → flow **Catalogo** con botón **Ver catálogo** → `{storeUrl}{shopPagePath}` (MASSI: `https://massijoyeria.com/tienda/`) |
 
@@ -255,6 +256,13 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 | 3 (gotoFlow) | **Catalogo**: botón **Ver catálogo** |
 
 **Vaciar carrito** (`massi:cart:clear`, o escribir *Vaciar carrito*) limpia `cartItems` y devuelve al paso de pedir ID. El LLM **no** debe repetir un saludo genérico si ya se envió.
+
+### 1b. Agradecimientos (determinista)
+
+| Cliente | Sistema |
+|---------|---------|
+| `gracias`, `mil gracias`, `ok gracias` | **Determinista** → `gratitude.utils`: respuesta corta según fase (discovery, carrito, listado, granel, checkout, comprobante). **No** busca catálogo ni pide ID |
+| `gracias, agrégame el A`, `quiero balín #6, gracias` | Strip del agradecimiento → flujo normal (listado, carrito, SKU) |
 
 ### 2. Exploración de catálogo
 
@@ -663,8 +671,12 @@ Luego en panel → WhatsApp → **Re-sincronizar webhook**.
 - [ ] Tienda WC accesible desde el servidor (ngrok estable si es local)
 - [ ] **Re-sincronizar webhook** tras cada deploy que toque relay/BBC
 - [ ] **Probar conexión** WC (detecta `checkoutPagePath` + `shopPagePath` → `/tienda/`)
-- [ ] **hola** (sin carrito) → saludo con perfil negocio + pide ID + enlace **Ver catálogo** (URL visible y clicable)
-- [ ] **hola** (con carrito previo) → saludo + resumen + opciones **Finalizar pedido** / **Vaciar carrito** + enlace catálogo
+- [ ] **hola** (sin carrito) → saludo según hora + perfil negocio + pide ID + enlace **Ver catálogo** (URL visible y clicable)
+- [ ] **hola** (con carrito previo) → saludo horario + resumen + opciones **Finalizar pedido** / **Vaciar carrito** + enlace catálogo
+- [ ] **buenas tardes** de mañana → respeta *Buenas tardes* (no corrige a *Buenos días*)
+- [ ] **gracias** solo → respuesta corta; no pide ID
+- [ ] **gracias, agrégame el a** (tras listado) → agrega al carrito
+- [ ] Notificación *listo para recoger* + cliente responde *gracias* → respuesta amable (mismo número agente + turnos)
 - [ ] Escribir **Vaciar carrito** → carrito vacío + vuelve a pedir ID
 - [ ] **qué productos tienen** → enlace catálogo (no lista en chat)
 - [ ] **ID/SKU** o descripción natural → carrito + botón **Finalizar pedido** (flow)

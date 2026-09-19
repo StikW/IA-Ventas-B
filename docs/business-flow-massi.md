@@ -2,7 +2,7 @@
 
 > **Propósito:** Documentar la lógica de negocio real (joyería + WooCommerce + WhatsApp), qué hace cada sistema y qué falta implementar en **IA Ventas**.  
 > **Complementa:** [`whatsapp-massi.md`](./whatsapp-massi.md) (integración técnica WhatsApp/BBC).  
-> **Última actualización:** septiembre 2026 — último listado (`lastOptions`); checkout `SKUx10:1` (MASSI Bot API 1.3.18); saludo discovery, catálogo por link, RAG→SKU, prod massijoyeria.com.
+> **Última actualización:** septiembre 2026 — saludo según hora + agradecimientos contextuales; coexistencia agente + turnos; ver [`docs/propuesta-mejoras-conversacion-whatsapp.md`](../../docs/propuesta-mejoras-conversacion-whatsapp.md).
 
 ---
 
@@ -62,7 +62,8 @@ flowchart LR
 
 | Paso | Responsable | Estado en IA Ventas |
 |------|-------------|---------------------|
-| Saludo + perfil negocio + pedir ID | `buildWelcomeMessage` → botón catálogo WC | ✅ Implementado |
+| Saludo + perfil negocio + pedir ID | `buildWelcomeMessage` → botón catálogo WC; hora Colombia (`greeting.utils`) | ✅ Implementado |
+| Agradecimiento (*gracias* solo o + instrucción) | `gratitude.utils` → respuesta por fase o venta normal | ✅ Implementado |
 | Consulta catálogo (*qué productos tienen*) | Enlace `{storeUrl}/tienda/` + botón (no lista en chat) | ✅ Implementado |
 | ID/SKU directo o descripción natural | RAG (`.txt`) → SKU → stock WC → carrito | ✅ Implementado |
 | **Paquetes a granel (balines)** | `woo-massi` arma x10/x5/x2/x1; el agente cotiza y el checkout cobra esos paquetes | ✅ Implementado |
@@ -212,7 +213,9 @@ Reglas de negocio descritas por el equipo:
 ### ✅ Implementado en IA Ventas (jul 2026)
 
 - Agente ventas WhatsApp (texto libre + carrito SKU multi-producto).
-- **Saludo discovery:** perfil negocio (descripción, dirección, horario) + pedir ID + botón catálogo.
+- **Saludo discovery:** perfil negocio (descripción, dirección, horario) + pedir ID + botón catálogo; **hora Colombia** (*Buenos días* / *Buenas tardes* / *Buenas noches*); respeta saludo del cliente.
+- **Agradecimientos:** *gracias* / *mil gracias* → respuesta corta por fase; *gracias, agrégame el A* → venta normal.
+- **Mismo número WhatsApp:** agente (entrante) + OTP/estado pedido/turnos (saliente vía `/channel/messages`) — sin conflicto técnico; ver propuesta §5.
 - **Catálogo por enlace WC** (`/tienda/`) — no lista productos en chat.
 - **RAG → SKU** desde catálogo `.txt` vectorizado; stock/precio siempre WooCommerce.
 - **Multi-producto:** `cadena 45cm y balín #3` en un mensaje.
@@ -312,4 +315,4 @@ Reglas de negocio descritas por el equipo:
 
 ---
 
-*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress. Última revisión: septiembre 2026 — memoria del último listado (`lastOptions`); checkout link `SKUx10:1` (MASSI Bot API 1.3.18); flow Finalizar Pedido; toggle agente; OTP + notificaciones WhatsApp vía IA Ventas.*
+*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress. Última revisión: septiembre 2026 — saludo hora Colombia; agradecimientos; coexistencia agente + turnos.*
