@@ -134,13 +134,18 @@ Pulsar **Guardar** y luego **Probar conexión** (las credenciales deben estar pe
 
 ---
 
-## 7. Configuración adicional (`/business/settings`)
+## 7. Información del negocio (`/business/settings`)
+
+Un solo formulario. El nombre no se cambia en Dynamo: **Guardar cambios** lo escribe en el negocio y el perfil en la config del tenant.
 
 | Campo | Uso |
 |-------|-----|
+| **Nombre del negocio** | Saludo de WhatsApp: «Qué gusto tenerte en *este nombre*» |
+| **Correo** y **teléfono** | Contacto del negocio |
+| **Descripción**, **dirección**, **horario** | Van en el saludo, debajo del nombre |
+| **Datos bancarios** | Solo relevante en modo `whatsapp` o mensajes informativos |
 | **URL formulario de compra** (`checkoutFormUrl`) | Opcional. Si vacío → `{storeUrl}{checkoutPagePath}` (auto-detect, ej. `/finalizar-compra/`) |
 | **Modo cierre de compra** (`checkoutMode`) | `link` (default): enlace al formulario WC · `whatsapp`: botones pago en chat (legacy) |
-| **Datos bancarios** | Solo relevante en modo `whatsapp` o mensajes informativos |
 
 ---
 
@@ -174,6 +179,8 @@ Sin SKU el agente no puede resolver stock ni armar el link de checkout con `item
 Algunos productos simples (SKU tipo `BAL-10DA`) no se venden como `cantidad × precio unitario`. El plugin **`woo-massi`** guarda 4 paquetes (x10, x5, x2, x1) con precio propio y, en la ficha, arma cualquier cantidad N con la combinación más barata.
 
 El agente WhatsApp replica ese cálculo: cotiza, espera confirmación y el carrito de WhatsApp guarda **una línea por paquete** (precio del paquete, no N × unitario).
+
+**Listado en el chat:** *quiero balines* no enumera cada tamaño. Muestra los tipos según el **nombre** (Diamantado Oro Nacional Amarillo, Liso Oro Nacional Amarillo, Diamantado Oro Nacional Rosa) y, al elegir la letra, los `#` de ese tipo. *tienen balines #4* lista ese número en todos los tipos. No usa la categoría de WooCommerce: varios lisos están en Diamantado y algún rosa en Oro Amarillo.
 
 **Link de checkout:** el backend envía paquetes explícitos en `items`, no solo unidades totales:
 
@@ -399,4 +406,4 @@ cd ~/IA-Ventas-B && git pull && cd backend && npm run build && pm2 restart all
 
 ---
 
-*Última actualización: septiembre 2026 — consulta por tipo sin catálogo genérico; checkout link `SKUx10:1` (MASSI Bot API 1.3.18); parser `~`/`%7E`/`--`; paquetes de balines en WhatsApp.*
+*Última actualización: octubre 2026 — Ajustes edita nombre del saludo y perfil; listado de balines por tipo y luego tamaños; checkout link `SKUx10:1` (MASSI Bot API 1.3.18).*

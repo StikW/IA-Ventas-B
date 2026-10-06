@@ -243,7 +243,7 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 
 | Cliente | Sistema |
 |---------|---------|
-| `hola`, `menú`, `buenos días` | Texto: **saludo según hora Colombia** (`greeting.utils`, zona `America/Bogota`) + **perfil negocio** (descripción, 📍 dirección, 🕐 horario). Si el cliente ya dijo *buenas tardes*, no se contradice |
+| `hola`, `menú`, `buenos días` | Texto: **saludo según hora Colombia** (`greeting.utils`, zona `America/Bogota`) + **nombre del negocio** (Ajustes, `/business/settings`) + perfil (descripción, 📍 dirección, 🕐 horario). Si el cliente ya dijo *buenas tardes*, no se contradice |
 | (continúa) | Pide **ID del producto** (SKU amigable) o descripción en lenguaje natural |
 | (continúa) | `route: catalog` → flow **Catalogo** con botón **Ver catálogo** → `{storeUrl}{shopPagePath}` (MASSI: `https://massijoyeria.com/tienda/`) |
 
@@ -270,8 +270,11 @@ El saludo se bifurca según **si la sesión ya tenía carrito**.
 |---------|---------|
 | `¿qué productos tienen?`, `catálogo`, `precios` | **Determinista** → `buildCatalogBrowseReply`: mensaje corto + `route: catalog` → botón **Ver catálogo** |
 | `quiero una cadena`, `tienen anillos`, `aretes` | **Determinista** → `resolveProductFamilyBrowse`: listado WC con *ID*. Si esa familia no está en la tienda, lo dice (no el «necesito el ID» genérico) y **conserva** el listado anterior |
+| `quiero balines`, `tienen balines` | **Dos pasos** (`planBalinFamilyBrowse`): primero los **tipos** (Diamantado Oro Nacional Amarillo, Liso Oro Nacional Amarillo, Diamantado Oro Nacional Rosa), sin tamaños. La letra abre los tamaños de ese tipo, con precio e *ID*. El tipo sale del nombre (`Balín #N …`); las categorías de WooCommerce no siempre coinciden |
+| `balines lisos oro amarillo`, `diamantado oro rosa` | Salta el menú y lista los tamaños de ese tipo |
+| `tienen balines #4` | Todos los de ese `#`, de cualquier tipo, con *ID*. **No** agrega al carrito |
 | `a`, `quiero dos unidades del a`, `quiero el dcomat002` | **Último listado** (`lastOptions` + `findOfferedOption`): letra, ordinal o *ID* (minúsculas / `*negrita*` de WhatsApp). Se resuelve **antes** que familia, granel o el LLM |
-| `tienen balines #4`, `hay anillos talla 6?` | **Consulta de disponibilidad** (`isAvailabilityQuestion`): lista opciones con *ID*. **No** agrega al carrito hasta que diga *quiero / dame / agrega* o envíe un ID |
+| `tienen balines #4`, `hay anillos talla 6?` | **Consulta de disponibilidad** (`isAvailabilityQuestion`): lista opciones con *ID*. En balines, `#4` incluye todos los tipos. **No** agrega al carrito hasta que diga *quiero / dame / agrega* o envíe un ID |
 | `quiero una cadena` (descripción sin SKU resoluble, fallback) | `buildProductLookupHelpReply`: pide el **ID** + `route: catalog` |
 | Cliente envía **ID/SKU** | Atajo → `buildOrderItemBySku` → stock WC → carrito. Si el producto tiene paquetes `woo-massi` (balines), **no agrega**: pide cantidad o cotiza x10/x5/x2/x1 y espera confirmación. |
 | Cliente **pide** producto (*quiero cadena 50 cm*, *dame 18 balines #10*) | **RAG** → SKU → WC. En productos a granel: combinación de paquetes + total, **sin** entrar al carrito hasta que confirme (*sí*, *agrégalo*). |
@@ -644,6 +647,7 @@ Modo **wa-api** (`console.builderbot.app`): no necesita nada de esto, envía bot
 | Paquetes a granel (x10/x5/x2/x1) | `sales-agent/domain/packPricing.utils.ts` |
 | Multi-producto / variantes | `sales-agent/domain/productSelection.utils.ts` |
 | Último listado (letra / ID) | `sales-agent/domain/optionReference.utils.ts` (`findOfferedOption`) |
+| Listado de balines (tipo → tamaños) | `sales-agent/domain/balinBrowse.utils.ts` (`planBalinFamilyBrowse`) |
 | Link checkout WC | `sales-agent/domain/checkoutLink.utils.ts` |
 | IDs de botones | `sales-agent/domain/whatsappFlow.constants.ts` |
 | Adapter MASSI REST | `massi-bot/infrastructure/MassiBotRestAdapter.ts` |
@@ -739,4 +743,4 @@ El plugin:
 
 ---
 
-*Última actualización: septiembre 2026 — memoria del último listado (`lastOptions`, letra/ID en la frase); checkout link `SKUx10:1` (MASSI Bot API 1.3.18); parser `x`/`~`/`%7E`/`--`; flow **Finalizar Pedido**; OTP/notificaciones vía `/channel/messages`; validación comprobantes en `/validacion-de-pagos/`.*
+*Última actualización: octubre 2026 — nombre del saludo editable en Ajustes; balines en dos pasos (tipo de oro, luego tamaños; `#N` lista ese número en todos los tipos). Memoria del último listado (`lastOptions`); checkout link `SKUx10:1` (MASSI Bot API 1.3.18); flow **Finalizar Pedido**; OTP/notificaciones vía `/channel/messages`.*

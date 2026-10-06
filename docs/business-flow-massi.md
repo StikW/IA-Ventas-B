@@ -103,6 +103,8 @@ Cuando el cliente **ya sabe qué comprar**, el negocio necesita capturar según 
 
 | Campo | Uso |
 |-------|-----|
+| Nombre del negocio | Texto del saludo («Qué gusto tenerte en …»). Se guarda con el perfil; no hace falta editar Dynamo |
+| Descripción, dirección, horario | Bloque del saludo debajo del nombre |
 | `checkoutFormUrl` | URL absoluta del formulario MASSI/WC (opcional) |
 | `checkoutPagePath` | Auto-detectada al probar WC (ej. `/finalizar-compra/`) |
 | `checkoutMode` | `link` (default) \| `whatsapp` (botones legacy en chat) |
@@ -315,4 +317,4 @@ Reglas de negocio descritas por el equipo:
 
 ---
 
-*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress. Última revisión: septiembre 2026 — saludo hora Colombia; agradecimientos; coexistencia agente + turnos.*
+*Documento vivo: actualizar cuando cambie el alcance acordado con el negocio o el plugin WordPress. Última revisión: octubre 2026 — nombre del saludo editable en Ajustes; saludo hora Colombia; agradecimientos; coexistencia agente + turnos.*

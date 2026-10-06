@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
 export const updateBusinessConfigSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  contactEmail: z.string().trim().email().max(200),
+  contactPhone: z.string().trim().max(40).optional(),
   description: z.string().max(2000).optional(),
   address: z.string().max(500).optional(),
   businessHours: z.string().max(500).optional(),

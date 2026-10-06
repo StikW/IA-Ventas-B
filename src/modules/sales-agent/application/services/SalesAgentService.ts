@@ -62,6 +62,7 @@ import {
   findOfferedOption,
 } from '../../domain/optionReference.utils';
 import { buildListedNumberChoiceMessage } from '../../domain/productDisplay.utils';
+import { extractBalinSizeQuery } from '../../domain/balinBrowse.utils';
 import { EMOJI, warmAddedOpener } from '../../domain/tone.utils';
 import { WhatsAppCatalogOrderProduct } from '../../../builderbot/domain/whatsappCatalogOrder.utils';
 
@@ -1318,6 +1319,14 @@ export class SalesAgentService {
     const listed = mutableContext.lastOptions;
     if (!listed?.length) return null;
 
+    // En el menú de tipos de balín los nombres no llevan #. "#3" es un tamaño, no la tercera línea.
+    if (
+      extractBalinSizeQuery(text) &&
+      listed.some((option) => (option.memberProductIds?.length ?? 0) > 1)
+    ) {
+      return null;
+    }
+
     const ambiguousIndices = findListedProductNumberAmbiguity(text, listed);
     const listedNumber = extractListedProductNumber(text);
     if (ambiguousIndices && listedNumber) {
@@ -1387,6 +1396,23 @@ export class SalesAgentService {
     option: OfferedOption,
     quantity: number
   ): Promise<ConversationFlowResult> {
+    if (option.memberProductIds && option.memberProductIds.length > 1) {
+      const listed = await this.tools.describeMemberProducts(input.tenantId, option);
+      if (!listed.ok) {
+        return {
+          replyText: listed.message,
+          outbound: { kind: 'text', body: listed.message },
+          salesContext,
+        };
+      }
+
+      const prompt = this.conversationFlow.buildCartActionPrompt(salesContext, listed.message);
+      return {
+        ...prompt,
+        salesContext: { ...prompt.salesContext, lastOptions: listed.options ?? [] },
+      };
+    }
+
     if (!option.sku || option.variable) {
       const listed = await this.tools.describeProductOptionsById(input.tenantId, option.productId);
       if (!listed.ok) {
@@ -1551,6 +1577,17 @@ export class SalesAgentService {
     };
   }
 
+  /** "info A" sobre un tipo de balín abre sus tamaños, no la ficha de un solo producto. */
+  private balinTypeFromInfoRequest(salesContext: SalesContext, text: string): OfferedOption | null {
+    const listed = salesContext.lastOptions;
+    if (!listed?.length) return null;
+    const reference = stripProductPageWords(text) || text;
+    const chosen = findOfferedOption(reference, listed);
+    if (!chosen) return null;
+    const option = listed[chosen.index];
+    return option?.memberProductIds && option.memberProductIds.length > 1 ? option : null;
+  }
+
   private resolveProductForPage(salesContext: SalesContext, text: string): FocusedProduct | null {
     // "info B" o "info HRPALM001": sin quitar las palabras de la petición, el resolutor
     // intenta casar "info" contra los nombres del listado y no encuentra nada.
@@ -1622,6 +1659,19 @@ export class SalesAgentService {
   ): Promise<ConversationFlowResult | null> {
     if (salesContext.flowStep === 'checkout_redirect') return null;
     if (!isProductPageInfoIntent(text)) return null;
+
+    const typeGroup = this.balinTypeFromInfoRequest(salesContext, text);
+    if (typeGroup) {
+      const expanded = await this.tools.describeMemberProducts(input.tenantId, typeGroup);
+      if (!expanded.ok) {
+        return { replyText: expanded.message, outbound: { kind: 'text', body: expanded.message }, salesContext };
+      }
+      return {
+        replyText: expanded.message,
+        outbound: { kind: 'text', body: expanded.message },
+        salesContext: { ...salesContext, lastOptions: expanded.options ?? [] },
+      };
+    }
 
     const product = this.resolveProductForPage(salesContext, text);
     if (!product) {

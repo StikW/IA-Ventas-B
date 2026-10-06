@@ -75,6 +75,7 @@ import {
   PRODUCT_LIST_MAX_LINES,
 } from '../../domain/productDisplay.utils';
 import { CatalogMatch, catalogQueryTokens, isDecisiveMatch, rankCatalogEntries } from '../../domain/catalogMatch.utils';
+import { planBalinFamilyBrowse, sortBalinProducts } from '../../domain/balinBrowse.utils';
 import { EMOJI } from '../../domain/tone.utils';
 import { BusinessProfileConfig } from '../../../tenant/domain/entities/Config.types';
 import { CartService } from './CartService';
@@ -334,6 +335,14 @@ export class SalesAgentToolsHandler {
         return await this.describeProductOptions(config, matches[0]!.entry.product, variantHint);
       }
 
+      const balinPlan = planBalinFamilyBrowse(familyProducts, userText, resolvedTerm);
+      if (balinPlan.kind === 'types') {
+        return { ok: true, message: balinPlan.message, options: balinPlan.options };
+      }
+      if (balinPlan.kind === 'sizes') {
+        return this.browseResultFromProducts(balinPlan.label, balinPlan.products);
+      }
+
       // Varios productos del mismo tipo: se listan para que el cliente elija por ID.
       if (familyProducts.length > 1) {
         const shown = familyProducts.slice(0, PRODUCT_LIST_MAX_LINES);
@@ -386,6 +395,45 @@ export class SalesAgentToolsHandler {
     } catch (err) {
       return { ok: false, message: this.formatStoreError(err) };
     }
+  }
+
+  /**
+   * El cliente eligió un tipo de balín (Diamantado Oro Amarillo, etc.).
+   * Lista los tamaños de ese tipo, no un solo producto.
+   */
+  async describeMemberProducts(tenantId: string, option: OfferedOption): Promise<ProductBrowseResult> {
+    const ids = new Set(option.memberProductIds ?? []);
+    if (!ids.size) {
+      return { ok: false, message: 'No encontré los tamaños de esa opción.' };
+    }
+
+    const config = await this.wcConfigRepo.findByTenantId(tenantId);
+    if (!config?.connected) {
+      return { ok: false, message: 'WooCommerce no está conectado para este negocio.' };
+    }
+
+    try {
+      const entries = await this.catalogIndex.getEntries(tenantId, config);
+      const products = sortBalinProducts(
+        entries.map((entry) => entry.product).filter((product) => ids.has(product.id))
+      );
+      if (!products.length) {
+        return { ok: false, message: 'Esos tamaños ya no están publicados en la tienda.' };
+      }
+      return this.browseResultFromProducts(option.name, products);
+    } catch (err) {
+      return { ok: false, message: this.formatStoreError(err) };
+    }
+  }
+
+  /** Un tipo de balín cabe entero en el mensaje: son pocos tamaños, no el catálogo completo. */
+  private browseResultFromProducts(label: string, products: WooCommerceProduct[]): ProductBrowseResult {
+    const shown = products.slice(0, 16);
+    return {
+      ok: true,
+      message: buildFamilyProductListMessage(label, shown, products.length),
+      options: shown.map(toOfferedOptionFromProduct),
+    };
   }
 
   /**

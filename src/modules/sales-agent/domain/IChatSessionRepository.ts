@@ -41,6 +41,11 @@ export interface OfferedOption {
   sku?: string;
   /** El cliente aún debe elegir una variación antes de poder agregarlo. */
   variable?: boolean;
+  /**
+   * Tamaños de un tipo de balín (Diamantado Oro Amarillo, etc.).
+   * Elegir la letra abre estos productos; todavía no es un SKU comprable.
+   */
+  memberProductIds?: number[];
 }
 
 /** Producto del que el cliente está hablando (elegido por número, ID o el último cotizado). */

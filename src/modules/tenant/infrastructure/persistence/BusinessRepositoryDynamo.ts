@@ -172,7 +172,8 @@ export class BusinessRepositoryDynamo implements IBusinessRepository {
         slug: data.slug ?? existing.slug,
         status: (data.status as BusinessStatus) ?? existing.status,
         contactEmail: data.contactEmail ?? existing.contactEmail,
-        contactPhone: data.contactPhone ?? existing.contactPhone,
+        contactPhone:
+          data.contactPhone !== undefined ? data.contactPhone || undefined : existing.contactPhone,
         createdBy: existing.createdBy,
         createdAt: existing.createdAt,
         updatedAt: data.updatedAt,
